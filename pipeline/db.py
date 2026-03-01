@@ -1749,6 +1749,46 @@ def get_latest_diagnostic_by_place_id(user_id: int, place_id: str) -> Optional[D
         conn.close()
 
 
+def get_territory_contact_for_diagnostic(
+    diagnostic_id: int,
+    place_id: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """Return best-effort phone/website for a diagnostic from territory prospect snapshots."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            """SELECT website, tier1_snapshot_json
+               FROM territory_prospects
+               WHERE diagnostic_id = ?
+               ORDER BY updated_at DESC
+               LIMIT 1""",
+            (diagnostic_id,),
+        ).fetchone()
+        if not row and place_id:
+            row = conn.execute(
+                """SELECT website, tier1_snapshot_json
+                   FROM territory_prospects
+                   WHERE place_id = ?
+                   ORDER BY updated_at DESC
+                   LIMIT 1""",
+                (place_id,),
+            ).fetchone()
+        if not row:
+            return {"phone": None, "website": None}
+        snap = json.loads(row["tier1_snapshot_json"]) if row["tier1_snapshot_json"] else {}
+        phone = (
+            (snap.get("phone") if isinstance(snap, dict) else None)
+            or (snap.get("international_phone_number") if isinstance(snap, dict) else None)
+        )
+        website = row["website"] or (snap.get("website") if isinstance(snap, dict) else None)
+        return {
+            "phone": str(phone).strip() if phone else None,
+            "website": str(website).strip() if website else None,
+        }
+    finally:
+        conn.close()
+
+
 def get_tier1_cache(place_id: str) -> Optional[Dict[str, Any]]:
     """Return cached Tier1 data for place_id."""
     conn = _get_conn()

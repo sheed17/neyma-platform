@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
+from pipeline.high_value_services_config import SERVICE_SERP_MAX_CONSECUTIVE_EMPTY, SERVICE_SERP_MAX_QUERIES
 
 
 def _normalize_domain(url_or_domain: str) -> str:
@@ -47,11 +48,49 @@ def _page_type_from_url(url: str) -> str:
     return "other"
 
 
+def _service_query(service_display: str, city: str, state: Optional[str]) -> str:
+    c = (city or "").strip()
+    s = (state or "").strip()
+    if s:
+        return f"{service_display} {c}, {s}"
+    return f"{service_display} {c}"
+
+
+def _service_rank_from_serp(
+    data: Dict[str, Any],
+    target_domain: str,
+) -> Dict[str, Any]:
+    organic = data.get("organic_results") or []
+    local = data.get("local_results") or data.get("local_map") or {}
+    local_places = local.get("places") if isinstance(local, dict) else (local if isinstance(local, list) else [])
+
+    pos: Optional[int] = None
+    for i, r in enumerate(organic[:20], start=1):
+        link = str(r.get("link") or "").strip()
+        if link and _normalize_domain(link) == target_domain:
+            pos = i
+            break
+    competitors_top_10 = 0
+    for r in organic[:10]:
+        link = str(r.get("link") or "").strip()
+        if link and _normalize_domain(link) != target_domain:
+            competitors_top_10 += 1
+
+    return {
+        "position_top_3": bool(pos is not None and pos <= 3),
+        "position_top_10": bool(pos is not None and pos <= 10),
+        "average_position": int(pos) if pos is not None else None,
+        "map_pack_presence": bool(local_places),
+        "competitors_in_top_10": int(competitors_top_10),
+    }
+
+
 def build_serp_presence(
     city: str,
     state: Optional[str],
     website_url: Optional[str],
     keywords: Optional[List[str]] = None,
+    service_queries: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     api_key = os.getenv("SERPAPI_API_KEY")
     domain = _normalize_domain(website_url or "")
@@ -100,10 +139,65 @@ def build_serp_presence(
         except Exception:
             rows.append({"keyword": kw, "position": None, "in_top_10": False, "page_type": None})
 
+    service_rankings: Dict[str, Dict[str, Any]] = {}
+    if service_queries:
+        requests_made = 0
+        consecutive_empty = 0
+        for svc in service_queries:
+            if requests_made >= SERVICE_SERP_MAX_QUERIES:
+                break
+            if not isinstance(svc, dict):
+                continue
+            slug = str(svc.get("slug") or "").strip().lower()
+            display = str(svc.get("display_name") or slug.replace("_", " ").title()).strip()
+            if not slug or not display:
+                continue
+            q = _service_query(display, city, state)
+            try:
+                params = {
+                    "engine": "google",
+                    "q": q,
+                    "num": 10,
+                    "api_key": api_key,
+                    "gl": "us",
+                    "hl": "en",
+                }
+                resp = requests.get("https://serpapi.com/search.json", params=params, timeout=15)
+                requests_made += 1
+                if resp.status_code != 200:
+                    service_rankings[slug] = {
+                        "position_top_3": False,
+                        "position_top_10": False,
+                        "average_position": None,
+                        "map_pack_presence": False,
+                        "competitors_in_top_10": 0,
+                    }
+                    consecutive_empty += 1
+                else:
+                    data = resp.json() if resp.content else {}
+                    organic = data.get("organic_results") or []
+                    if not organic:
+                        consecutive_empty += 1
+                    else:
+                        consecutive_empty = 0
+                    service_rankings[slug] = _service_rank_from_serp(data, domain)
+            except Exception:
+                requests_made += 1
+                consecutive_empty += 1
+                service_rankings[slug] = {
+                    "position_top_3": False,
+                    "position_top_10": False,
+                    "average_position": None,
+                    "map_pack_presence": False,
+                    "competitors_in_top_10": 0,
+                }
+            if consecutive_empty >= SERVICE_SERP_MAX_CONSECUTIVE_EMPTY:
+                break
+
     return {
         "domain": domain,
         "keywords": rows,
+        "service_rankings": service_rankings,
         "as_of_date": _dt.datetime.utcnow().date().isoformat(),
         "provider": "serpapi",
     }
-

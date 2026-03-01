@@ -6,6 +6,7 @@ Reuses existing pipeline modules; no duplicated enrichment logic.
 import os
 import sys
 import logging
+import time
 from typing import Dict, Optional, List, Any
 
 # Ensure project root on path when running from backend
@@ -20,6 +21,13 @@ except ImportError:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _extract_city_from_address(formatted_address: Optional[str]) -> str:
@@ -270,6 +278,20 @@ def _build_diagnostic_response(
         "business_name": business_name,
         "city": str(city),
         "state": state or None,
+        "phone": (
+            merged.get("signal_phone")
+            or merged.get("international_phone_number")
+            or merged.get("phone")
+            or ((merged.get("signals") or {}).get("signal_phone") if isinstance(merged.get("signals"), dict) else None)
+            or ((merged.get("signals") or {}).get("international_phone_number") if isinstance(merged.get("signals"), dict) else None)
+        ),
+        "website": (
+            merged.get("signal_website_url")
+            or merged.get("website")
+            or merged.get("website_url")
+            or ((merged.get("signals") or {}).get("signal_website_url") if isinstance(merged.get("signals"), dict) else None)
+            or ((merged.get("signals") or {}).get("website") if isinstance(merged.get("signals"), dict) else None)
+        ),
         "opportunity_profile": str(opportunity_profile),
         "constraint": str(constraint),
         "primary_leverage": str(primary_leverage),
@@ -305,6 +327,10 @@ def _build_diagnostic_response(
         "detected_services": detected_services,
         "missing_services": list(service_intel.get("missing_high_value_pages") or []),
         "schema_detected": signals.get("signal_has_schema_microdata"),
+        "high_value_services": list(service_intel.get("high_value_services") or []),
+        "high_value_summary": dict(service_intel.get("high_value_summary") or {}),
+        "high_value_service_leverage": service_intel.get("high_value_service_leverage"),
+        "service_page_analysis_v2": dict(service_intel.get("service_page_analysis_v2") or {}),
     }
 
     revenue_breakdowns: List[Dict[str, Any]] = []
@@ -350,10 +376,18 @@ def _build_diagnostic_response(
     out["risk_flags"] = list(risk_flags)
     out["evidence"] = evidence
     out["competitive_delta"] = merged.get("competitive_delta")
-    out["serp_presence"] = merged.get("serp_presence")
     out["review_intelligence"] = merged.get("review_intelligence") or merged.get("signal_review_intelligence")
     out["geo_coverage"] = merged.get("geo_coverage")
     out["authority_proxy"] = merged.get("authority_proxy")
+
+    # Final deterministic consistency pass to prevent contradictory brief claims.
+    try:
+        from pipeline.validation import enforce_diagnostic_consistency
+        warnings = enforce_diagnostic_consistency(out, merged=merged)
+        if warnings:
+            out["consistency_warnings"] = warnings
+    except Exception as e:
+        logger.warning("Could not run diagnostic consistency enforcement: %s", e)
 
     return out
 
@@ -384,9 +418,12 @@ def run_diagnostic(
     from pipeline.decision_agent import DecisionAgent
     from pipeline.dentist_profile import is_dental_practice, build_dentist_profile_v1, fetch_website_html_for_trust
     from pipeline.service_depth import build_service_intelligence, get_page_texts_for_llm
-    from pipeline.competitor_sampling import fetch_competitors_nearby, build_competitive_snapshot
+    from pipeline.competitor_sampling import (
+        fetch_competitors_nearby,
+        build_competitive_snapshot,
+        enrich_competitors_with_site_metrics,
+    )
     from pipeline.competitive_delta import build_competitive_delta
-    from pipeline.serp_presence import build_serp_presence
     from pipeline.authority_proxy import build_authority_proxy
     from pipeline.objective_decision_layer import compute_objective_decision_layer
     from pipeline.objective_intelligence import (
@@ -441,22 +478,53 @@ def run_diagnostic(
     merged = merge_signals_into_lead(enriched, signals)
     if isinstance(merged.get("signal_review_intelligence"), dict):
         merged["review_intelligence"] = merged.get("signal_review_intelligence")
+    # Optional enrichments are latency-heavy. Keep them explicit opt-in for fast diagnostics/re-runs.
+    optional_budget_sec_raw = os.getenv("NEYMA_DIAGNOSTIC_OPTIONAL_ENRICH_BUDGET_SEC", "6")
+    try:
+        optional_budget_sec = float(optional_budget_sec_raw)
+    except ValueError:
+        optional_budget_sec = 6.0
+    optional_t0 = time.monotonic()
 
-    use_meta = get_meta_access_token() is not None
-    if use_meta:
-        augment_lead_with_meta_ads(merged)
+    def _optional_budget_ok() -> bool:
+        return (time.monotonic() - optional_t0) < optional_budget_sec
 
-    # Google Ads Transparency Center — authoritative source for Google Ads detection
-    augment_lead_with_google_ads(merged)
+    # Meta Ads enrichment
+    if _env_enabled("NEYMA_DIAGNOSTIC_ENABLE_META_ADS", default=False) and _optional_budget_ok():
+        try:
+            use_meta = get_meta_access_token() is not None
+            if use_meta:
+                augment_lead_with_meta_ads(merged)
+        except Exception as e:
+            logger.warning("Optional meta ads enrichment failed: %s", e)
 
-    # SEO traffic data from Semrush/Ahrefs when configured
-    augment_lead_with_seo_traffic(merged)
+    # Google Ads Transparency check (can be slow due subdomain probes)
+    if _env_enabled("NEYMA_DIAGNOSTIC_ENABLE_GOOGLE_ADS_CHECK", default=False) and _optional_budget_ok():
+        try:
+            augment_lead_with_google_ads(merged)
+        except Exception as e:
+            logger.warning("Optional google ads check failed: %s", e)
 
-    # GA4 real traffic and conversion data when connected
-    augment_lead_with_ga4(merged)
+    # SEO traffic API enrichment
+    if _env_enabled("NEYMA_DIAGNOSTIC_ENABLE_SEO_TRAFFIC", default=False) and _optional_budget_ok():
+        try:
+            augment_lead_with_seo_traffic(merged)
+        except Exception as e:
+            logger.warning("Optional SEO traffic enrichment failed: %s", e)
 
-    # Google Ads API for real spend data when connected
-    augment_lead_with_google_ads_api(merged)
+    # GA4 enrichment
+    if _env_enabled("NEYMA_DIAGNOSTIC_ENABLE_GA4", default=False) and _optional_budget_ok():
+        try:
+            augment_lead_with_ga4(merged)
+        except Exception as e:
+            logger.warning("Optional GA4 enrichment failed: %s", e)
+
+    # Google Ads API enrichment
+    if _env_enabled("NEYMA_DIAGNOSTIC_ENABLE_GOOGLE_ADS_API", default=False) and _optional_budget_ok():
+        try:
+            augment_lead_with_google_ads_api(merged)
+        except Exception as e:
+            logger.warning("Optional Google Ads API enrichment failed: %s", e)
 
     # Review tracking: save snapshot and compute real velocity from historical data
     place_id = merged.get("place_id")
@@ -501,29 +569,27 @@ def run_diagnostic(
                     procedure_mentions,
                     city=resolved_city,
                     state=resolved_state,
+                    vertical="dentist",
                 )
                 competitors = []
                 search_radius_used_miles = 2
                 lat, lng = merged.get("latitude"), merged.get("longitude")
                 if lat is not None and lng is not None:
                     competitors, search_radius_used_miles = fetch_competitors_nearby(lat, lng, merged.get("place_id"))
+                    if _env_enabled("NEYMA_DIAGNOSTIC_ENABLE_COMPETITOR_SITE_METRICS", default=True):
+                        competitors = enrich_competitors_with_site_metrics(
+                            competitors,
+                            vertical="dentist",
+                        )
                 competitive_snap = build_competitive_snapshot(merged, competitors, search_radius_used_miles) if competitors else {}
                 competitive_delta = build_competitive_delta(merged, service_intel, competitors)
-                serp_presence = build_serp_presence(
-                    city=resolved_city,
-                    state=resolved_state,
-                    website_url=merged.get("signal_website_url"),
-                )
                 authority_proxy = build_authority_proxy(
                     service_intelligence=service_intel,
-                    serp_presence=serp_presence,
                     domain_age_years=merged.get("domain_age_years"),
                 )
                 merged["competitive_snapshot"] = competitive_snap
                 merged["service_intelligence"] = service_intel
                 merged["competitive_delta"] = competitive_delta
-                if serp_presence:
-                    merged["serp_presence"] = serp_presence
                 merged["authority_proxy"] = authority_proxy
                 merged["geo_coverage"] = {
                     "city_or_near_me_page_count": service_intel.get("city_or_near_me_page_count"),

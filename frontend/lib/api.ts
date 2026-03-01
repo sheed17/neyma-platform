@@ -350,11 +350,32 @@ export async function getOutcomesList(limit = 200): Promise<{ items: OutcomesLis
   return res.json();
 }
 
-export async function runAskQuery(query: string, accuracyMode: "fast" | "verified" = "verified"): Promise<AskStartResponse> {
+export async function runAskQuery(
+  query: string,
+  accuracyMode: "fast" | "verified" = "verified",
+  confirmedLowConfidence = false,
+): Promise<AskStartResponse> {
   const res = await fetch(`${getBaseUrl()}/ask`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, accuracy_mode: accuracyMode }),
+    body: JSON.stringify({ query, accuracy_mode: accuracyMode, confirmed_low_confidence: confirmedLowConfidence }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.json();
+}
+
+export async function runAskAgenticQuery(
+  query: string,
+  accuracyMode: "fast" | "verified" = "verified",
+  confirmedLowConfidence = false,
+): Promise<AskStartResponse> {
+  const res = await fetch(`${getBaseUrl()}/ask/agentic`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, accuracy_mode: accuracyMode, confirmed_low_confidence: confirmedLowConfidence }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));

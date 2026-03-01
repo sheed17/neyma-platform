@@ -608,8 +608,9 @@ def build_objective_intelligence(lead: Dict) -> Dict[str, Any]:
     if gap:
         out["competitive_service_gap"] = gap
 
-    # Dental lead: generate intervention plan via one LLM call only (do not store obj_layer plan)
-    if is_dental_practice(lead):
+    # Dental lead: LLM intervention plan is explicit opt-in (latency control).
+    use_llm_intervention = (os.getenv("USE_LLM_INTERVENTION_PLAN", "").strip().lower() in ("1", "true", "yes"))
+    if is_dental_practice(lead) and use_llm_intervention:
         llm_plan = generate_intervention_plan_from_intelligence(lead, objective_intelligence=out)
         if llm_plan:
             out["intervention_plan"] = llm_plan

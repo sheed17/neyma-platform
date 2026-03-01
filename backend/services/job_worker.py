@@ -29,11 +29,14 @@ from pipeline.db import (
 )
 from backend.services.enrichment_service import run_diagnostic
 from backend.services.npl_service import (
+    classify_constraint,
     criterion_cache_key,
     matches_tier1_criteria,
     needs_lightweight_check,
     run_lightweight_service_page_check,
 )
+from backend.services.criteria_registry import sanitize_criteria, sanitize_must_not
+from backend.services.ask_agentic_planner import planner_llm_update
 from backend.services.territory_service import (
     _build_tier1_rows,
     _fetch_territory_candidates,
@@ -217,12 +220,64 @@ def _run_npl_find_job(job: dict) -> dict:
     state = intent.get("state") or None
     vertical = str(intent.get("vertical") or "dentist").strip()
     limit = int(intent.get("limit") or 10)
-    limit = max(1, min(limit, 25))
-    criteria = intent.get("criteria") or []
-    missing_service_criteria = [c for c in criteria if c.get("type") == "missing_service_page_light"]
+    limit = max(1, min(limit, 20))
+    raw_criteria = [c for c in (intent.get("criteria") or []) if isinstance(c, dict)]
+    raw_must_not = [c for c in (intent.get("must_not") or []) if isinstance(c, dict)]
+    criteria, criteria_unsupported = sanitize_criteria(raw_criteria, [])
+    must_not, must_not_unsupported = sanitize_must_not(raw_must_not, [])
+    criteria = [c for c in criteria if isinstance(c, dict)]
+    must_not = [c for c in must_not if isinstance(c, dict)]
+    applied_criteria = []
+    for c in criteria:
+        ctype = str(c.get("type") or "").strip()
+        if not ctype:
+            continue
+        if ctype in {"missing_service_page", "missing_service_page_light"}:
+            svc = str(c.get("service") or "").strip()
+            applied_criteria.append(f"{ctype}:{svc}" if svc else ctype)
+        else:
+            applied_criteria.append(ctype)
+    unsupported_request_parts = intent.get("unsupported_request_parts") or intent.get("unsupported_parts") or []
+    unsupported_request_parts = [str(x).strip() for x in unsupported_request_parts if str(x).strip()]
+    unsupported_request_parts.extend(criteria_unsupported)
+    unsupported_request_parts.extend(must_not_unsupported)
+    execution_overrides = intent.get("execution_overrides") if isinstance(intent.get("execution_overrides"), dict) else {}
+    try:
+        radius_miles_override = float(execution_overrides.get("radius_miles")) if execution_overrides.get("radius_miles") is not None else None
+    except (TypeError, ValueError):
+        radius_miles_override = None
+    try:
+        candidate_cap_override = int(execution_overrides.get("candidate_cap")) if execution_overrides.get("candidate_cap") is not None else None
+    except (TypeError, ValueError):
+        candidate_cap_override = None
+    try:
+        verify_top_n_override = int(execution_overrides.get("verify_top_n")) if execution_overrides.get("verify_top_n") is not None else None
+    except (TypeError, ValueError):
+        verify_top_n_override = None
+    try:
+        verify_next_n_override = int(execution_overrides.get("verify_next_n")) if execution_overrides.get("verify_next_n") is not None else None
+    except (TypeError, ValueError):
+        verify_next_n_override = None
+
+    raw_soft_filters = [c for c in (intent.get("soft_filters_rank_only") or []) if isinstance(c, dict)]
+    soft_filters, soft_unsupported = sanitize_criteria(raw_soft_filters, [])
+    unsupported_request_parts.extend(soft_unsupported)
+    missing_service_criteria = [c for c in criteria if c.get("type") == "missing_service_page"]
     requires_light = bool(intent.get("requires_lightweight")) or needs_lightweight_check(criteria)
     requires_verified = accuracy_mode == "verified" and bool(missing_service_criteria)
     scored_cap = min(max(limit * 2, limit), 50)
+    if candidate_cap_override is not None:
+        scored_cap = max(20, min(candidate_cap_override, 200))
+
+    def _stable_sort_rows(rows_to_sort: list[dict]) -> list[dict]:
+        rows_to_sort.sort(
+            key=lambda x: (
+                -float(x.get("rank_key") or 0),
+                -int(x.get("user_ratings_total") or 0),
+                str(x.get("place_id") or ""),
+            ),
+        )
+        return rows_to_sort
 
     update_job_status(
         job_id,
@@ -232,12 +287,13 @@ def _run_npl_find_job(job: dict) -> dict:
             "intent": intent,
             "accuracy_mode": accuracy_mode,
             "criteria": criteria,
+            "soft_filters_rank_only": soft_filters,
             "progress": {"candidates_found": 0, "scored": 0, "list_count": 0},
             "partial_results": [],
         },
     )
 
-    places_cache_key = f"{city.lower()}|{str(state or '').upper()}|{vertical.lower()}|{scored_cap}"
+    places_cache_key = f"{city.lower()}|{str(state or '').upper()}|{vertical.lower()}|{scored_cap}|{radius_miles_override or 'default'}"
     candidates: list[dict] = []
     candidates_cached = False
     cached_places = get_ask_places_cache(places_cache_key)
@@ -258,6 +314,7 @@ def _run_npl_find_job(job: dict) -> dict:
                     "intent": intent,
                     "accuracy_mode": accuracy_mode,
                     "criteria": criteria,
+                    "soft_filters_rank_only": soft_filters,
                     "progress": {
                         "candidate_queries_done": queries_done,
                         "candidate_queries_total": queries_total,
@@ -275,6 +332,7 @@ def _run_npl_find_job(job: dict) -> dict:
             state=state,
             vertical=vertical,
             limit=scored_cap,
+            radius_miles=radius_miles_override,
             progress_cb=_candidate_progress_cb,
         )
         upsert_ask_places_cache(places_cache_key, {"candidates": candidates})
@@ -290,6 +348,7 @@ def _run_npl_find_job(job: dict) -> dict:
             "intent": intent,
             "accuracy_mode": accuracy_mode,
             "criteria": criteria,
+            "soft_filters_rank_only": soft_filters,
             "progress": {
                 "candidates_found": total_candidates,
                 "scored": 0,
@@ -317,15 +376,54 @@ def _run_npl_find_job(job: dict) -> dict:
     score_progress["failed"] = failed_count
 
     ranked_rows = rows[:]
+    total_review_count = sum(int(r.get("user_ratings_total") or 0) for r in ranked_rows)
+    market_avg_reviews = (float(total_review_count) / float(len(ranked_rows))) if ranked_rows else 0.0
+    if market_avg_reviews >= 120:
+        market_density = "high"
+    elif market_avg_reviews >= 50:
+        market_density = "medium"
+    else:
+        market_density = "low"
+    for row in ranked_rows:
+        row["avg_market_reviews"] = market_avg_reviews
+        row["market_density"] = market_density
+        row["primary_constraint"] = classify_constraint(row)
+        if soft_filters:
+            bonus = 0.0
+            for criterion in soft_filters:
+                if matches_tier1_criteria([criterion], row):
+                    bonus += 1.5
+            row["rank_key"] = round(float(row.get("rank_key") or 0) + bonus, 2)
+
+    ranked_rows = _stable_sort_rows(ranked_rows)
     for idx, row in enumerate(ranked_rows, start=1):
         row["rank"] = idx
 
     filtered_rows: list[dict] = []
     partial_payload: list[dict] = []
+    filtered_out_by_criterion: dict[str, int] = {}
+
+    non_missing_criteria = [c for c in criteria if c.get("type") != "missing_service_page"]
+
+    def _criterion_key(c: dict) -> str:
+        return str(c.get("type") or "").strip() or "unknown"
+
+    def _passes_non_missing(row: dict) -> bool:
+        for criterion in non_missing_criteria:
+            if not matches_tier1_criteria([criterion], row):
+                k = _criterion_key(criterion)
+                filtered_out_by_criterion[k] = int(filtered_out_by_criterion.get(k) or 0) + 1
+                return False
+        for criterion in must_not:
+            if matches_tier1_criteria([criterion], row):
+                k = _criterion_key(criterion)
+                filtered_out_by_criterion[k] = int(filtered_out_by_criterion.get(k) or 0) + 1
+                return False
+        return True
 
     if not requires_light:
         for row in ranked_rows:
-            if matches_tier1_criteria(criteria, row):
+            if _passes_non_missing(row):
                 filtered_rows.append(row)
                 payload = _build_npl_payload(row, diagnostic=None)
                 partial_payload.append(payload)
@@ -354,7 +452,7 @@ def _run_npl_find_job(job: dict) -> dict:
         with ThreadPoolExecutor(max_workers=6) as pool:
             future_map = {}
             for row in ranked_rows:
-                if not matches_tier1_criteria([c for c in criteria if c.get("type") != "missing_service_page_light"], row):
+                if not _passes_non_missing(row):
                     continue
                 place_id = str(row.get("place_id") or "")
                 if not place_id:
@@ -366,8 +464,11 @@ def _run_npl_find_job(job: dict) -> dict:
                     lw = cached.get("result") or {}
                     checked += 1
                     if lw.get("matches"):
+                        row["missing_service_page_match"] = True
                         filtered_rows.append(row)
                         partial_payload.append(_build_npl_payload(row, diagnostic=None))
+                    else:
+                        filtered_out_by_criterion["missing_service_page"] = int(filtered_out_by_criterion.get("missing_service_page") or 0) + 1
                     continue
                 future = pool.submit(run_lightweight_service_page_check, row.get("website"), criterion, 5)
                 future_map[future] = (row, ckey)
@@ -383,8 +484,11 @@ def _run_npl_find_job(job: dict) -> dict:
                 if place_id:
                     upsert_ask_lightweight_cache(place_id, ckey, lw)
                 if lw.get("matches"):
+                    row["missing_service_page_match"] = True
                     filtered_rows.append(row)
                     partial_payload.append(_build_npl_payload(row, diagnostic=None))
+                else:
+                    filtered_out_by_criterion["missing_service_page"] = int(filtered_out_by_criterion.get("missing_service_page") or 0) + 1
                 if checked % 5 == 0 or len(partial_payload) == limit:
                     update_job_status(
                         job_id,
@@ -411,11 +515,17 @@ def _run_npl_find_job(job: dict) -> dict:
     verified_payload: list[dict] = []
 
     if requires_verified:
-        candidates_for_verify = sorted(
+        candidates_sorted_for_verify = sorted(
             filtered_rows,
-            key=lambda x: float(x.get("rank_key") or 0),
-            reverse=True,
-        )[: min(max(limit * 3, limit), 25)]
+            key=lambda x: (
+                -float(x.get("rank_key") or 0),
+                -int(x.get("user_ratings_total") or 0),
+                str(x.get("place_id") or ""),
+            ),
+        )
+        verify_top_n = min(max(verify_top_n_override or min(max(limit * 3, limit), 25), 1), 60)
+        verify_next_n = min(max(verify_next_n_override or 0, 0), 60)
+        candidates_for_verify = candidates_sorted_for_verify[:verify_top_n]
 
         def _verify_row(row: dict) -> dict:
             result = run_diagnostic(
@@ -492,32 +602,375 @@ def _run_npl_find_job(job: dict) -> dict:
                 if len(verified_payload) >= limit:
                     break
 
-        verified_payload.sort(key=lambda x: float(x.get("rank_score") or 0), reverse=True)
+        if len(verified_payload) < limit and verify_next_n > 0:
+            next_batch = candidates_sorted_for_verify[verify_top_n: verify_top_n + verify_next_n]
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                future_map = {pool.submit(_verify_row, r): r for r in next_batch}
+                for fut in as_completed(future_map):
+                    verified_progress["processed"] += 1
+                    try:
+                        one = fut.result()
+                        if one.get("verified_match") and one.get("payload"):
+                            verified_payload.append(one["payload"])
+                    except Exception:
+                        verified_progress["failed"] += 1
+                        logger.exception("Verified ask row failed (fallback batch)")
+                    if len(verified_payload) >= limit:
+                        break
+
+        verified_payload.sort(
+            key=lambda x: (
+                -float(x.get("rank_score") or 0),
+                -int(x.get("user_ratings_total") or 0),
+                str(x.get("place_id") or ""),
+            ),
+        )
         prospects = verified_payload[:limit]
         total_matches = len(verified_payload)
     else:
-        filtered_rows.sort(key=lambda x: float(x.get("rank_key") or 0), reverse=True)
+        filtered_rows = _stable_sort_rows(filtered_rows)
         top_rows = filtered_rows[:limit]
         prospects = [_build_npl_payload(r, diagnostic=None) for r in top_rows]
         total_matches = len(filtered_rows)
+
+    criterion_that_eliminated_most = None
+    if filtered_out_by_criterion:
+        criterion_that_eliminated_most = max(
+            filtered_out_by_criterion.items(),
+            key=lambda kv: int(kv[1] or 0),
+        )[0]
 
     return {
         "phase": "completed",
         "intent": intent,
         "accuracy_mode": accuracy_mode,
         "criteria": criteria,
+        "applied_criteria": applied_criteria,
+        "must_not": must_not,
+        "unsupported_request_parts": unsupported_request_parts,
+        "unsupported_parts": unsupported_request_parts,
+        "unsupported_message": (
+            f"We don't check {', '.join(unsupported_request_parts)}; results were filtered only by supported Neyma criteria."
+            if unsupported_request_parts
+            else None
+        ),
         "requires_lightweight": requires_light,
         "requires_verified": requires_verified,
         "total_matches": total_matches,
-        "prospects": prospects,
+        "total_scanned": score_progress["processed"] or total_candidates,
+        "filtered_out_by_criterion": filtered_out_by_criterion,
+        "criterion_that_eliminated_most": criterion_that_eliminated_most,
+        "no_results_suggestion": (
+            f"No matches. We scanned {score_progress['processed'] or total_candidates} prospects; most exclusions from {criterion_that_eliminated_most}. Try relaxing {criterion_that_eliminated_most} or expanding the area."
+            if total_matches == 0 and criterion_that_eliminated_most
+            else None
+        ),
+        "prospects": prospects[:20],
         "progress": {
             "candidates_found": total_candidates,
             "scored": score_progress["processed"],
             "failed": score_progress["failed"],
             "verified_processed": verified_progress["processed"] if requires_verified else 0,
-            "list_count": len(prospects),
+            "list_count": len(prospects[:20]),
         },
     }
+
+
+def _criterion_to_key(c: dict) -> str:
+    ctype = str(c.get("type") or "").strip()
+    svc = str(c.get("service") or "").strip().lower()
+    if ctype == "missing_service_page" and svc:
+        return f"{ctype}:{svc}"
+    return ctype
+
+
+def _key_to_criterion(key: str) -> dict:
+    raw = str(key or "").strip()
+    if ":" in raw:
+        ctype, svc = raw.split(":", 1)
+        return {"type": ctype.strip(), "service": svc.strip() or None}
+    return {"type": raw, "service": None}
+
+
+def _validate_filter_keys(keys: list[str], allowed: set[str]) -> list[str]:
+    out: list[str] = []
+    seen = set()
+    for k in keys:
+        kk = str(k or "").strip()
+        if not kk or kk in seen:
+            continue
+        if kk in allowed:
+            out.append(kk)
+            seen.add(kk)
+    return out
+
+
+def _fallback_plan_update(
+    plan_state: dict,
+    telemetry: dict,
+    system_limits: dict,
+    core_criteria: set[str],
+) -> dict:
+    radius = int(plan_state.get("radius_miles") or 12)
+    cap = int(plan_state.get("candidate_cap") or 40)
+    hard = list(plan_state.get("hard_filters") or [])
+    soft = list(plan_state.get("soft_filters_rank_only") or [])
+    matched = int(telemetry.get("matched_count") or 0)
+
+    if matched > 0:
+        return {
+            "plan_update": {
+                "radius_miles": radius,
+                "candidate_cap": cap,
+                "filter_strategy": {
+                    "hard_filters": hard,
+                    "soft_filters_rank_only": soft,
+                    "relaxation_order": [],
+                },
+                "verification_strategy": {
+                    "verify_top_n": int(plan_state.get("verify_top_n") or 5),
+                    "fallback_if_too_few_verified": {"verify_next_n": int(plan_state.get("verify_next_n") or 5)},
+                },
+                "stop_when": {
+                    "min_results": int(system_limits.get("min_results") or 5),
+                    "max_iterations": int(system_limits.get("max_iterations") or 4),
+                    "max_minutes": int(system_limits.get("max_minutes") or 15),
+                },
+            },
+            "stop_reason": None,
+        }
+
+    max_radius = int(system_limits.get("max_radius_miles") or 30)
+    max_cap = int(system_limits.get("max_candidate_cap") or 120)
+    relaxation_order: list[dict] = []
+
+    if radius < max_radius:
+        radius = min(max_radius, radius + 5)
+        relaxation_order.append({"action": "increase_radius_miles", "to": radius})
+    elif cap < max_cap:
+        cap = min(max_cap, cap + 20)
+        relaxation_order.append({"action": "increase_candidate_cap", "to": cap})
+    else:
+        movable = [k for k in hard if k not in core_criteria]
+        if movable:
+            m = movable[0]
+            hard = [k for k in hard if k != m]
+            if m not in soft:
+                soft.append(m)
+            relaxation_order.append({"action": "move_hard_to_soft", "criterion": m})
+
+    return {
+        "plan_update": {
+            "radius_miles": radius,
+            "candidate_cap": cap,
+            "filter_strategy": {
+                "hard_filters": hard,
+                "soft_filters_rank_only": soft,
+                "relaxation_order": relaxation_order,
+            },
+            "verification_strategy": {
+                "verify_top_n": int(plan_state.get("verify_top_n") or 5),
+                "fallback_if_too_few_verified": {"verify_next_n": int(plan_state.get("verify_next_n") or 5)},
+            },
+            "stop_when": {
+                "min_results": int(system_limits.get("min_results") or 5),
+                "max_iterations": int(system_limits.get("max_iterations") or 4),
+                "max_minutes": int(system_limits.get("max_minutes") or 15),
+            },
+        },
+        "stop_reason": None,
+    }
+
+
+def _run_agentic_scan_job(job: dict) -> dict:
+    job_id = job["id"]
+    inp = job.get("input", {}) or {}
+    normalized_intent = dict(inp.get("intent") or {})
+    accuracy_mode = str(inp.get("accuracy_mode") or "fast").strip().lower()
+    if accuracy_mode not in {"fast", "verified"}:
+        accuracy_mode = "fast"
+
+    limit = max(1, min(int(normalized_intent.get("limit") or 10), 20))
+    base_criteria, _ = sanitize_criteria(normalized_intent.get("criteria") or [], [])
+    must_not, _ = sanitize_must_not(normalized_intent.get("must_not") or [], [])
+    allowed_keys = {_criterion_to_key(c) for c in base_criteria}
+    core_criteria = {k for k in allowed_keys if k.startswith("missing_service_page") or k.startswith("primary_constraint_")}
+
+    system_limits = {
+        "max_radius_miles": int((inp.get("system_limits") or {}).get("max_radius_miles") or 40),
+        "max_candidate_cap": int((inp.get("system_limits") or {}).get("max_candidate_cap") or 140),
+        "max_iterations": int((inp.get("system_limits") or {}).get("max_iterations") or 4),
+        "max_verify_per_iteration": int((inp.get("system_limits") or {}).get("max_verify_per_iteration") or 10),
+        "min_results": int((inp.get("system_limits") or {}).get("min_results") or limit),
+        "max_minutes": int((inp.get("system_limits") or {}).get("max_minutes") or 15),
+    }
+
+    plan_state = {
+        "radius_miles": int((normalized_intent.get("notes_for_executor") or {}).get("radius_miles_hint") or 12),
+        "candidate_cap": min(max(limit * 2, 20), system_limits["max_candidate_cap"]),
+        "hard_filters": sorted(allowed_keys),
+        "soft_filters_rank_only": [],
+        "verify_top_n": min(max(limit, 3), system_limits["max_verify_per_iteration"]),
+        "verify_next_n": min(max(limit, 3), system_limits["max_verify_per_iteration"]),
+    }
+
+    started_at = time.time()
+    iterations: list[dict] = []
+    best_result: dict | None = None
+    stop_reason: str | None = None
+
+    idx = 1
+    while idx <= system_limits["max_iterations"]:
+        elapsed = time.time() - started_at
+        if elapsed / 60.0 > system_limits["max_minutes"]:
+            stop_reason = "max_minutes_reached"
+            break
+
+        hard_keys = _validate_filter_keys(list(plan_state.get("hard_filters") or []), allowed_keys)
+        soft_keys = _validate_filter_keys(list(plan_state.get("soft_filters_rank_only") or []), allowed_keys)
+        hard_criteria = [_key_to_criterion(k) for k in hard_keys]
+        soft_criteria = [_key_to_criterion(k) for k in soft_keys]
+
+        iter_intent = dict(normalized_intent)
+        iter_intent["criteria"] = hard_criteria
+        iter_intent["must_not"] = must_not
+        iter_intent["soft_filters_rank_only"] = soft_criteria
+        iter_intent["execution_overrides"] = {
+            "radius_miles": max(1, min(int(plan_state["radius_miles"]), system_limits["max_radius_miles"])),
+            "candidate_cap": max(20, min(int(plan_state["candidate_cap"]), system_limits["max_candidate_cap"])),
+            "verify_top_n": max(1, min(int(plan_state["verify_top_n"]), system_limits["max_verify_per_iteration"])),
+            "verify_next_n": max(0, min(int(plan_state["verify_next_n"]), system_limits["max_verify_per_iteration"])),
+        }
+
+        scan_result = _run_npl_find_job({
+            "id": job_id,
+            "input": {
+                "intent": iter_intent,
+                "accuracy_mode": accuracy_mode,
+            },
+        })
+
+        matched_count = int(scan_result.get("total_matches") or 0)
+        total_scanned = int(scan_result.get("total_scanned") or 0)
+        telemetry = {
+            "iteration": idx,
+            "candidate_count": total_scanned,
+            "matched_count": matched_count,
+            "breakdown_by_filter": scan_result.get("filtered_out_by_criterion") or {},
+            "time_elapsed_seconds": int(time.time() - started_at),
+            "accuracy_mode": accuracy_mode,
+            "verification_yield": (matched_count / max(1, total_scanned)) if accuracy_mode == "verified" else None,
+        }
+
+        iter_summary = {
+            "iteration": idx,
+            "radius_miles": iter_intent["execution_overrides"]["radius_miles"],
+            "candidate_cap": iter_intent["execution_overrides"]["candidate_cap"],
+            "hard_filters": hard_keys,
+            "soft_filters_rank_only": soft_keys,
+            "telemetry": telemetry,
+            "matches": matched_count,
+        }
+        iterations.append(iter_summary)
+
+        if best_result is None or int(scan_result.get("total_matches") or 0) > int(best_result.get("total_matches") or 0):
+            best_result = scan_result
+
+        if total_scanned == 0 and matched_count == 0:
+            stop_reason = "no_candidates_from_places_api"
+            update_job_status(
+                job_id,
+                "running",
+                result={
+                    "phase": "agentic_iteration",
+                    "intent": normalized_intent,
+                    "accuracy_mode": accuracy_mode,
+                    "iterations": iterations,
+                    "progress": {
+                        "iteration": idx,
+                        "candidates_found": 0,
+                        "matched_count": 0,
+                        "max_iterations": system_limits["max_iterations"],
+                        "fetch_stopped_reason": "no_results_after_bounded_queries",
+                    },
+                    "partial_results": [],
+                },
+            )
+            break
+
+        update_job_status(
+            job_id,
+            "running",
+            result={
+                "phase": "agentic_iteration",
+                "intent": normalized_intent,
+                "accuracy_mode": accuracy_mode,
+                "iterations": iterations,
+                "progress": {
+                    "iteration": idx,
+                    "candidates_found": total_scanned,
+                    "matched_count": matched_count,
+                    "max_iterations": system_limits["max_iterations"],
+                },
+                "partial_results": (scan_result.get("prospects") or [])[:limit],
+            },
+        )
+
+        if matched_count >= system_limits["min_results"]:
+            stop_reason = "min_results_reached"
+            break
+
+        llm_update = planner_llm_update(
+            normalized_intent=normalized_intent,
+            telemetry=telemetry,
+            system_limits=system_limits,
+        )
+        plan_update = (llm_update.get("plan_update") if isinstance(llm_update, dict) else None) or {}
+        if not plan_update:
+            plan_update = _fallback_plan_update(plan_state, telemetry, system_limits, core_criteria).get("plan_update") or {}
+
+        fs = plan_update.get("filter_strategy") if isinstance(plan_update.get("filter_strategy"), dict) else {}
+        hard_new = _validate_filter_keys([str(x) for x in (fs.get("hard_filters") or [])], allowed_keys) or hard_keys
+        soft_new = _validate_filter_keys([str(x) for x in (fs.get("soft_filters_rank_only") or [])], allowed_keys)
+
+        plan_state["radius_miles"] = max(1, min(int(plan_update.get("radius_miles") or plan_state["radius_miles"]), system_limits["max_radius_miles"]))
+        plan_state["candidate_cap"] = max(20, min(int(plan_update.get("candidate_cap") or plan_state["candidate_cap"]), system_limits["max_candidate_cap"]))
+        plan_state["hard_filters"] = hard_new
+        plan_state["soft_filters_rank_only"] = soft_new
+
+        verify_strategy = plan_update.get("verification_strategy") if isinstance(plan_update.get("verification_strategy"), dict) else {}
+        if verify_strategy:
+            plan_state["verify_top_n"] = max(1, min(int(verify_strategy.get("verify_top_n") or plan_state["verify_top_n"]), system_limits["max_verify_per_iteration"]))
+            fallback = verify_strategy.get("fallback_if_too_few_verified") if isinstance(verify_strategy.get("fallback_if_too_few_verified"), dict) else {}
+            plan_state["verify_next_n"] = max(1, min(int(fallback.get("verify_next_n") or plan_state["verify_next_n"]), system_limits["max_verify_per_iteration"]))
+
+        stop_when = plan_update.get("stop_when") if isinstance(plan_update.get("stop_when"), dict) else {}
+        if stop_when:
+            system_limits["min_results"] = max(1, min(int(stop_when.get("min_results") or system_limits["min_results"]), 20))
+            system_limits["max_iterations"] = max(1, min(int(stop_when.get("max_iterations") or system_limits["max_iterations"]), 8))
+            system_limits["max_minutes"] = max(1, min(int(stop_when.get("max_minutes") or system_limits["max_minutes"]), 45))
+        idx += 1
+
+    if stop_reason is None:
+        stop_reason = "max_iterations_reached"
+
+    final = best_result or {
+        "prospects": [],
+        "total_matches": 0,
+        "total_scanned": 0,
+        "filtered_out_by_criterion": {},
+        "criterion_that_eliminated_most": None,
+        "no_results_suggestion": "No matches. Try expanding the area or relaxing a filter.",
+    }
+    final["iterations"] = iterations
+    final["stop_reason"] = stop_reason
+    final["phase"] = "completed"
+    final["agentic"] = {
+        "enabled": True,
+        "system_limits": system_limits,
+        "final_plan": plan_state,
+    }
+    return final
 
 
 def _process_job(job: dict) -> None:
@@ -552,6 +1005,12 @@ def _process_job(job: dict) -> None:
             result = _run_npl_find_job(job)
             update_job_status(job_id, "completed", result=result)
             logger.info("NPL job %s completed", job_id)
+            return
+
+        if job_type == "ask_agentic_scan":
+            result = _run_agentic_scan_job(job)
+            update_job_status(job_id, "completed", result=result)
+            logger.info("Agentic ask job %s completed", job_id)
             return
 
         result = run_diagnostic(

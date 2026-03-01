@@ -139,7 +139,7 @@ export default function TerritoryResultsPage() {
       setActionProspectId(row.prospect_id || -1);
       setActionLabel("Building your brief...");
       const id = row.diagnostic_id && row.full_brief_ready ? row.diagnostic_id : await ensureBrief(row);
-      router.push(`/diagnostic/${id}`);
+      router.push(`/diagnostic/${id}?from=territory&scanId=${encodeURIComponent(scanId)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to open brief");
     } finally {

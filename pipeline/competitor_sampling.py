@@ -10,7 +10,11 @@ import os
 import math
 import logging
 import statistics
+import json
+import re
+import time
 from typing import Dict, Any, List, Optional, Tuple
+from urllib.parse import urlparse, urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,15 @@ MIN_COMPETITORS_BEFORE_EXPAND = 5
 
 KM_PER_MILE = 1.609344
 MILES_PER_KM = 1.0 / KM_PER_MILE
+
+SERVICE_PATH_TOKENS = {
+    "implant", "implants", "invisalign", "veneer", "veneers",
+    "cosmetic", "sedation", "emergency", "crown", "crowns",
+    "sleep", "apnea", "orthodontic", "orthodontics", "braces",
+    "service", "services", "treatment", "treatments", "procedure",
+    "procedures", "whitening", "makeover", "dental", "dentistry",
+    "root-canal", "pediatric",
+}
 
 
 def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -130,6 +143,326 @@ def fetch_competitors_nearby(
     return (out[:MAX_COMPETITORS], radius_used_miles)
 
 
+def _same_domain(base: str, url: str) -> bool:
+    try:
+        b = urlparse(base).netloc.lower().replace("www.", "")
+        u = urlparse(url).netloc.lower().replace("www.", "")
+        return b == u
+    except Exception:
+        return False
+
+
+def _normalize_url(base: str, href: str) -> Optional[str]:
+    try:
+        full = urljoin(base, href)
+        parsed = urlparse(full)
+        if parsed.scheme not in ("http", "https"):
+            return None
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    except Exception:
+        return None
+
+
+def _fetch_html_fast(url: str, timeout_sec: float = 3.0) -> Optional[str]:
+    try:
+        import requests
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        r = requests.get(
+            url,
+            timeout=timeout_sec,
+            allow_redirects=True,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+            },
+        )
+        if r.status_code == 200 and r.text:
+            return r.text
+    except Exception:
+        return None
+    return None
+
+
+def _extract_links(html: str, base_url: str) -> List[str]:
+    if not html:
+        return []
+    out: List[str] = []
+    seen = set()
+    for m in re.finditer(r'href\s*=\s*["\']([^"\'#]+)["\']', html, re.I):
+        full = _normalize_url(base_url, m.group(1).strip())
+        if full and _same_domain(base_url, full) and full not in seen:
+            seen.add(full)
+            out.append(full)
+    return out[:200]
+
+
+def _is_service_like_path(url: str) -> bool:
+    path = (urlparse(url).path or "").lower()
+    tokens = set(re.findall(r"[a-z0-9]+", path))
+    if not tokens:
+        return False
+    return any(t in tokens for t in SERVICE_PATH_TOKENS)
+
+
+def _fetch_sitemap_urls_fast(base_url: str, timeout_sec: float = 3.0) -> List[str]:
+    parsed = urlparse(base_url)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    candidates = ["/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml"]
+    out: List[str] = []
+    for sp in candidates:
+        xml = _fetch_html_fast(root + sp, timeout_sec=timeout_sec)
+        if not xml:
+            continue
+        for m in re.finditer(r"<loc>\s*(https?://[^<]+?)\s*</loc>", xml, re.I):
+            u = m.group(1).strip()
+            if _same_domain(base_url, u):
+                norm = _normalize_url(base_url, u)
+                if norm and norm not in out:
+                    out.append(norm)
+                    if len(out) >= 80:
+                        return out
+        if out:
+            break
+    return out
+
+
+def _strip_html(html: str) -> str:
+    text = re.sub(r"<script[^>]*>[\s\S]*?</script>", " ", html or "", flags=re.I)
+    text = re.sub(r"<style[^>]*>[\s\S]*?</style>", " ", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.lower().strip()
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"[a-zA-Z0-9']+", text or ""))
+
+
+def _has_schema(html: str) -> bool:
+    lower = (html or "").lower()
+
+    # Strict JSON-LD parsing: only count relevant schema types.
+    for m in re.finditer(
+        r"<script[^>]*type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+        html or "",
+        re.I | re.S,
+    ):
+        raw = (m.group(1) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+        nodes = []
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("@graph"), list):
+                nodes.extend([n for n in parsed.get("@graph") if isinstance(n, dict)])
+            nodes.append(parsed)
+        elif isinstance(parsed, list):
+            nodes.extend([n for n in parsed if isinstance(n, dict)])
+        for node in nodes:
+            types = node.get("@type")
+            type_vals: List[str] = []
+            if isinstance(types, str):
+                type_vals = [types.lower()]
+            elif isinstance(types, list):
+                type_vals = [str(t).lower() for t in types]
+            if any(
+                t in ("service", "faqpage", "localbusiness", "medicalbusiness", "dentist")
+                or t.endswith("service")
+                for t in type_vals
+            ):
+                return True
+
+    # Microdata fallback (strict markers only)
+    return any(
+        marker in lower
+        for marker in (
+            "schema.org/service",
+            "schema.org/faqpage",
+            "schema.org/localbusiness",
+            "schema.org/medicalbusiness",
+            "schema.org/dentist",
+        )
+    )
+
+
+def _compute_lightweight_site_metrics(
+    website_url: str,
+    page_timeout_sec: float,
+    max_pages: int,
+) -> Optional[Dict[str, float]]:
+    base = website_url if website_url.startswith(("http://", "https://")) else f"https://{website_url}"
+    homepage = _fetch_html_fast(base, timeout_sec=page_timeout_sec)
+    if not homepage:
+        return None
+
+    candidate_urls: List[str] = []
+    for u in _extract_links(homepage, base):
+        if _is_service_like_path(u):
+            candidate_urls.append(u)
+    for u in _fetch_sitemap_urls_fast(base, timeout_sec=page_timeout_sec):
+        if _is_service_like_path(u) and u not in candidate_urls:
+            candidate_urls.append(u)
+        if len(candidate_urls) >= max_pages * 3:
+            break
+
+    if not candidate_urls:
+        return {
+            "service_page_count": 0.0,
+            "pages_with_schema": 0.0,
+            "avg_word_count": 0.0,
+        }
+
+    sampled = candidate_urls[:max_pages]
+    words: List[int] = []
+    with_schema = 0
+    fetched = 0
+    for u in sampled:
+        html = _fetch_html_fast(u, timeout_sec=page_timeout_sec)
+        if not html:
+            continue
+        fetched += 1
+        words.append(_word_count(_strip_html(html)))
+        if _has_schema(html):
+            with_schema += 1
+
+    if fetched == 0:
+        return {
+            "service_page_count": 0.0,
+            "pages_with_schema": 0.0,
+            "avg_word_count": 0.0,
+        }
+    return {
+        "service_page_count": float(fetched),
+        "pages_with_schema": float(with_schema),
+        "avg_word_count": float(sum(words) / len(words)) if words else 0.0,
+    }
+
+
+def enrich_competitors_with_site_metrics(
+    competitors: List[Dict[str, Any]],
+    vertical: str = "dentist",
+    max_competitors_to_crawl: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Enrich competitor rows with lightweight website-derived metrics used by competitive_delta:
+    - service_page_count
+    - pages_with_schema
+    - avg_word_count
+
+    Gated by env:
+    - NEYMA_ENABLE_COMPETITOR_SITE_CRAWL: true/false (default true)
+    - NEYMA_COMPETITOR_SITE_CRAWL_MAX: max competitors to crawl (default 1)
+    - NEYMA_COMPETITOR_SITE_CRAWL_BUDGET_SEC: global wall-clock budget (default 8)
+    - NEYMA_COMPETITOR_SITE_CRAWL_PAGE_TIMEOUT_SEC: per-page timeout (default 3)
+    - NEYMA_COMPETITOR_SITE_CRAWL_MAX_PAGES_PER_SITE: sampled pages/site (default 6)
+    """
+    raw_flag = (os.getenv("NEYMA_ENABLE_COMPETITOR_SITE_CRAWL", "true") or "").strip().lower()
+    if raw_flag not in ("1", "true", "yes", "on"):
+        return competitors
+    if not competitors:
+        return competitors
+
+    crawl_max = max_competitors_to_crawl
+    if crawl_max is None:
+        try:
+            crawl_max = int(os.getenv("NEYMA_COMPETITOR_SITE_CRAWL_MAX", "1"))
+        except ValueError:
+            crawl_max = 1
+    crawl_max = max(0, min(int(crawl_max), len(competitors)))
+    if crawl_max <= 0:
+        return competitors
+
+    try:
+        from pipeline.enrich import PlaceDetailsEnricher
+        enricher = PlaceDetailsEnricher()
+    except Exception as e:
+        logger.warning("Could not initialize PlaceDetailsEnricher for competitor site metrics: %s", e)
+        return competitors
+
+    try:
+        budget_sec = float(os.getenv("NEYMA_COMPETITOR_SITE_CRAWL_BUDGET_SEC", "8"))
+    except ValueError:
+        budget_sec = 8.0
+    try:
+        page_timeout_sec = float(os.getenv("NEYMA_COMPETITOR_SITE_CRAWL_PAGE_TIMEOUT_SEC", "3"))
+    except ValueError:
+        page_timeout_sec = 3.0
+    try:
+        max_pages_per_site = int(os.getenv("NEYMA_COMPETITOR_SITE_CRAWL_MAX_PAGES_PER_SITE", "6"))
+    except ValueError:
+        max_pages_per_site = 6
+    max_pages_per_site = max(1, min(max_pages_per_site, 12))
+
+    t0 = time.monotonic()
+    out: List[Dict[str, Any]] = []
+    crawled = 0
+    for idx, comp in enumerate(competitors):
+        row = dict(comp or {})
+        row["competitor_site_metric_status"] = "not_attempted"
+        if idx >= crawl_max:
+            out.append(row)
+            continue
+        if (time.monotonic() - t0) >= budget_sec:
+            row["competitor_site_metric_status"] = "budget_exceeded"
+            out.append(row)
+            continue
+
+        place_id = row.get("place_id")
+        if not place_id:
+            row["competitor_site_metric_status"] = "missing_place_id"
+            out.append(row)
+            continue
+
+        try:
+            details = enricher.get_place_details(place_id, fields=["website"])
+        except Exception as e:
+            row["competitor_site_metric_status"] = f"place_details_error:{type(e).__name__}"
+            out.append(row)
+            continue
+
+        website = (details or {}).get("website") if isinstance(details, dict) else None
+        if not website:
+            row["competitor_site_metric_status"] = "no_website"
+            out.append(row)
+            continue
+
+        try:
+            metrics = _compute_lightweight_site_metrics(
+                website_url=str(website),
+                page_timeout_sec=page_timeout_sec,
+                max_pages=max_pages_per_site,
+            )
+            row["competitor_website"] = website
+            if metrics is None:
+                row["competitor_site_metric_status"] = "crawl_failed"
+            else:
+                row["service_page_count"] = int(metrics.get("service_page_count") or 0)
+                row["pages_with_schema"] = int(metrics.get("pages_with_schema") or 0)
+                row["avg_word_count"] = float(metrics.get("avg_word_count") or 0)
+                row["competitor_site_metric_status"] = "ok"
+                crawled += 1
+        except Exception as e:
+            row["competitor_site_metric_status"] = f"crawl_error:{type(e).__name__}"
+
+        out.append(row)
+
+    logger.info(
+        "Competitor site metrics (fast): crawled=%d/%d attempted=%d total=%d elapsed=%.2fs",
+        crawled,
+        crawl_max,
+        min(crawl_max, len(competitors)),
+        len(competitors),
+        (time.monotonic() - t0),
+    )
+    return out
+
+
 def _review_positioning_tier(review_ratio: Optional[float]) -> Optional[str]:
     if review_ratio is None:
         return None
@@ -166,6 +499,11 @@ def build_competitive_snapshot(
     competitive_profile, competitor_summary (nearest, strongest by reviews),
     competitive_context_summary, confidence.
     """
+    competitor_site_checked = sum(
+        1
+        for c in (competitors or [])
+        if isinstance(c, dict) and c.get("service_page_count") is not None
+    )
     out: Dict[str, Any] = {
         "dentists_sampled": 0,
         "search_radius_used_miles": search_radius_used_miles if search_radius_used_miles is not None else 2,
@@ -184,7 +522,7 @@ def build_competitive_snapshot(
         "target_gap_from_median": None,
         "pct_competitors_with_blog": None,
         "pct_competitors_with_booking": None,
-        "competitors_with_website_checked": 0,
+        "competitors_with_website_checked": int(competitor_site_checked),
     }
 
     if not competitors:

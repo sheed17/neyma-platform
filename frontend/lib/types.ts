@@ -15,6 +15,10 @@ export interface ServiceIntelligence {
   detected_services: string[];
   missing_services: string[];
   schema_detected?: boolean;
+  high_value_services?: Array<Record<string, unknown>>;
+  high_value_summary?: Record<string, unknown>;
+  high_value_service_leverage?: "high" | "moderate" | "low" | string;
+  service_page_analysis_v2?: Record<string, unknown>;
 }
 
 export interface RevenueBreakdown {
@@ -46,7 +50,7 @@ export interface BriefExecutiveDiagnosis {
     leverage_drivers?: {
       missing_high_value_pages?: boolean;
       market_density_high?: boolean;
-      schema_missing?: boolean;
+      structured_trust_weak?: boolean;
       paid_active?: boolean;
       review_deficit?: boolean;
     };
@@ -66,6 +70,7 @@ export interface BriefCompetitiveContext {
   line1?: string;
   line2?: string;
   line3?: string;
+  line3_items?: string[];
 }
 
 export interface BriefDemandSignals {
@@ -193,6 +198,12 @@ export type Brief = {
   strategic_gap?: BriefStrategicGap | null;
   demand_signals?: BriefDemandSignals;
   high_ticket_gaps?: BriefHighTicketGaps;
+  service_page_analysis?: {
+    services?: Array<Record<string, unknown>>;
+    summary?: Record<string, unknown>;
+    leverage?: string;
+    v2?: Record<string, unknown>;
+  } | null;
   revenue_upside_capture_gap?: BriefRevenueUpsideCaptureGap | null;
   conversion_infrastructure?: BriefConversionInfrastructure;
   competitive_delta?: BriefCompetitiveDelta | null;
@@ -214,6 +225,8 @@ export type DiagnosticResponse = {
   business_name: string;
   city: string;
   state?: string | null;
+  phone?: string | null;
+  website?: string | null;
   opportunity_profile: string;
   constraint: string;
   primary_leverage: string;
@@ -390,21 +403,28 @@ export type DeepBriefStartResponse = {
 
 export type AskIntent = {
   query: string;
-  city: string;
+  query_raw?: string;
+  city: string | null;
   state?: string | null;
-  vertical: string;
+  vertical: string | null;
   limit: number;
   criteria: Array<Record<string, unknown>>;
+  must_not?: Array<Record<string, unknown>>;
+  unsupported_parts?: string[];
+  missing_required?: string[];
+  intent_confidence?: "high" | "medium" | "low";
+  accuracy_mode?: "fast" | "verified";
   requires_deep?: boolean;
   requires_lightweight?: boolean;
 };
 
 export type AskStartResponse = {
-  job_id: string;
-  status: string;
+  job_id: string | null;
+  status: string; // pending | requires_confirmation
   intent: AskIntent;
   message: string;
   accuracy_mode?: "fast" | "verified";
+  requires_confirmation?: boolean;
 };
 
 export type AskResultsResponse = {

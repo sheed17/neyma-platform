@@ -2,6 +2,18 @@
 FastAPI backend for lead scoring engine.
 """
 
+import os
+from pathlib import Path
+
+# Load .env from project root so OPENAI_API_KEY, GOOGLE_PLACES_API_KEY, etc. are set
+# when starting the server (no need to export in shell).
+try:
+    from dotenv import load_dotenv
+    _project_root = Path(__file__).resolve().parent.parent
+    load_dotenv(_project_root / ".env")
+except ImportError:
+    pass
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

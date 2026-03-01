@@ -29,6 +29,10 @@ class ServiceIntelligence(BaseModel):
     detected_services: List[str] = []
     missing_services: List[str] = []
     schema_detected: Optional[bool] = None
+    high_value_services: List[Dict[str, Any]] = []
+    high_value_summary: Optional[Dict[str, Any]] = None
+    high_value_service_leverage: Optional[str] = None
+    service_page_analysis_v2: Optional[Dict[str, Any]] = None
 
 
 class RevenueBreakdown(BaseModel):
@@ -58,6 +62,8 @@ class DiagnosticResponse(BaseModel):
     business_name: str
     city: str
     state: Optional[str] = None
+    phone: Optional[str] = None
+    website: Optional[str] = None
     opportunity_profile: str
     constraint: str
     primary_leverage: str

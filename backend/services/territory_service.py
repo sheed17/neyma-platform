@@ -8,6 +8,7 @@ Tier 2: full diagnostic on-demand (handled by ensure brief endpoint + existing j
 from __future__ import annotations
 
 import logging
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -50,6 +51,8 @@ PLACE_DETAILS_FIELDS = [
 PHONE_RE = re.compile(r"(\+?\d[\d\s().-]{7,}\d)")
 EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 CACHE_TTL_SECONDS = 24 * 60 * 60
+MAX_CONSECUTIVE_EMPTY_PLACE_QUERIES = int(os.getenv("NEYMA_MAX_CONSECUTIVE_EMPTY_PLACE_QUERIES", "20"))
+MAX_ZERO_PLACE_QUERIES_WITH_NO_TOTAL = int(os.getenv("NEYMA_MAX_ZERO_PLACE_QUERIES_WITH_NO_TOTAL", "25"))
 
 
 def run_territory_scan_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -246,6 +249,7 @@ def _fetch_territory_candidates(
     state: Optional[str],
     vertical: str,
     limit: int,
+    radius_miles: Optional[float] = None,
     progress_cb: Optional[Callable[[int, int, int], None]] = None,
 ) -> List[Dict[str, Any]]:
     coords = _geocode_city(city, state=state)
@@ -253,6 +257,11 @@ def _fetch_territory_candidates(
         raise RuntimeError(f"Could not geocode city '{city}'")
 
     city_radius_km = 12.0
+    if radius_miles is not None:
+        try:
+            city_radius_km = max(1.0, min(float(radius_miles) * 1.60934, 96.0))
+        except (TypeError, ValueError):
+            city_radius_km = 12.0
     search_radius_km = 3.0
     max_pages = 2
     grid_points = generate_geo_grid(coords[0], coords[1], city_radius_km, search_radius_km)
@@ -263,20 +272,52 @@ def _fetch_territory_candidates(
     seen_place_ids: set[str] = set()
     total_queries = max(1, len(grid_points) * len(keywords))
     query_count = 0
+    consecutive_empty_queries = 0
+    zero_place_queries_with_no_total = 0
     scored_cap_target = min(max(limit * 2, limit), 50)
     target_unique = min(max(scored_cap_target * 2, scored_cap_target + 10), 140)
     stop_early = False
+    stop_reason: str | None = None
     for lat, lng, radius_m in grid_points:
         for keyword in keywords:
             query_count += 1
+            places_this_query = 0
             for place in fetcher.fetch_all_pages_for_query(lat, lng, radius_m, keyword, max_pages=max_pages):
+                places_this_query += 1
                 raw_places.append(place)
                 pid = str(place.get("place_id") or "").strip()
                 if pid:
                     seen_place_ids.add(pid)
                     if len(seen_place_ids) >= target_unique:
                         stop_early = True
+                        stop_reason = "target_unique_reached"
                         break
+
+            if places_this_query == 0:
+                consecutive_empty_queries += 1
+                if len(raw_places) == 0:
+                    zero_place_queries_with_no_total += 1
+            else:
+                consecutive_empty_queries = 0
+
+            if not stop_early and (
+                consecutive_empty_queries >= MAX_CONSECUTIVE_EMPTY_PLACE_QUERIES
+                or zero_place_queries_with_no_total >= MAX_ZERO_PLACE_QUERIES_WITH_NO_TOTAL
+            ):
+                stop_early = True
+                stop_reason = "no_results_after_bounded_queries"
+                logger.warning(
+                    "Stopping candidate fetch early for %s, %s (%s): %s after %d queries "
+                    "(consecutive_empty=%d, zero_with_no_total=%d).",
+                    city,
+                    state,
+                    vertical,
+                    stop_reason,
+                    query_count,
+                    consecutive_empty_queries,
+                    zero_place_queries_with_no_total,
+                )
+
             if stop_early:
                 if progress_cb:
                     progress_cb(query_count, total_queries, len(raw_places))

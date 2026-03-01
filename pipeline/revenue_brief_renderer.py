@@ -113,6 +113,16 @@ def _review_volume_label_from_tier(tier: Optional[str]) -> str:
     return "Below average"
 
 
+def _format_miles(val: Any) -> str:
+    try:
+        dist = float(val)
+    except (TypeError, ValueError):
+        return str(val) if val is not None else "—"
+    if dist.is_integer():
+        return f"{int(dist)} mi"
+    return f"{dist:.1f} mi"
+
+
 def _service_key_from_text(service_text: Any) -> Optional[Tuple[str, str]]:
     if not isinstance(service_text, str):
         return None
@@ -208,7 +218,6 @@ def compute_opportunity_profile(lead: Dict[str, Any]) -> Dict[str, Any]:
         schema_detected = service.get("schema_detected")
         if schema_detected is None:
             schema_detected = signals.get("signal_has_schema_microdata")
-        schema_missing = (schema_detected is False)
 
         market_density = (cs.get("market_density_score") or "").strip() or (oi.get("competitive_profile") or {}).get("market_density") or ""
         high_density = (market_density == "High")
@@ -245,20 +254,54 @@ def compute_opportunity_profile(lead: Dict[str, Any]) -> Dict[str, Any]:
             or (paid_channels and not isinstance(paid_channels, list))
         )
 
+        # Crawl-based trust structure (schema-independent)
+        v2 = service.get("service_page_analysis_v2") if isinstance(service.get("service_page_analysis_v2"), dict) else {}
+        svc_summary = service.get("high_value_summary") if isinstance(service.get("high_value_summary"), dict) else {}
+        v2_cov = v2.get("service_coverage") if isinstance(v2.get("service_coverage"), dict) else {}
+        v2_conv = v2.get("conversion_readiness") if isinstance(v2.get("conversion_readiness"), dict) else {}
+        v2_trust = v2.get("structured_trust_signals") if isinstance(v2.get("structured_trust_signals"), dict) else {}
+
+        coverage_ratio_val = v2_cov.get("ratio")
+        if coverage_ratio_val is None:
+            coverage_ratio_val = svc_summary.get("service_coverage_ratio")
+        try:
+            coverage_ratio = float(coverage_ratio_val) if coverage_ratio_val is not None else None
+        except (TypeError, ValueError):
+            coverage_ratio = None
+
+        avg_internal_links_val = v2_conv.get("average_internal_links")
+        try:
+            avg_internal_links = float(avg_internal_links_val) if avg_internal_links_val is not None else None
+        except (TypeError, ValueError):
+            avg_internal_links = None
+        avg_inbound_body_val = v2_trust.get("avg_inbound_unique_pages_body_only")
+        try:
+            avg_inbound_body = float(avg_inbound_body_val) if avg_inbound_body_val is not None else None
+        except (TypeError, ValueError):
+            avg_inbound_body = None
+
+        faq_status = str(v2_trust.get("faq_status") or "").strip().lower()
+        faq_missing = faq_status == "not_detected"
+        structured_trust_weak = bool(
+            (coverage_ratio is not None and coverage_ratio < 0.6)
+            or faq_missing
+            or (avg_internal_links is not None and avg_internal_links < 3.0)
+            or (avg_inbound_body is not None and avg_inbound_body < 1.0)
+        )
+
         # Leverage classification inputs:
         # - missing_high_value: at least one high-value service page is missing
         # - high_density: market_density_score == "High"
-        # - schema_missing: schema not detected
         # - paid_active: paid ads signals present
         # - review_deficit: review count below 50% of local average
         #
         # Classification rules (keep deterministic and stable):
-        # - High-Leverage: missing_high_value AND high_density AND (schema_missing OR paid_active OR review_deficit)
-        # - Moderate: missing_high_value AND (high_density OR schema_missing OR paid_active), but not High-Leverage
+        # - High-Leverage: missing_high_value AND high_density
+        # - Moderate: missing_high_value OR (high_density AND (paid_active OR review_deficit))
         # - Low-Leverage: all other cases
-        if missing_high_value and high_density and (schema_missing or paid_active or review_deficit):
+        if missing_high_value and high_density:
             label = "High-Leverage"
-        elif missing_high_value and (high_density or schema_missing or paid_active):
+        elif missing_high_value or (high_density and (paid_active or review_deficit)):
             label = "Moderate"
         else:
             label = "Low-Leverage"
@@ -266,8 +309,8 @@ def compute_opportunity_profile(lead: Dict[str, Any]) -> Dict[str, Any]:
         fragments = []
         if missing_high_value:
             fragments.append("high-ticket service offered but missing dedicated landing page")
-        if schema_missing:
-            fragments.append("schema support missing")
+        if structured_trust_weak:
+            fragments.append("structured trust signals are weak")
         if review_deficit:
             fragments.append("review authority below local market")
         if strong_rating:
@@ -286,7 +329,7 @@ def compute_opportunity_profile(lead: Dict[str, Any]) -> Dict[str, Any]:
             "leverage_drivers": {
                 "missing_high_value_pages": bool(missing_high_value),
                 "market_density_high": bool(high_density),
-                "schema_missing": bool(schema_missing),
+                "structured_trust_weak": bool(structured_trust_weak),
                 "paid_active": bool(paid_active),
                 "review_deficit": bool(review_deficit),
             },
@@ -412,10 +455,7 @@ def compute_organic_visibility(lead: Dict[str, Any]) -> Dict[str, str]:
             reasons_mod.append("some high-ticket services detected but missing dedicated pages")
 
         if has_schema:
-            positive += 1
-            reasons_high.append("schema markup present")
-        else:
-            reasons_low.append("no schema markup detected")
+            reasons_mod.append("schema markup detected")
 
         if pages_crawled >= 50:
             positive += 1
@@ -697,11 +737,11 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
         "revenue_upside_capture_gap": None,
         "demand_signals": {},
         "high_ticket_gaps": {},
+        "service_page_analysis": None,
         "conversion_infrastructure": {},
         "conversion_structure": {},
         "competitive_delta": None,
         "market_saturation": None,
-        "serp_presence": None,
         "review_intelligence": None,
         "geo_coverage": None,
         "authority_proxy": None,
@@ -821,7 +861,7 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
                 + (f"Avg reviews {float(avg_reviews):.0f}" if avg_reviews is not None else "Avg reviews —")
                 + " · "
                 + (f"Avg rating {float(avg_rating_val):.1f}" if avg_rating_val is not None and avg_rating_val != 0 else "Avg rating —")
-                + f" · Density {market_density}"
+                + f" · Density {market_density}."
             )
         vm["competitive_context"]["line2"] = (
             f"Lead: {lead_reviews} reviews" + (f" ({lead_rating})" if lead_rating is not None else "") + f" · Review volume: {review_label} · Tier: {review_tier}"
@@ -833,11 +873,12 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
                 revs = c.get("reviews") or c.get("user_ratings_total") or 0
                 dist = c.get("distance_miles")
                 if dist is not None:
-                    parts.append(f"{name} — {revs} reviews — {dist} mi")
+                    parts.append(f"{name} — {revs} reviews — {_format_miles(dist)}")
                 else:
                     parts.append(f"{name} — {revs} reviews")
             if parts:
-                vm["competitive_context"]["line3"] = "Nearest competitors: " + "; ".join(parts)
+                vm["competitive_context"]["line3"] = "Nearest competitors:"
+                vm["competitive_context"]["line3_items"] = parts
         top5 = comp.get("top_5_avg_reviews")
         median = comp.get("competitor_median_reviews")
         gap_med = comp.get("target_gap_from_median")
@@ -907,8 +948,6 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
     if visibility:
         vm["demand_signals"]["organic_visibility_tier"] = visibility.get("tier", "")
         vm["demand_signals"]["organic_visibility_reason"] = visibility.get("reason", "")
-    if isinstance(lead.get("serp_presence"), dict):
-        vm["serp_presence"] = lead.get("serp_presence")
     last_rev = lead.get("days_since_last_review")
     if last_rev is None:
         last_rev = signals.get("signal_last_review_days_ago")
@@ -946,6 +985,13 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
         vm["high_ticket_gaps"]["service_level_upside"] = svc["service_level_upside"]
     else:
         vm["high_ticket_gaps"]["service_level_upside_available"] = False
+    if isinstance(svc.get("high_value_services"), list):
+        vm["service_page_analysis"] = {
+            "services": svc.get("high_value_services") or [],
+            "summary": svc.get("high_value_summary") or {},
+            "leverage": svc.get("high_value_service_leverage"),
+            "v2": svc.get("service_page_analysis_v2") or {},
+        }
 
     # ---------- 4b) Modeled Revenue Upside — {Primary Service} Capture Gap (deterministic, dental) ----------
     missing_from_oi = (oi.get("service_intel") or {}).get("missing_high_value_pages") if oi else []
@@ -1168,13 +1214,6 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
     if dentists_sampled is not None:
         radius_txt = f" within {radius} mi" if radius is not None else ""
         evidence_list.append(f"Competitors sampled: {dentists_sampled}{radius_txt} (review counts from Places API).")
-    serp = lead.get("serp_presence")
-    if isinstance(serp, dict) and isinstance(serp.get("keywords"), list):
-        kws = [k for k in serp.get("keywords", []) if isinstance(k, dict)]
-        checked = len(kws)
-        top10 = sum(1 for k in kws if k.get("in_top_10"))
-        if checked > 0:
-            evidence_list.append(f"SERP checks: {checked} queries; top 10 for {top10}, not top 10 for {checked - top10}.")
     evidence_from_oi = (rc_oi.get("evidence") or []) if isinstance(rc_oi.get("evidence"), list) else []
     for e in evidence_from_oi[:5]:
         if isinstance(e, str) and e.strip():
@@ -1223,9 +1262,9 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
                     "<p><small>Based on: "
                     + f"missing high-value pages {'✓' if drivers.get('missing_high_value_pages') else '✗'}, "
                     + f"high-density market {'✓' if drivers.get('market_density_high') else '✗'}, "
-                    + f"schema missing {'✓' if drivers.get('schema_missing') else '✗'}, "
                     + f"paid ads active {'✓' if drivers.get('paid_active') else '✗'}, "
-                    + f"review deficit (&lt;50% of local avg) {'✓' if drivers.get('review_deficit') else '✗'}."
+                    + f"review deficit (&lt;50% of local avg) {'✓' if drivers.get('review_deficit') else '✗'}, "
+                    + f"structured trust weak {'✓' if drivers.get('structured_trust_weak') else '✗'}."
                     + "</small></p>"
                 )
         if ed.get("modeled_revenue_upside"):
@@ -1270,6 +1309,9 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
             parts.append(f"<p>{_h(cc['line2'])}</p>")
         if cc.get("line3"):
             parts.append(f"<p>{_h(cc['line3'])}</p>")
+            line3_items = cc.get("line3_items")
+            if isinstance(line3_items, list) and line3_items:
+                parts.append("<ul>" + "".join(f"<li>{_h(item)}</li>" for item in line3_items[:5]) + "</ul>")
         if parts:
             sections.append(
                 "<section class=\"brief-section brief-competitive\">\n  <h2>Competitive Context</h2>\n  "
@@ -1317,7 +1359,7 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
         else:
             parts.append(
                 f"<p><strong>Service pages:</strong> Target {_h(t_pages)} pages with service-like paths "
-                f"({_h(competitor_note or 'Competitor website metrics not run for this brief.')})</p>"
+                f"(e.g. /implants, /cosmetic).</p>"
             )
         t_schema = cd.get("target_pages_with_faq_schema")
         c_schema = cd.get("competitor_avg_pages_with_schema")
@@ -1353,6 +1395,10 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
                 )
         else:
             parts.append("<p class=\"brief-footnote\"><small>Target-only competitive delta for this run.</small></p>")
+        if c_pages is None:
+            parts.append(
+                f"<p class=\"brief-footnote\"><small>{_h(competitor_note or 'Competitor site metrics were not run for this brief; only target metrics are shown.')}</small></p>"
+            )
         sections.append(
             "<section class=\"brief-section brief-competitive-delta\">\n  <h2>Competitive Delta</h2>\n  "
             + "\n  ".join(parts)
@@ -1382,40 +1428,15 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
             vis_line += f" — {_h(ds['organic_visibility_reason'])}"
         ds_parts.append(f"<p><strong>Organic Visibility:</strong> {vis_line}</p>")
     if ds.get("last_review_days_ago") is not None:
-        est = " (estimated)" if ds.get("last_review_estimated") else ""
-        ds_parts.append(f"<p><strong>Last Review:</strong> ~{_h(ds['last_review_days_ago'])} days ago{est}</p>")
+        ds_parts.append(f"<p><strong>Last Review:</strong> ~{_h(ds['last_review_days_ago'])} days ago</p>")
     if ds.get("review_velocity_30d") is not None:
-        est = " (estimated)" if ds.get("review_velocity_estimated") else ""
-        ds_parts.append(f"<p><strong>Review Velocity:</strong> ~{_h(ds['review_velocity_30d'])} in last 30 days{est}</p>")
+        ds_parts.append(f"<p><strong>Review Velocity:</strong> ~{_h(ds['review_velocity_30d'])} in last 30 days</p>")
     if ds_parts:
         sections.append(
             "<section class=\"brief-section brief-demand\">\n  <h2>Demand Signals</h2>\n  "
             + "\n  ".join(ds_parts)
             + "\n</section>"
         )
-
-    # 3b) SERP Presence snapshot
-    serp = vm.get("serp_presence")
-    if serp and isinstance(serp, dict) and isinstance(serp.get("keywords"), list):
-        rows = []
-        for row in serp["keywords"][:6]:
-            if not isinstance(row, dict):
-                continue
-            kw = row.get("keyword")
-            pos = row.get("position")
-            if pos is None:
-                rows.append(f"<li>{_h(kw)}: not in top 10</li>")
-            else:
-                rows.append(f"<li>{_h(kw)}: position {_h(pos)}</li>")
-        if rows:
-            as_of = serp.get("as_of_date")
-            sections.append(
-                "<section class=\"brief-section brief-serp\">\n  <h2>SERP Presence</h2>\n  <ul>"
-                + " ".join(rows)
-                + "</ul>\n"
-                + (f"<p class=\"brief-footnote\"><small>As of {_h(as_of)}.</small></p>" if as_of else "")
-                + "\n</section>"
-            )
 
     # 3c) Review Intelligence (sample-size framed)
     ri = vm.get("review_intelligence")
@@ -1506,10 +1527,25 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
     if sg and isinstance(sg, dict) and sg.get("competitor_name"):
         cname = _h(sg.get("competitor_name") or "—")
         crev = sg.get("competitor_reviews")
+        lrev = sg.get("lead_reviews")
         dist = sg.get("distance_miles")
         md = _h(sg.get("market_density") or "High")
+        comparison = "relative to that competitor."
+        try:
+            cnum = int(crev) if crev is not None else None
+            lnum = int(lrev) if lrev is not None else None
+            if cnum is not None and lnum is not None:
+                if lnum < cnum:
+                    comparison = "below that competitor."
+                elif lnum > cnum:
+                    comparison = "above that competitor."
+                else:
+                    comparison = "in line with that competitor."
+        except (TypeError, ValueError):
+            pass
         parts = [
-            f"<p>Nearest competitor {cname} holds {_h(crev) if crev is not None else '—'} reviews within {_h(dist) if dist is not None else '—'} miles in a {md} density market.</p>",
+            f"<p>Nearest competitor {cname} is {_h(_format_miles(dist)) if dist is not None else '—'} away and has {_h(crev) if crev is not None else '—'} reviews.</p>",
+            f"<p>Market density: {md}. This practice&apos;s review position is {comparison}</p>",
         ]
         sections.append(
             "<section class=\"brief-section brief-strategic-gap\">\n  <h2>Strategic Gap Identified</h2>\n  "
@@ -1538,11 +1574,20 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
     if cs and any(cs.get(k) is not None for k in ("phone_clickable", "cta_count", "form_single_or_multi_step")):
         parts = []
         if cs.get("phone_clickable") is not None:
-            parts.append(f"<p><strong>Phone clickable:</strong> {'Yes' if cs.get('phone_clickable') else 'No'}</p>")
+            parts.append(
+                f"<p><strong>Phone on homepage:</strong> {'tap-to-call (clickable)' if cs.get('phone_clickable') else 'not clickable'}</p>"
+            )
         if cs.get("cta_count") is not None:
-            parts.append(f"<p><strong>CTA count:</strong> {_h(cs.get('cta_count'))}</p>")
+            parts.append(f"<p><strong>CTAs:</strong> {_h(cs.get('cta_count'))} (e.g. Book, Schedule, Contact)</p>")
         if cs.get("form_single_or_multi_step"):
-            parts.append(f"<p><strong>Form structure:</strong> {_h(cs.get('form_single_or_multi_step'))}</p>")
+            form_mode = str(cs.get("form_single_or_multi_step"))
+            if form_mode == "multi_step":
+                form_value = "multi-step (more than one step to submit)"
+            elif form_mode == "single_step":
+                form_value = "single-step"
+            else:
+                form_value = form_mode
+            parts.append(f"<p><strong>Form:</strong> {_h(form_value)}</p>")
         sections.append(
             "<section class=\"brief-section brief-conversion-structure\">\n  <h2>Conversion Structure</h2>\n  "
             + "\n  ".join(parts)
