@@ -79,7 +79,7 @@ def moderate_text(text: str) -> Tuple[bool, str | None]:
     if LOCAL_BLOCK_RE.search(cleaned):
         return False, REJECTED_QUERY_MESSAGE
 
-    api_key = os.getenv("OPENAI_API_KEY") or _load_openai_key_from_env_file()
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         logger.warning("OPENAI_API_KEY not set; moderation unavailable, rejecting")
         return False, "Safety checks are temporarily unavailable. Please try again."

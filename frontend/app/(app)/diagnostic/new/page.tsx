@@ -7,6 +7,7 @@ import type { JobStatusResponse } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
 import Input from "@/app/components/ui/Input";
+import BriefBuildProgress, { type BriefBuildProgressState } from "@/app/components/BriefBuildProgress";
 
 export default function NewDiagnosticPage() {
   const router = useRouter();
@@ -17,22 +18,38 @@ export default function NewDiagnosticPage() {
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<BriefBuildProgressState | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setStatus(null);
+    setProgress(null);
     setSubmitting(true);
     try {
+      const trimmedBusinessName = businessName.trim();
+      const trimmedCity = city.trim();
+      const trimmedState = state.trim();
+      const trimmedWebsite = website.trim();
       const { job_id } = await submitDiagnostic({
-        business_name: businessName.trim(),
-        city: city.trim(),
-        state: state.trim(),
-        ...(website.trim() ? { website: website.trim() } : {}),
+        business_name: trimmedBusinessName,
+        city: trimmedCity,
+        state: trimmedState,
+        ...(trimmedWebsite ? { website: trimmedWebsite } : {}),
       });
-      setStatus("Pipeline running...");
+      setStatus("Brief pipeline running...");
+      setProgress({
+        phase: "preparing_brief",
+        businessName: trimmedBusinessName,
+        city: trimmedCity,
+        state: trimmedState,
+        polls: 0,
+      });
       const result: JobStatusResponse = await pollUntilDone(job_id, (s) => {
-        if (s.status === "running") setStatus("Analyzing market and service signals...");
+        if (s.status === "running") {
+          setStatus("Building full brief...");
+          setProgress(buildBriefProgressState(s, trimmedBusinessName, trimmedCity, trimmedState));
+        }
       });
       if (result.status === "failed") throw new Error(result.error || "Diagnostic failed");
       if (!result.diagnostic_id) throw new Error("No diagnostic ID returned");
@@ -40,30 +57,121 @@ export default function NewDiagnosticPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
       setSubmitting(false);
+      setProgress(null);
     }
   }
 
   return (
-    <div className="mx-auto max-w-3xl">
-      <h1 className="text-2xl font-semibold tracking-tight">New Diagnostic</h1>
-      <p className="mt-1 text-sm text-[var(--text-muted)]">Run a full single-business brief from structured inputs.</p>
+    <div className="mx-auto max-w-6xl">
+      <section className="rounded-[36px] border border-black/6 bg-[linear-gradient(135deg,#f7f3ea_0%,#ffffff_60%,#f2f7ff_100%)] p-5 shadow-[0_18px_50px_rgba(23,20,17,0.05)] sm:p-7">
+        <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr]">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Build Brief</p>
+            <h1 className="display-title mt-3 max-w-[11ch] text-4xl font-black tracking-tight text-[var(--text-primary)] sm:text-6xl">
+              Build one full brief directly.
+            </h1>
+            <p className="mt-4 max-w-[42ch] text-sm leading-relaxed text-[var(--text-secondary)] sm:text-base">
+              Use this when you already know the business and want the full brief without starting from a territory scan or Ask query.
+            </p>
 
-      <Card className="mt-5">
-        <CardHeader title="Diagnostic Input" />
-        <CardBody>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <Input label="Business name *" required value={businessName} onChange={(e) => setBusinessName(e.target.value)} placeholder="Japantown Dental" />
-            <Input label="City *" required value={city} onChange={(e) => setCity(e.target.value)} placeholder="San Jose" />
-            <Input label="State *" required value={state} onChange={(e) => setState(e.target.value)} placeholder="CA" />
-            <Input label="Website (optional)" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="japantowndental.com" />
-            <Button type="submit" variant="primary" disabled={submitting}>
-              {submitting ? "Running..." : "Run diagnostic"}
-            </Button>
-          </form>
-          {status && !error && <p className="mt-3 text-sm text-[var(--text-secondary)]">{status}</p>}
-          {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
-        </CardBody>
-      </Card>
+            <div className="mt-6 space-y-3">
+              {[
+                "Best when the target business is already known",
+                "Builds the same evidence-backed brief as the rest of the workflow",
+                "Use website if you have it, but it is optional",
+              ].map((line) => (
+                <div key={line} className="rounded-[22px] border border-black/6 bg-white px-4 py-3 text-sm text-[var(--text-secondary)]">
+                  {line}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Card className="overflow-hidden border border-black/8 bg-white shadow-[0_18px_40px_rgba(23,20,17,0.05)]">
+            <CardHeader title="Brief Input" subtitle="Enter the business details and Neyma will build the full brief." />
+            <CardBody className="p-4 sm:p-5">
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Input
+                    label="Business name *"
+                    required
+                    value={businessName}
+                    onChange={(e) => setBusinessName(e.target.value)}
+                    placeholder="Japantown Dental"
+                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                  />
+                  <Input
+                    label="Website (optional)"
+                    value={website}
+                    onChange={(e) => setWebsite(e.target.value)}
+                    placeholder="japantowndental.com"
+                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                  />
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Input
+                    label="City *"
+                    required
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    placeholder="San Jose"
+                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                  />
+                  <Input
+                    label="State *"
+                    required
+                    value={state}
+                    onChange={(e) => setState(e.target.value)}
+                    placeholder="CA"
+                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                  />
+                </div>
+
+                <div className="rounded-[20px] border border-black/6 bg-[#fbfaf7] px-4 py-3 text-xs leading-5 text-[var(--text-muted)]">
+                  This path skips territory ranking and goes straight into the full brief pipeline.
+                </div>
+
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="h-11 rounded-full bg-black px-5 text-white hover:bg-[#4f79c7]"
+                >
+                  {submitting ? "Building..." : "Build brief"}
+                </Button>
+              </form>
+
+              {status && !error && !progress && (
+                <p className="mt-3 text-sm text-[var(--text-secondary)]">{status}</p>
+              )}
+              {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+            </CardBody>
+          </Card>
+        </div>
+      </section>
+
+      {progress && (
+        <BriefBuildProgress progress={progress} className="mx-auto mt-4 max-w-5xl" />
+      )}
     </div>
   );
+}
+
+function buildBriefProgressState(
+  job: JobStatusResponse,
+  businessName: string,
+  city: string,
+  state: string,
+): BriefBuildProgressState {
+  const payload = (job.progress || {}) as Record<string, unknown>;
+  const inner = (payload.progress || {}) as Record<string, unknown>;
+
+  return {
+    phase: String(payload.phase || "building_brief"),
+    businessName,
+    city,
+    state,
+    polls: inner.polls ? Number(inner.polls) : undefined,
+    pagesChecked: Number(inner.pages_crawled || inner.pages_checked || 0) || undefined,
+    signalsFound: Number(inner.signals_found || inner.signals || inner.findings || 0) || undefined,
+  };
 }

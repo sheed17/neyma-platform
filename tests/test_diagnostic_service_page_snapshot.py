@@ -107,9 +107,12 @@ def test_build_diagnostic_response_service_page_analysis_snapshot(monkeypatch):
     assert out["service_intelligence"] == {
         "detected_services": ["Implants"],
         "missing_services": ["Veneers"],
-        "schema_detected": False,
         "high_value_services": high_value_services,
         "high_value_summary": high_value_summary,
         "high_value_service_leverage": "high",
         "service_page_analysis_v2": {"service_coverage": {"present": 3, "total": 7, "ratio": 0.429}},
+        "suppress_service_gap": False,
+        "suppress_conversion_absence_claims": False,
+        "suppress_revenue_modeling": False,
+        "pages_crawled": None,
     }

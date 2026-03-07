@@ -6,6 +6,8 @@ For production, replace with Celery + Redis.
 """
 
 import logging
+import os
+import random
 import threading
 import time
 import traceback
@@ -15,12 +17,17 @@ from datetime import datetime, timezone
 from pipeline.db import (
     get_ask_lightweight_cache,
     get_ask_places_cache,
+    get_qa_signal_checks_by_ids,
     get_prospect_list,
     list_members_for_list,
+    insert_qa_signal_checks,
     list_territory_prospects,
+    create_job,
     get_pending_jobs,
     link_territory_prospect_diagnostic,
     save_diagnostic,
+    update_qa_signal_check_result,
+    summarize_qa_signal_checks,
     upsert_ask_lightweight_cache,
     upsert_ask_places_cache,
     upsert_list_member,
@@ -28,11 +35,16 @@ from pipeline.db import (
     update_territory_scan_status,
 )
 from backend.services.enrichment_service import run_diagnostic
+from backend.ml.store import persist_saved_diagnostic_response
+from backend.services.ask_config import ADAPTIVE_LIMITS_DEFAULTS
 from backend.services.npl_service import (
+    ai_batch_explain_matches,
+    ai_batch_rerank_candidates,
     classify_constraint,
     criterion_cache_key,
     matches_tier1_criteria,
     needs_lightweight_check,
+    review_lightweight_match_with_ai,
     run_lightweight_service_page_check,
 )
 from backend.services.criteria_registry import sanitize_criteria, sanitize_must_not
@@ -73,6 +85,7 @@ def _run_deep_brief_job(job: dict) -> dict:
     max_prospects = max(1, min(max_prospects, 25))
     concurrency = int(inp.get("concurrency") or 3)
     concurrency = max(1, min(concurrency, 5))
+    deep_audit = bool(inp.get("deep_audit", True))
 
     tasks: list[dict] = []
     if job_type == "territory_deep_scan":
@@ -124,6 +137,7 @@ def _run_deep_brief_job(job: dict) -> dict:
             city=str(t["city"]),
             state=str(t.get("state") or ""),
             website=t.get("website"),
+            deep_audit=deep_audit,
         )
         diag_id = save_diagnostic(
             user_id=user_id,
@@ -134,6 +148,11 @@ def _run_deep_brief_job(job: dict) -> dict:
             brief=result.get("brief"),
             response=result,
             state=result.get("state") or t.get("state"),
+        )
+        persist_saved_diagnostic_response(
+            diagnostic_id=int(diag_id),
+            place_id=str(result.get("place_id") or t.get("place_id") or ""),
+            response=result,
         )
         if t["kind"] == "territory":
             link_territory_prospect_diagnostic(int(t["prospect_id"]), int(diag_id), full_brief_ready=True)
@@ -206,6 +225,9 @@ def _build_npl_payload(row: dict, diagnostic: dict | None) -> dict:
         "opportunity_profile": (resp or {}).get("opportunity_profile"),
         "primary_leverage": (resp or {}).get("primary_leverage"),
         "constraint": (resp or {}).get("constraint"),
+        "ai_review": row.get("ai_review"),
+        "ai_rerank": row.get("ai_rerank"),
+        "ai_explanation": row.get("ai_explanation"),
     }
 
 
@@ -676,6 +698,797 @@ def _run_npl_find_job(job: dict) -> dict:
     }
 
 
+def handle_ask_scan(job: dict) -> dict:
+    """Unified adaptive Ask pipeline behind one job type."""
+    job_id = job["id"]
+    inp = job.get("input", {}) or {}
+    intent = dict(inp.get("resolved_intent") or inp.get("intent") or {})
+
+    update_job_status(
+        job_id,
+        "running",
+        result={
+            "phase": "moderating",
+            "intent": intent,
+            "progress": {"list_count": 0},
+            "partial_results": [],
+        },
+    )
+    update_job_status(
+        job_id,
+        "running",
+        result={
+            "phase": "resolving_intent",
+            "intent": intent,
+            "progress": {"list_count": 0},
+            "partial_results": [],
+        },
+    )
+
+    city = str(intent.get("city") or "").strip()
+    state = intent.get("state") or None
+    vertical = str(intent.get("vertical") or "dentist").strip()
+    limit = max(1, min(int(inp.get("limit") or intent.get("limit") or 10), 20))
+
+    raw_criteria = [c for c in (inp.get("criteria") or intent.get("criteria") or []) if isinstance(c, dict)]
+    raw_must_not = [c for c in (inp.get("must_not") or intent.get("must_not") or []) if isinstance(c, dict)]
+    criteria, criteria_unsupported = sanitize_criteria(raw_criteria, [])
+    must_not, must_not_unsupported = sanitize_must_not(raw_must_not, [])
+    criteria = [c for c in criteria if isinstance(c, dict)]
+    must_not = [c for c in must_not if isinstance(c, dict)]
+
+    unsupported = [str(x).strip() for x in (inp.get("unsupported_parts") or intent.get("unsupported_parts") or []) if str(x).strip()]
+    unsupported.extend(criteria_unsupported)
+    unsupported.extend(must_not_unsupported)
+    dedup_unsupported: list[str] = []
+    seen_unsupported = set()
+    for item in unsupported:
+        key = item.lower()
+        if key in seen_unsupported:
+            continue
+        seen_unsupported.add(key)
+        dedup_unsupported.append(item)
+
+    adaptive_cfg = dict(ADAPTIVE_LIMITS_DEFAULTS)
+    if isinstance(inp.get("adaptive_limits"), dict):
+        adaptive_cfg.update(inp.get("adaptive_limits") or {})
+
+    max_iterations = max(1, min(int(adaptive_cfg.get("max_iterations") or 3), 8))
+    max_minutes = max(0.2, min(float(adaptive_cfg.get("max_minutes") or 1.5), 45.0))
+    radius = max(1.0, float(adaptive_cfg.get("radius_start") or 2.0))
+    radius_step = max(0.5, float(adaptive_cfg.get("radius_step") or 1.0))
+    max_radius = max(radius, float(adaptive_cfg.get("max_radius") or 6.0))
+    cap = max(20, int(adaptive_cfg.get("cap_start") or 150))
+    cap_step = max(10, int(adaptive_cfg.get("cap_step") or 100))
+    max_cap = max(cap, int(adaptive_cfg.get("max_cap") or 500))
+    deep_top_k = max(1, min(int(adaptive_cfg.get("deep_top_k") or 20), 60))
+    shortlist_n = max(limit, min(int(adaptive_cfg.get("shortlist_n") or 50), 200))
+    lightweight_probe_n = max(limit, min(shortlist_n * 2, 120))
+    min_results = max(1, min(int(adaptive_cfg.get("min_results") or limit), 20))
+    ask_ai_review_enabled = str(os.getenv("ASK_AI_REVIEW_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    ask_ai_review_max_per_job = max(0, min(int(os.getenv("ASK_AI_REVIEW_MAX_PER_JOB", "20")), 200))
+    ask_ai_rerank_enabled = str(os.getenv("ASK_AI_RERANK_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    ask_ai_rerank_top_n = max(0, min(int(os.getenv("ASK_AI_RERANK_TOP_N", "20")), 100))
+    ask_ai_explain_enabled = str(os.getenv("ASK_AI_EXPLAIN_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    ask_ai_explain_top_n = max(0, min(int(os.getenv("ASK_AI_EXPLAIN_TOP_N", "10")), 40))
+    qa_verify_enabled = str(os.getenv("QA_VERIFY_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    qa_verify_sample_rate = max(0.0, min(float(os.getenv("QA_VERIFY_SAMPLE_RATE", "0.05")), 1.0))
+    qa_verify_max_per_job = max(0, min(int(os.getenv("QA_VERIFY_MAX_PER_JOB", "25")), 200))
+
+    if "require_deep_verification" in inp:
+        require_deep_verification = bool(inp.get("require_deep_verification"))
+    else:
+        require_deep_verification = any(str(c.get("type") or "") == "missing_service_page" for c in criteria)
+
+    missing_service_criteria = [c for c in criteria if str(c.get("type") or "") == "missing_service_page"]
+    lightweight_required = bool(missing_service_criteria) or needs_lightweight_check(criteria)
+
+    soft_filters: list[dict] = []
+    relaxed_soft = False
+    started_at = time.time()
+    iterations: list[dict] = []
+    all_filtered_out: dict[str, int] = {}
+    best_payload: dict[str, dict] = {}
+    stop_reason: str | None = None
+    qa_evidence_pool: list[dict] = []
+
+    def _stable_sort_rows(rows_to_sort: list[dict]) -> list[dict]:
+        rows_to_sort.sort(
+            key=lambda x: (
+                -float(x.get("rank_key") or 0),
+                -int(x.get("user_ratings_total") or 0),
+                str(x.get("place_id") or ""),
+            ),
+        )
+        return rows_to_sort
+
+    def _preview_payload(rows_src: list[dict]) -> list[dict]:
+        return [_build_npl_payload(r, diagnostic=None) for r in rows_src[:limit]]
+
+    for idx in range(1, max_iterations + 1):
+        elapsed_minutes = (time.time() - started_at) / 60.0
+        if elapsed_minutes > max_minutes:
+            stop_reason = "max_minutes_reached"
+            break
+
+        iter_started = time.time()
+        update_job_status(
+            job_id,
+            "running",
+            result={
+                "phase": "discovering_candidates",
+                "intent": intent,
+                "progress": {
+                    "iteration": idx,
+                    "max_iterations": max_iterations,
+                    "radius_miles": radius,
+                    "candidate_cap": cap,
+                    "list_count": min(len(best_payload), limit),
+                },
+                "partial_results": list(best_payload.values())[:limit],
+            },
+        )
+
+        cache_key = f"{city.lower()}|{str(state or '').upper()}|{vertical.lower()}|{int(cap)}|{round(radius, 2)}"
+        candidates: list[dict] = []
+        cached_places = get_ask_places_cache(cache_key)
+        if cached_places and _is_fresh_iso(cached_places.get("updated_at"), ASK_PLACES_CACHE_TTL_SECONDS):
+            payload = cached_places.get("data") or {}
+            rows_cached = payload.get("candidates") if isinstance(payload, dict) else None
+            if isinstance(rows_cached, list):
+                candidates = rows_cached
+        if not candidates:
+            candidates = _fetch_territory_candidates(
+                city=city,
+                state=state,
+                vertical=vertical,
+                limit=int(cap),
+                radius_miles=radius,
+                progress_cb=None,
+            )
+            upsert_ask_places_cache(cache_key, {"candidates": candidates})
+        candidates = candidates[: int(cap)]
+
+        rows, failed_count = _build_tier1_rows(
+            candidates,
+            city=city,
+            state=state,
+            filters={},
+            progress_cb=None,
+        )
+        ranked_rows = rows[:]
+        total_review_count = sum(int(r.get("user_ratings_total") or 0) for r in ranked_rows)
+        market_avg_reviews = (float(total_review_count) / float(len(ranked_rows))) if ranked_rows else 0.0
+        if market_avg_reviews >= 120:
+            market_density = "high"
+        elif market_avg_reviews >= 50:
+            market_density = "medium"
+        else:
+            market_density = "low"
+        for row in ranked_rows:
+            row["avg_market_reviews"] = market_avg_reviews
+            row["market_density"] = market_density
+            row["primary_constraint"] = classify_constraint(row)
+            if soft_filters:
+                bonus = 0.0
+                for criterion in soft_filters:
+                    if matches_tier1_criteria([criterion], row):
+                        bonus += 1.5
+                row["rank_key"] = round(float(row.get("rank_key") or 0) + bonus, 2)
+        ranked_rows = _stable_sort_rows(ranked_rows)
+
+        update_job_status(
+            job_id,
+            "running",
+            result={
+                "phase": "lightweight_checks",
+                "intent": intent,
+                "progress": {
+                    "iteration": idx,
+                    "max_iterations": max_iterations,
+                    "radius_miles": radius,
+                    "candidate_cap": cap,
+                    "candidates_found": len(candidates),
+                    "scored": len(ranked_rows),
+                    "failed": failed_count,
+                    "list_count": min(len(best_payload), limit),
+                },
+                "partial_results": list(best_payload.values())[:limit],
+            },
+        )
+
+        filtered_rows: list[dict] = []
+        filtered_out_by_criterion: dict[str, int] = {}
+        non_missing_criteria = [c for c in criteria if str(c.get("type") or "") != "missing_service_page"]
+
+        def _criterion_key(c: dict) -> str:
+            ctype = str(c.get("type") or "").strip()
+            svc = str(c.get("service") or "").strip()
+            return f"{ctype}:{svc}" if ctype == "missing_service_page" and svc else ctype or "unknown"
+
+        def _passes_non_missing(row: dict) -> bool:
+            for criterion in non_missing_criteria:
+                if not matches_tier1_criteria([criterion], row):
+                    k = _criterion_key(criterion)
+                    filtered_out_by_criterion[k] = int(filtered_out_by_criterion.get(k) or 0) + 1
+                    return False
+            for criterion in must_not:
+                if matches_tier1_criteria([criterion], row):
+                    k = f"must_not:{_criterion_key(criterion)}"
+                    filtered_out_by_criterion[k] = int(filtered_out_by_criterion.get(k) or 0) + 1
+                    return False
+            return True
+
+        candidates_for_light = [r for r in ranked_rows if _passes_non_missing(r)]
+        probe_rows = candidates_for_light[:lightweight_probe_n]
+        if not lightweight_required:
+            filtered_rows = candidates_for_light
+        else:
+            if not missing_service_criteria:
+                filtered_rows = candidates_for_light
+            else:
+                lightweight_checked = 0
+                lightweight_total = len(probe_rows)
+                lightweight_cache_hits = 0
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    future_map = {}
+                    for row in probe_rows:
+                        place_id = str(row.get("place_id") or "")
+                        if not place_id:
+                            filtered_out_by_criterion["missing_service_page"] = int(filtered_out_by_criterion.get("missing_service_page") or 0) + 1
+                            continue
+                        for criterion in missing_service_criteria:
+                            ckey = criterion_cache_key(criterion)
+                            cached = get_ask_lightweight_cache(place_id, ckey)
+                            if cached and _is_fresh_iso(cached.get("updated_at"), ASK_LIGHT_CACHE_TTL_SECONDS):
+                                lw = cached.get("result") or {}
+                                row.setdefault("_light_results", {})[ckey] = lw
+                                lightweight_cache_hits += 1
+                            else:
+                                fut = pool.submit(run_lightweight_service_page_check, row.get("website"), criterion, 5)
+                                future_map[fut] = (row, ckey, criterion)
+
+                    for fut in as_completed(future_map):
+                        row, ckey, criterion = future_map[fut]
+                        try:
+                            lw = fut.result()
+                        except Exception:
+                            lw = {"matches": False, "criterion": criterion}
+                        place_id = str(row.get("place_id") or "")
+                        if place_id:
+                            upsert_ask_lightweight_cache(place_id, ckey, lw)
+                        row.setdefault("_light_results", {})[ckey] = lw
+                        lightweight_checked += 1
+                        if (lightweight_checked % 10 == 0) or (lightweight_checked == len(future_map)):
+                            update_job_status(
+                                job_id,
+                                "running",
+                                result={
+                                    "phase": "lightweight_checks",
+                                    "intent": intent,
+                                    "progress": {
+                                        "iteration": idx,
+                                        "max_iterations": max_iterations,
+                                        "radius_miles": radius,
+                                        "candidate_cap": cap,
+                                        "candidates_found": len(candidates),
+                                        "scored": len(ranked_rows),
+                                        "lightweight_total": lightweight_total,
+                                        "lightweight_checked": lightweight_checked,
+                                        "lightweight_cache_hits": lightweight_cache_hits,
+                                        "list_count": min(len(best_payload), limit),
+                                    },
+                                    "partial_results": list(best_payload.values())[:limit],
+                                },
+                            )
+
+                ai_review_total = 0
+                ai_review_checked = 0
+                ai_review_started = 0
+                if ask_ai_review_enabled:
+                    def _needs_ai_review(light_res: dict) -> bool:
+                        if not bool(light_res.get("matches")):
+                            return False
+                        reason = str(light_res.get("reason") or "").lower()
+                        if reason.startswith("lightweight_http_"):
+                            return True
+                        return reason in {"no_strong_service_page_signal_in_fast_check", "fast detector failed"}
+
+                    with ThreadPoolExecutor(max_workers=3) as ai_pool:
+                        ai_futures = {}
+                        for row in probe_rows:
+                            website = row.get("website")
+                            if not website:
+                                continue
+                            light_results = row.get("_light_results") or {}
+                            for criterion in missing_service_criteria:
+                                ckey = criterion_cache_key(criterion)
+                                lw = light_results.get(ckey) or {}
+                                if not _needs_ai_review(lw):
+                                    continue
+                                if ai_review_started >= ask_ai_review_max_per_job:
+                                    continue
+                                ai_review_total += 1
+                                ai_review_started += 1
+                                fut = ai_pool.submit(
+                                    review_lightweight_match_with_ai,
+                                    website=website,
+                                    criterion=criterion,
+                                    lightweight_result=lw,
+                                )
+                                ai_futures[fut] = (row, ckey)
+                        for fut in as_completed(ai_futures):
+                            row, ckey = ai_futures[fut]
+                            ai_review_checked += 1
+                            try:
+                                ai = fut.result()
+                            except Exception:
+                                ai = {"enabled": False, "verdict": "skipped", "reason": "ai_review_failed"}
+                            row.setdefault("_ai_reviews", {})[ckey] = ai
+                            verdict = str(ai.get("verdict") or "").lower()
+                            if verdict == "likely_match":
+                                row["rank_key"] = float(row.get("rank_key") or 0) + 1.0
+                            elif verdict == "likely_not_match":
+                                row["rank_key"] = float(row.get("rank_key") or 0) - 3.0
+                            if (ai_review_checked % 5 == 0) or (ai_review_checked == ai_review_total):
+                                update_job_status(
+                                    job_id,
+                                    "running",
+                                    result={
+                                        "phase": "lightweight_checks",
+                                        "intent": intent,
+                                        "progress": {
+                                            "iteration": idx,
+                                            "max_iterations": max_iterations,
+                                            "radius_miles": radius,
+                                            "candidate_cap": cap,
+                                            "candidates_found": len(candidates),
+                                            "scored": len(ranked_rows),
+                                            "lightweight_total": lightweight_total,
+                                            "lightweight_checked": lightweight_total,
+                                            "lightweight_cache_hits": lightweight_cache_hits,
+                                            "ai_review_total": ai_review_total,
+                                            "ai_review_checked": ai_review_checked,
+                                            "list_count": min(len(best_payload), limit),
+                                        },
+                                        "partial_results": list(best_payload.values())[:limit],
+                                    },
+                                )
+
+                for row in probe_rows:
+                    light_results = row.get("_light_results") or {}
+                    matches_all = True
+                    for criterion in missing_service_criteria:
+                        ckey = criterion_cache_key(criterion)
+                        lw = light_results.get(ckey) or {}
+                        if lw:
+                            qa_evidence_pool.append(
+                                {
+                                    "source_type": "ask",
+                                    "source_id": str(job_id),
+                                    "place_id": row.get("place_id"),
+                                    "website": row.get("website"),
+                                    "criterion_key": ckey,
+                                    "deterministic_match": bool(lw.get("matches")),
+                                    "evidence": {
+                                        "reason": lw.get("reason"),
+                                        "method": lw.get("method"),
+                                        "service": lw.get("service"),
+                                        "evidence": lw.get("evidence") if isinstance(lw.get("evidence"), dict) else {},
+                                    },
+                                }
+                            )
+                        if not lw.get("matches"):
+                            matches_all = False
+                            filtered_out_by_criterion[_criterion_key(criterion)] = int(filtered_out_by_criterion.get(_criterion_key(criterion)) or 0) + 1
+                            break
+                    if matches_all:
+                        row["missing_service_page_match"] = True
+                        ai_reviews = row.get("_ai_reviews") or {}
+                        if ai_reviews:
+                            row["ai_review"] = ai_reviews
+                        filtered_rows.append(row)
+                filtered_rows = _stable_sort_rows(filtered_rows)
+                if ask_ai_rerank_enabled and ask_ai_rerank_top_n > 0 and filtered_rows:
+                    adjustments = ai_batch_rerank_candidates(
+                        rows=filtered_rows,
+                        criteria=criteria,
+                        purpose="ask",
+                        max_items=ask_ai_rerank_top_n,
+                    )
+                    if adjustments:
+                        for row in filtered_rows:
+                            pid = str(row.get("place_id") or "")
+                            adj = adjustments.get(pid)
+                            if not adj:
+                                continue
+                            delta = float(adj.get("delta") or 0.0)
+                            row["rank_key"] = round(float(row.get("rank_key") or 0.0) + delta, 3)
+                            row["ai_rerank"] = adj
+                        filtered_rows = _stable_sort_rows(filtered_rows)
+                if filtered_rows:
+                    update_job_status(
+                        job_id,
+                        "running",
+                        result={
+                            "phase": "lightweight_checks",
+                            "intent": intent,
+                            "progress": {
+                                "iteration": idx,
+                                "max_iterations": max_iterations,
+                                "radius_miles": radius,
+                                "candidate_cap": cap,
+                                "candidates_found": len(candidates),
+                                "scored": len(ranked_rows),
+                                "postfilter_count": len(filtered_rows),
+                                "lightweight_total": lightweight_total,
+                                "lightweight_checked": lightweight_total,
+                                "lightweight_cache_hits": lightweight_cache_hits,
+                                "list_count": min(len(filtered_rows), limit),
+                            },
+                            "partial_results": _preview_payload(filtered_rows[:]),
+                        },
+                    )
+
+        filtered_rows = _stable_sort_rows(filtered_rows)
+        shortlist = filtered_rows[:shortlist_n]
+
+        verified_payload: list[dict] = []
+        deep_verified_count = 0
+        if require_deep_verification:
+            if ((time.time() - started_at) / 60.0) > max_minutes:
+                stop_reason = "max_minutes_reached"
+                break
+            update_job_status(
+                job_id,
+                "running",
+                result={
+                    "phase": "deep_verification",
+                    "intent": intent,
+                    "progress": {
+                        "iteration": idx,
+                        "max_iterations": max_iterations,
+                        "radius_miles": radius,
+                        "candidate_cap": cap,
+                        "verifying": min(len(shortlist), deep_top_k),
+                        "list_count": min(len(best_payload), limit),
+                    },
+                    "partial_results": list(best_payload.values())[:limit],
+                },
+            )
+            verify_rows = shortlist[:deep_top_k]
+
+            def _verify_row(row: dict) -> dict:
+                result = run_diagnostic(
+                    business_name=str(row.get("business_name") or ""),
+                    city=str(row.get("city") or ""),
+                    state=str(row.get("state") or ""),
+                    website=row.get("website"),
+                )
+                verified_missing = [str(s).strip().lower() for s in (result.get("service_intelligence") or {}).get("missing_services", [])]
+                required_missing = [str(c.get("service") or "").strip().lower() for c in missing_service_criteria]
+                verified_match = all(any(req in vm for vm in verified_missing) for req in required_missing if req)
+                if not verified_match:
+                    return {"verified_match": False}
+                payload = _build_npl_payload(row, diagnostic={"response": result})
+                return {"verified_match": True, "payload": payload}
+
+            target_needed = max(1, min_results - len(best_payload))
+            pool = ThreadPoolExecutor(max_workers=3)
+            future_map = {pool.submit(_verify_row, row): row for row in verify_rows}
+            checked = 0
+            timed_out_mid_deep = False
+            try:
+                for fut in as_completed(future_map):
+                    checked += 1
+                    try:
+                        one = fut.result()
+                        if one.get("verified_match") and one.get("payload"):
+                            verified_payload.append(one["payload"])
+                    except Exception:
+                        logger.exception("Ask deep verification row failed")
+                    if (checked % 3 == 0) or (checked == len(verify_rows)):
+                        partial = sorted(
+                            list(best_payload.values()) + verified_payload,
+                            key=lambda x: (
+                                -float(x.get("rank_score") or 0),
+                                -int(x.get("user_ratings_total") or 0),
+                                str(x.get("place_id") or ""),
+                            ),
+                        )[:limit]
+                        update_job_status(
+                            job_id,
+                            "running",
+                            result={
+                                "phase": "deep_verification",
+                                "intent": intent,
+                                "progress": {
+                                    "iteration": idx,
+                                    "max_iterations": max_iterations,
+                                    "radius_miles": radius,
+                                    "candidate_cap": cap,
+                                    "verifying": len(verify_rows),
+                                    "deep_checked": checked,
+                                    "deep_matches": len(verified_payload),
+                                    "list_count": min(len(partial), limit),
+                                },
+                                "partial_results": partial,
+                            },
+                        )
+                    if len(verified_payload) >= target_needed:
+                        break
+                    if ((time.time() - started_at) / 60.0) > max_minutes:
+                        timed_out_mid_deep = True
+                        break
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+            if timed_out_mid_deep:
+                stop_reason = "max_minutes_reached"
+            deep_verified_count = len(verified_payload)
+        else:
+            verified_payload = [_build_npl_payload(row, diagnostic=None) for row in shortlist]
+
+        for payload in verified_payload:
+            pkey = str(payload.get("place_id") or payload.get("business_name") or "")
+            if not pkey:
+                continue
+            existing = best_payload.get(pkey)
+            if not existing:
+                best_payload[pkey] = payload
+                continue
+            if float(payload.get("rank_score") or 0) > float(existing.get("rank_score") or 0):
+                best_payload[pkey] = payload
+
+        for k, v in filtered_out_by_criterion.items():
+            all_filtered_out[k] = int(all_filtered_out.get(k) or 0) + int(v or 0)
+
+        iterations.append(
+            {
+                "iter": idx,
+                "radius": radius,
+                "cap": int(cap),
+                "prefilter_count": len(ranked_rows),
+                "postfilter_count": len(filtered_rows),
+                "deep_verified_count": deep_verified_count,
+                "elapsed_ms": int((time.time() - iter_started) * 1000),
+            }
+        )
+
+        update_job_status(
+            job_id,
+            "running",
+            result={
+                "phase": "ranking",
+                "intent": intent,
+                "iterations": iterations,
+                "progress": {
+                    "iteration": idx,
+                    "max_iterations": max_iterations,
+                    "radius_miles": radius,
+                    "candidate_cap": cap,
+                    "candidates_found": len(candidates),
+                    "scored": len(ranked_rows),
+                    "postfilter_count": len(filtered_rows),
+                    "deep_verified_count": deep_verified_count,
+                    "list_count": min(len(best_payload), limit),
+                },
+                "partial_results": sorted(
+                    best_payload.values(),
+                    key=lambda x: (
+                        -float(x.get("rank_score") or 0),
+                        -int(x.get("user_ratings_total") or 0),
+                        str(x.get("place_id") or ""),
+                    ),
+                )[:limit],
+            },
+        )
+
+        if stop_reason == "max_minutes_reached":
+            break
+
+        if len(best_payload) >= min_results:
+            stop_reason = "min_results_reached"
+            break
+
+        update_job_status(
+            job_id,
+            "running",
+            result={
+                "phase": "expanding_search",
+                "intent": intent,
+                "iterations": iterations,
+                "progress": {
+                    "iteration": idx,
+                    "max_iterations": max_iterations,
+                    "radius_miles": radius,
+                    "candidate_cap": cap,
+                    "list_count": min(len(best_payload), limit),
+                },
+                "partial_results": list(best_payload.values())[:limit],
+            },
+        )
+
+        if radius < max_radius:
+            radius = min(max_radius, radius + radius_step)
+            continue
+        if cap < max_cap:
+            cap = min(max_cap, cap + cap_step)
+            continue
+        if soft_filters and not relaxed_soft:
+            soft_filters = []
+            relaxed_soft = True
+            continue
+        stop_reason = "max_cap_reached"
+        break
+
+    if stop_reason is None:
+        stop_reason = "max_iterations_reached"
+
+    prospects = sorted(
+        best_payload.values(),
+        key=lambda x: (
+            -float(x.get("rank_score") or 0),
+            -int(x.get("user_ratings_total") or 0),
+            str(x.get("place_id") or ""),
+        ),
+    )[:limit]
+
+    if ask_ai_explain_enabled and ask_ai_explain_top_n > 0 and prospects:
+        explain_map = ai_batch_explain_matches(
+            rows=prospects,
+            criteria=criteria,
+            max_items=ask_ai_explain_top_n,
+        )
+        if explain_map:
+            for p in prospects:
+                pid = str(p.get("place_id") or "")
+                if pid in explain_map:
+                    p["ai_explanation"] = explain_map[pid]
+
+    qa_job_id = None
+    qa_sampled = 0
+    if qa_verify_enabled and qa_verify_max_per_job > 0 and qa_evidence_pool:
+        sampled_rows = [r for r in qa_evidence_pool if random.random() <= qa_verify_sample_rate]
+        if len(sampled_rows) > qa_verify_max_per_job:
+            sampled_rows = sampled_rows[:qa_verify_max_per_job]
+        if sampled_rows:
+            check_ids = insert_qa_signal_checks(sampled_rows)
+            qa_sampled = len(check_ids)
+            if check_ids:
+                qa_job_id = create_job(
+                    user_id=job.get("user_id", 1),
+                    job_type="qa_signal_verification",
+                    input_data={"check_ids": check_ids, "source_type": "ask", "source_id": str(job_id)},
+                )
+
+    criterion_that_eliminated_most = None
+    if all_filtered_out:
+        criterion_that_eliminated_most = max(
+            all_filtered_out.items(),
+            key=lambda kv: int(kv[1] or 0),
+        )[0]
+
+    return {
+        "phase": "done",
+        "intent": intent,
+        "criteria": criteria,
+        "must_not": must_not,
+        "applied_criteria": [
+            (
+                f"missing_service_page:{str(c.get('service') or '').strip()}"
+                if str(c.get("type") or "") == "missing_service_page"
+                else str(c.get("type") or "")
+            )
+            for c in criteria
+            if str(c.get("type") or "").strip()
+        ],
+        "require_deep_verification": require_deep_verification,
+        "unsupported_parts": dedup_unsupported,
+        "unsupported_request_parts": dedup_unsupported,
+        "unsupported_message": (
+            f"We don't check {', '.join(dedup_unsupported)}; results were filtered only by supported Neyma criteria."
+            if dedup_unsupported
+            else None
+        ),
+        "prospects": prospects[:20],
+        "total_matches": len(best_payload),
+        "total_scanned": sum(int(it.get("prefilter_count") or 0) for it in iterations),
+        "filtered_out_by_criterion": all_filtered_out,
+        "criterion_that_eliminated_most": criterion_that_eliminated_most,
+        "no_results_suggestion": (
+            f"No matches. We scanned {sum(int(it.get('prefilter_count') or 0) for it in iterations)} prospects; most exclusions from {criterion_that_eliminated_most}. Try expanding the area."
+            if len(best_payload) == 0 and criterion_that_eliminated_most
+            else None
+        ),
+        "iterations": iterations,
+        "stop_reason": stop_reason,
+        "progress": {
+            "phase": "done",
+            "list_count": len(prospects[:20]),
+            "iterations": len(iterations),
+        },
+        "qa_verification": {
+            "sampled": qa_sampled,
+            "job_id": qa_job_id,
+        },
+    }
+
+
+def _run_qa_signal_verification_job(job: dict) -> dict:
+    job_id = str(job.get("id") or "")
+    inp = job.get("input", {}) or {}
+    check_ids = [int(x) for x in (inp.get("check_ids") or []) if str(x).isdigit()]
+    checks = get_qa_signal_checks_by_ids(check_ids)
+    total = len(checks)
+    processed = 0
+    completed = 0
+    failed = 0
+
+    for chk in checks:
+        cid = int(chk["id"])
+        criterion_key = str(chk.get("criterion_key") or "")
+        ctype, _, service = criterion_key.partition(":")
+        criterion = {"type": ctype, "service": service or None}
+        evidence = chk.get("evidence") or {}
+        lightweight_result = {
+            "matches": bool(int(chk.get("deterministic_match") or 0)),
+            "reason": evidence.get("reason"),
+            "method": evidence.get("method"),
+            "service": evidence.get("service"),
+            "evidence": evidence.get("evidence") if isinstance(evidence.get("evidence"), dict) else {},
+        }
+        try:
+            ai = review_lightweight_match_with_ai(
+                website=chk.get("website"),
+                criterion=criterion,
+                lightweight_result=lightweight_result,
+            )
+            update_qa_signal_check_result(
+                cid,
+                status="completed",
+                ai_verdict=str(ai.get("verdict") or "")[:32],
+                ai_confidence=str(ai.get("confidence") or "")[:16],
+                ai_reason=str(ai.get("reason") or "")[:240],
+                ai_model=str(ai.get("model") or "")[:64] or None,
+                error=None,
+            )
+            completed += 1
+        except Exception as exc:
+            update_qa_signal_check_result(
+                cid,
+                status="failed",
+                ai_verdict=None,
+                ai_confidence=None,
+                ai_reason=None,
+                ai_model=None,
+                error=str(exc)[:240],
+            )
+            failed += 1
+        processed += 1
+        if processed % 10 == 0 or processed == total:
+            update_job_status(
+                job_id,
+                "running",
+                result={
+                    "phase": "qa_signal_verification",
+                    "processed": processed,
+                    "completed": completed,
+                    "failed": failed,
+                    "total": total,
+                },
+            )
+
+    summary = summarize_qa_signal_checks(days=30)
+    return {
+        "phase": "qa_signal_verification",
+        "processed": processed,
+        "completed": completed,
+        "failed": failed,
+        "total": total,
+        "summary_30d": summary,
+    }
+
+
 def _criterion_to_key(c: dict) -> str:
     ctype = str(c.get("type") or "").strip()
     svc = str(c.get("service") or "").strip().lower()
@@ -1001,16 +1814,16 @@ def _process_job(job: dict) -> None:
             logger.info("Deep brief job %s completed", job_id)
             return
 
-        if job_type == "npl_find":
-            result = _run_npl_find_job(job)
+        if job_type == "qa_signal_verification":
+            result = _run_qa_signal_verification_job(job)
             update_job_status(job_id, "completed", result=result)
-            logger.info("NPL job %s completed", job_id)
+            logger.info("QA verification job %s completed", job_id)
             return
 
-        if job_type == "ask_agentic_scan":
-            result = _run_agentic_scan_job(job)
+        if job_type in {"ask_scan", "npl_find", "ask_agentic_scan"}:
+            result = handle_ask_scan(job)
             update_job_status(job_id, "completed", result=result)
-            logger.info("Agentic ask job %s completed", job_id)
+            logger.info("Ask scan job %s completed", job_id)
             return
 
         result = run_diagnostic(
@@ -1018,6 +1831,7 @@ def _process_job(job: dict) -> None:
             city=inp["city"],
             state=inp.get("state"),
             website=inp.get("website"),
+            deep_audit=bool(inp.get("deep_audit")),
         )
 
         diag_id = save_diagnostic(
@@ -1030,6 +1844,11 @@ def _process_job(job: dict) -> None:
             response=result,
             state=result.get("state") or inp.get("state"),
         )
+        persist_saved_diagnostic_response(
+            diagnostic_id=int(diag_id),
+            place_id=str(result.get("place_id") or ""),
+            response=result,
+        )
 
         result["diagnostic_id"] = diag_id
         if inp.get("prospect_id"):
@@ -1037,6 +1856,26 @@ def _process_job(job: dict) -> None:
                 link_territory_prospect_diagnostic(int(inp["prospect_id"]), diag_id, full_brief_ready=True)
             except Exception:
                 logger.exception("Failed linking prospect %s to diagnostic %s", inp.get("prospect_id"), diag_id)
+
+        source_diag_id = inp.get("source_diagnostic_id")
+        if source_diag_id is not None:
+            try:
+                from pipeline.outcome_tracking import auto_record_rerun_outcome, ensure_outcome_tables
+                ensure_outcome_tables()
+                svc_intel = result.get("service_intelligence") or {}
+                rerun_data = {
+                    "review_count": result.get("review_count") or result.get("user_ratings_total"),
+                    "missing_services": svc_intel.get("missing_services", []),
+                    "detected_services": svc_intel.get("detected_services", []),
+                    "has_booking": (result.get("conversion_infrastructure") or {}).get("online_booking"),
+                    "has_ssl": result.get("signal_has_ssl"),
+                    "runs_google_ads": result.get("paid_status", "").lower() in ("active", "running"),
+                }
+                auto_record_rerun_outcome(int(source_diag_id), result.get("place_id") or "", rerun_data)
+                logger.info("Recorded rerun outcome for source diagnostic %s → new %s", source_diag_id, diag_id)
+            except Exception:
+                logger.exception("Failed recording rerun outcome for source diagnostic %s", source_diag_id)
+
         update_job_status(job_id, "completed", result=result)
         logger.info("Job %s completed → diagnostic %s", job_id, diag_id)
 

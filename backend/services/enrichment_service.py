@@ -75,6 +75,133 @@ def _to_float(v: Any) -> Optional[float]:
         return None
 
 
+def _confidence_rank(level: str) -> int:
+    normalized = str(level or "").strip().lower()
+    if normalized == "high":
+        return 3
+    if normalized == "medium":
+        return 2
+    return 1
+
+
+def _rank_to_confidence(rank: int) -> str:
+    if rank >= 3:
+        return "high"
+    if rank == 2:
+        return "medium"
+    return "low"
+
+
+def _build_brief_signal_verification(
+    *,
+    website: Optional[str],
+    service_intel: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build brief-facing service signal verification block.
+
+    Deterministic service_status stays source of truth.
+    AI validation is advisory and only improves confidence/explanations.
+    """
+    rows = [r for r in (service_intel.get("high_value_services") or []) if isinstance(r, dict)]
+    crawl_conf = str(service_intel.get("crawl_confidence") or "").strip().lower()
+    if not rows:
+        return {"services": [], "summary": {"total": 0, "disagreements": 0}}
+
+    ai_enabled = _env_enabled("BRIEF_AI_VERIFY_ENABLED", default=True)
+    ai_max = max(0, min(int(os.getenv("BRIEF_AI_VERIFY_MAX_ITEMS", "8")), 20))
+    ai_map: Dict[str, Dict[str, Any]] = {}
+    if ai_enabled and ai_max > 0 and crawl_conf not in {"low", "unknown", ""}:
+        try:
+            from backend.services.npl_service import ai_validate_brief_service_rows
+
+            review_candidates = [
+                r
+                for r in rows
+                if str(r.get("service_status") or "").strip().lower() in {"missing", "mention_only", "dedicated"}
+            ][:ai_max]
+            ai_map = ai_validate_brief_service_rows(
+                website=website,
+                service_rows=review_candidates,
+                max_items=ai_max,
+            )
+        except Exception as exc:
+            logger.warning("Brief AI signal verification skipped: %s", exc)
+
+    services: List[Dict[str, Any]] = []
+    disagreements = 0
+    for row in rows:
+        slug = str(row.get("service") or "").strip().lower()
+        status = str(row.get("service_status") or "").strip().lower()
+        if crawl_conf in {"low", "unknown", ""}:
+            deterministic_verdict = "not_evaluated"
+            det_conf = "low"
+        elif status == "missing":
+            deterministic_verdict = "missing"
+            det_conf = str(row.get("confidence_level") or "medium").strip().lower()
+        elif status in {"dedicated", "mention_only"}:
+            deterministic_verdict = "present"
+            det_conf = str(row.get("confidence_level") or "medium").strip().lower()
+        else:
+            deterministic_verdict = "not_evaluated"
+            det_conf = "low"
+        if det_conf not in {"low", "medium", "high"}:
+            det_conf = "low"
+
+        ai = ai_map.get(slug) if slug else None
+        ai_verdict = str((ai or {}).get("verdict") or "").strip().lower()
+        ai_conf = str((ai or {}).get("confidence") or "").strip().lower()
+        if ai_conf not in {"low", "medium", "high"}:
+            ai_conf = "low"
+
+        final_conf_rank = _confidence_rank(det_conf)
+        if ai and ai_verdict:
+            agrees = (
+                (deterministic_verdict == "missing" and ai_verdict == "likely_missing")
+                or (deterministic_verdict == "present" and ai_verdict == "likely_present")
+                or (deterministic_verdict == "not_evaluated" and ai_verdict == "unclear")
+            )
+            if agrees:
+                final_conf_rank = min(3, final_conf_rank + 1)
+            elif ai_verdict != "unclear":
+                disagreements += 1
+                final_conf_rank = max(1, final_conf_rank - 1)
+
+        services.append(
+            {
+                "service": slug,
+                "display_name": str(row.get("display_name") or slug or "").strip(),
+                "deterministic_verdict": deterministic_verdict,
+                "deterministic_confidence": det_conf,
+                "final_verdict": deterministic_verdict,
+                "final_confidence": _rank_to_confidence(final_conf_rank),
+                "reason": str(row.get("detection_reason") or "").strip()[:220],
+                "url": row.get("url"),
+                "service_status": status,
+                "ai_validation": {
+                    "enabled": bool(ai),
+                    "verdict": ai_verdict or None,
+                    "confidence": ai_conf if ai else None,
+                    "reason": str((ai or {}).get("reason") or "").strip()[:220] if ai else None,
+                    "model": (ai or {}).get("model") if ai else None,
+                },
+            }
+        )
+
+    services.sort(key=lambda x: (x.get("deterministic_verdict") != "missing", str(x.get("display_name") or "")))
+    return {
+        "services": services,
+        "summary": {
+            "total": len(services),
+            "missing": sum(1 for s in services if s.get("deterministic_verdict") == "missing"),
+            "present": sum(1 for s in services if s.get("deterministic_verdict") == "present"),
+            "not_evaluated": sum(1 for s in services if s.get("deterministic_verdict") == "not_evaluated"),
+            "ai_checked": sum(1 for s in services if bool((s.get("ai_validation") or {}).get("enabled"))),
+            "disagreements": disagreements,
+            "crawl_confidence": crawl_conf or None,
+        },
+    }
+
+
 def _build_deterministic_intervention_plan(
     merged: Dict[str, Any],
     constraint_label: str,
@@ -90,7 +217,6 @@ def _build_deterministic_intervention_plan(
     has_ssl = bool(signals.get("signal_has_ssl"))
     has_form = bool(signals.get("signal_has_contact_form"))
     has_phone = bool(signals.get("signal_has_phone"))
-    has_schema = bool(signals.get("signal_has_schema_microdata"))
     missing_pages = svc.get("missing_high_value_pages") if isinstance(svc.get("missing_high_value_pages"), list) else []
     demand_level = _derive_demand_level(merged)
     root = _parse_root_constraint_label(constraint_label)
@@ -109,10 +235,10 @@ def _build_deterministic_intervention_plan(
             "action_id": "A2",
             "title": "Establish technical trust baseline",
             "category": "Trust",
-            "action": "Add/repair SSL and LocalBusiness + Service schema and align contact details site-wide.",
+            "action": "Add/repair SSL and align contact details site-wide for consistent local trust signals.",
             "why_this_now": "Trust and crawlability gaps reduce local conversion and visibility.",
             "expected_window_days": 21,
-            "evidence_refs": ["signal_has_ssl", "signal_has_schema_microdata"],
+            "evidence_refs": ["signal_has_ssl"],
         },
         "A3": {
             "action_id": "A3",
@@ -155,7 +281,7 @@ def _build_deterministic_intervention_plan(
     selected: List[str] = []
     if not has_website:
         selected.extend(["A1", "A2", "A4"])
-    if (not has_ssl) or (not has_schema):
+    if not has_ssl:
         selected.append("A2")
     if (not has_form) or (not has_phone):
         selected.append("A1")
@@ -292,13 +418,26 @@ def _build_diagnostic_response(
             or ((merged.get("signals") or {}).get("signal_website_url") if isinstance(merged.get("signals"), dict) else None)
             or ((merged.get("signals") or {}).get("website") if isinstance(merged.get("signals"), dict) else None)
         ),
+        "rating": merged.get("rating"),
+        "user_ratings_total": merged.get("signal_review_count") or merged.get("user_ratings_total"),
         "opportunity_profile": str(opportunity_profile),
+        "opportunity_label": str(opp.get("label") or "") if opp else "",
         "constraint": str(constraint),
         "primary_leverage": str(primary_leverage),
         "market_density": str(market_density),
         "review_position": str(review_position),
         "paid_status": str(paid_status),
         "intervention_plan": intervention_items,
+        "cohort_count": merged.get("cohort_count"),
+        "cohort_close_rate": merged.get("cohort_close_rate"),
+        "top_constraints": merged.get("top_constraints") or [],
+        "top_outreach_angles": merged.get("top_outreach_angles") or [],
+        "similar_leads_count": merged.get("similar_leads_count"),
+        "rag_used": merged.get("rag_used"),
+        "retrieval_time_ms": merged.get("retrieval_time_ms"),
+        "num_similar_docs": merged.get("num_similar_docs"),
+        "extraction_method": merged.get("signal_extraction_method"),
+        "confidence": (merged.get("llm_reasoning_layer") or {}).get("confidence") or merged.get("confidence"),
     }
     if vm:
         # Keep renderer/LLM intervention plan when present; use deterministic plan only as fallback.
@@ -323,15 +462,46 @@ def _build_diagnostic_response(
         elif isinstance(x, dict) and (x.get("procedure") or x.get("service")):
             detected_services.append(str(x.get("procedure") or x.get("service")))
 
+    crawl_conf_raw = service_intel.get("crawl_confidence")
+    low_confidence = str(crawl_conf_raw or "").strip().lower() == "low"
     service_block = {
         "detected_services": detected_services,
         "missing_services": list(service_intel.get("missing_high_value_pages") or []),
-        "schema_detected": signals.get("signal_has_schema_microdata"),
         "high_value_services": list(service_intel.get("high_value_services") or []),
         "high_value_summary": dict(service_intel.get("high_value_summary") or {}),
         "high_value_service_leverage": service_intel.get("high_value_service_leverage"),
         "service_page_analysis_v2": dict(service_intel.get("service_page_analysis_v2") or {}),
+        "suppress_service_gap": low_confidence,
+        "suppress_conversion_absence_claims": low_confidence,
+        "suppress_revenue_modeling": low_confidence,
+        "pages_crawled": service_intel.get("pages_crawled"),
     }
+    if isinstance(service_intel.get("cta_elements"), list):
+        service_block["cta_elements"] = list(service_intel.get("cta_elements") or [])
+    if isinstance(service_intel.get("cta_clickable_by_type"), dict):
+        service_block["cta_clickable_by_type"] = dict(service_intel.get("cta_clickable_by_type") or {})
+    if service_intel.get("cta_clickable_count") is not None:
+        service_block["cta_clickable_count"] = int(service_intel.get("cta_clickable_count") or 0)
+    if isinstance(service_intel.get("geo_intent_pages"), list):
+        service_block["geo_intent_pages"] = list(service_intel.get("geo_intent_pages") or [])
+    if isinstance(service_intel.get("missing_geo_pages"), list):
+        service_block["missing_geo_pages"] = list(service_intel.get("missing_geo_pages") or [])
+    if isinstance(service_intel.get("signal_verification"), dict):
+        service_block["signal_verification"] = dict(service_intel.get("signal_verification") or {})
+    if crawl_conf_raw is not None:
+        service_block["crawl_confidence"] = crawl_conf_raw
+    if service_intel.get("js_detected") is not None:
+        service_block["js_detected"] = service_intel.get("js_detected")
+    if service_intel.get("crawl_method") is not None:
+        service_block["crawl_method"] = service_intel.get("crawl_method")
+    if service_intel.get("deep_scan") is not None:
+        service_block["deep_scan"] = bool(service_intel.get("deep_scan"))
+    if service_intel.get("playwright_fetch_summary") is not None:
+        service_block["playwright_fetch_summary"] = dict(service_intel.get("playwright_fetch_summary") or {})
+    if service_intel.get("service_page_count") is not None:
+        service_block["service_page_count"] = service_intel.get("service_page_count")
+    if service_intel.get("crawl_warning") is not None:
+        service_block["crawl_warning"] = str(service_intel.get("crawl_warning"))
 
     revenue_breakdowns: List[Dict[str, Any]] = []
     for svc in rev.get("service_opportunities", []):
@@ -344,13 +514,23 @@ def _build_diagnostic_response(
             "annual_revenue_range": str(svc.get("annual_revenue_range") or ""),
         })
 
-    conversion_block = {
-        "online_booking": signals.get("signal_has_automated_scheduling"),
-        "contact_form": signals.get("signal_has_contact_form"),
-        "phone_prominent": signals.get("signal_has_phone"),
-        "mobile_optimized": signals.get("signal_mobile_friendly"),
-        "page_load_ms": signals.get("signal_page_load_time_ms"),
-    }
+    contact_form_sitewide = bool(service_intel.get("contact_form_detected_sitewide"))
+    if low_confidence:
+        conversion_block = {
+            "online_booking": None,
+            "contact_form": None,
+            "phone_prominent": signals.get("signal_has_phone"),
+            "mobile_optimized": signals.get("signal_mobile_friendly"),
+            "page_load_ms": signals.get("signal_page_load_time_ms"),
+        }
+    else:
+        conversion_block = {
+            "online_booking": signals.get("signal_has_automated_scheduling"),
+            "contact_form": True if contact_form_sitewide else signals.get("signal_has_contact_form"),
+            "phone_prominent": signals.get("signal_has_phone"),
+            "mobile_optimized": signals.get("signal_mobile_friendly"),
+            "page_load_ms": signals.get("signal_page_load_time_ms"),
+        }
 
     evidence: List[Dict[str, str]] = []
     lead_reviews = snapshot.get("lead_review_count")
@@ -360,15 +540,13 @@ def _build_diagnostic_response(
             "label": "Reviews vs Market",
             "value": f"{lead_reviews} vs {avg_reviews}",
         })
-    if signals.get("signal_has_schema_microdata") is False:
+    if signals.get("signal_has_ssl") is False:
         evidence.append({
-            "label": "Schema",
+            "label": "SSL",
             "value": "Not detected",
         })
 
-    risk_flags = oi.get("risk_flags") if isinstance(oi.get("risk_flags"), list) else []
-    if not risk_flags and vm and isinstance(vm.get("risk_flags"), list):
-        risk_flags = vm["risk_flags"]
+    risk_flags = vm.get("risk_flags") if (vm and isinstance(vm.get("risk_flags"), list)) else []
 
     out["service_intelligence"] = service_block
     out["revenue_breakdowns"] = revenue_breakdowns
@@ -379,6 +557,12 @@ def _build_diagnostic_response(
     out["review_intelligence"] = merged.get("review_intelligence") or merged.get("signal_review_intelligence")
     out["geo_coverage"] = merged.get("geo_coverage")
     out["authority_proxy"] = merged.get("authority_proxy")
+    if isinstance(merged.get("competitors"), list):
+        out["competitors"] = list(merged.get("competitors") or [])
+    if "local_avg_rating" in merged:
+        out["local_avg_rating"] = merged.get("local_avg_rating")
+    if "local_avg_rating_points" in merged:
+        out["local_avg_rating_points"] = merged.get("local_avg_rating_points")
 
     # Final deterministic consistency pass to prevent contradictory brief claims.
     try:
@@ -397,6 +581,7 @@ def run_diagnostic(
     city: str,
     state: Optional[str] = None,
     website: Optional[str] = None,
+    deep_audit: bool = False,
 ) -> Dict[str, Any]:
     """
     Resolve place, run enrichment pipeline, store lead, return diagnostic summary.
@@ -406,7 +591,7 @@ def run_diagnostic(
 
     Raises FileNotFoundError for not found, RuntimeError for pipeline/API failures.
     """
-    from backend.services.place_resolver import resolve_from_name_city
+    from backend.services.place_resolver import resolve_from_name_city, resolve_from_website
     from pipeline.enrich import PlaceDetailsEnricher
     from pipeline.signals import extract_signals, merge_signals_into_lead
     from pipeline.meta_ads import get_meta_access_token, augment_lead_with_meta_ads
@@ -443,6 +628,8 @@ def run_diagnostic(
         insert_lead,
         insert_lead_signals,
         insert_decision,
+        insert_lead_doc_v1,
+        insert_lead_intel_v1,
         update_lead_dentist_data,
         update_run_completed,
         update_run_failed,
@@ -450,10 +637,20 @@ def run_diagnostic(
         get_review_velocity,
     )
     from pipeline.embedding_store import store_lead_embedding_if_eligible
+    from pipeline.doc_builder import build_typed_docs_for_lead, build_llm_brief_summary_doc
+    from pipeline.embeddings import get_embedding
+    from pipeline.rag.hybrid_retriever import build_rag_context, build_retrieval_criteria
+    from backend.ml.runtime import score_diagnostic_response
 
-    # 1) Resolve place via name + city + state (most reliable)
+    # 1) Resolve place. Deep audit prefers website resolution when available to reduce ambiguous name/city matches.
     resolved_state = state.strip() if state else None
-    lead = resolve_from_name_city(business_name.strip(), city.strip(), state=resolved_state)
+    lead = None
+    if deep_audit and website:
+        lead = resolve_from_website(website.strip())
+    if not lead:
+        lead = resolve_from_name_city(business_name.strip(), city.strip(), state=resolved_state)
+    if not lead and website:
+        lead = resolve_from_website(website.strip())
     resolved_city = city.strip()
 
     if not lead or not lead.get("place_id"):
@@ -548,9 +745,12 @@ def run_diagnostic(
         "agency_type": agency_type,
     })
     agent = DecisionAgent(agency_type=agency_type)
+    rag_enabled = os.getenv("USE_HYBRID_RAG", "true").strip().lower() in ("1", "true", "yes")
+    embeddings_enabled = bool(os.getenv("OPENAI_API_KEY"))
 
     try:
         lead_id = insert_lead(run_id, merged)
+        merged["lead_id"] = lead_id
         insert_lead_signals(lead_id, signals)
 
         if is_dental_practice(merged):
@@ -570,7 +770,17 @@ def run_diagnostic(
                     city=resolved_city,
                     state=resolved_state,
                     vertical="dentist",
+                    place_data=merged,
+                    use_playwright=True,
+                    playwright_mode="landing_only",
                 )
+                try:
+                    service_intel["signal_verification"] = _build_brief_signal_verification(
+                        website=url,
+                        service_intel=service_intel,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to build brief signal verification: %s", exc)
                 competitors = []
                 search_radius_used_miles = 2
                 lat, lng = merged.get("latitude"), merged.get("longitude")
@@ -581,7 +791,44 @@ def run_diagnostic(
                             competitors,
                             vertical="dentist",
                         )
+                competitor_rows: List[Dict[str, Any]] = []
+                for c in competitors or []:
+                    if not isinstance(c, dict):
+                        continue
+                    dist_val = c.get("distance_miles")
+                    if isinstance(dist_val, (int, float)):
+                        if float(dist_val).is_integer():
+                            distance = f"{int(float(dist_val))} mi"
+                        else:
+                            distance = f"{float(dist_val):.1f} mi"
+                    else:
+                        distance = "—"
+                    competitor_rows.append(
+                        {
+                            "name": str(c.get("name") or ""),
+                            "reviews": int(c.get("reviews") or c.get("user_ratings_total") or 0),
+                            "rating": (float(c.get("rating")) if c.get("rating") is not None else None),
+                            "distance": distance,
+                            "placeId": str(c.get("place_id") or ""),
+                            "note": "Nearby competitor",
+                            "isYou": False,
+                        }
+                    )
+                rated_competitors = [
+                    float(row.get("rating"))
+                    for row in competitor_rows
+                    if row.get("isYou") is False and row.get("rating") is not None
+                ]
+                merged["competitors"] = competitor_rows
+                merged["local_avg_rating_points"] = int(len(rated_competitors))
+                if len(rated_competitors) >= 2:
+                    merged["local_avg_rating"] = round(sum(rated_competitors) / len(rated_competitors), 1)
+                else:
+                    merged["local_avg_rating"] = None
                 competitive_snap = build_competitive_snapshot(merged, competitors, search_radius_used_miles) if competitors else {}
+                if isinstance(competitive_snap, dict):
+                    competitive_snap["local_avg_rating"] = merged.get("local_avg_rating")
+                    competitive_snap["local_avg_rating_points"] = merged.get("local_avg_rating_points")
                 competitive_delta = build_competitive_delta(merged, service_intel, competitors)
                 authority_proxy = build_authority_proxy(
                     service_intelligence=service_intel,
@@ -637,6 +884,34 @@ def run_diagnostic(
             if dentist_profile_v1:
                 context = build_context(merged)
                 lead_score = round((merged.get("confidence") or 0) * 100)
+                typed_docs = build_typed_docs_for_lead(merged, signals, {"vertical": "dentist", "city": resolved_city, "state": resolved_state})
+                for doc in typed_docs:
+                    emb = get_embedding(doc.get("content_text", "")) if (embeddings_enabled and rag_enabled) else None
+                    insert_lead_doc_v1(
+                        lead_id=lead_id,
+                        doc_type=doc.get("doc_type", ""),
+                        content_text=doc.get("content_text", ""),
+                        metadata=doc.get("metadata_json") or {},
+                        embedding=emb,
+                    )
+
+                rag_context = {}
+                if rag_enabled:
+                    criteria = build_retrieval_criteria(
+                        {
+                            **merged,
+                            "lead_id": lead_id,
+                            "city": resolved_city,
+                            "state": resolved_state,
+                        },
+                        query_docs=typed_docs,
+                    )
+                    rag_context = build_rag_context(
+                        current_lead={**merged, "lead_id": lead_id, "city": resolved_city, "state": resolved_state},
+                        criteria=criteria,
+                        k_similar=6,
+                    )
+
                 llm_reasoning_layer = dentist_llm_reasoning_layer(
                     business_snapshot=merged,
                     dentist_profile_v1=dentist_profile_v1,
@@ -644,7 +919,43 @@ def run_diagnostic(
                     lead_score=lead_score,
                     priority=merged.get("verdict"),
                     confidence=merged.get("confidence"),
+                    rag_context=rag_context if rag_context else None,
                 )
+                insert_lead_intel_v1(
+                    lead_id=lead_id,
+                    vertical="dentist",
+                    primary_constraint=llm_reasoning_layer.get("primary_constraint"),
+                    primary_leverage=llm_reasoning_layer.get("primary_leverage"),
+                    contact_priority=llm_reasoning_layer.get("contact_priority"),
+                    outreach_angle=llm_reasoning_layer.get("outreach_angle") or llm_reasoning_layer.get("recommended_outreach_angle"),
+                    confidence=llm_reasoning_layer.get("confidence"),
+                    risks=llm_reasoning_layer.get("risks") or llm_reasoning_layer.get("risk_objections"),
+                    evidence=llm_reasoning_layer.get("evidence"),
+                )
+                llm_doc = build_llm_brief_summary_doc(
+                    merged,
+                    signals,
+                    {"vertical": "dentist", "city": resolved_city, "state": resolved_state, "llm_reasoning_layer": llm_reasoning_layer},
+                )
+                if llm_doc:
+                    llm_emb = get_embedding(llm_doc.get("content_text", "")) if (embeddings_enabled and rag_enabled) else None
+                    insert_lead_doc_v1(
+                        lead_id=lead_id,
+                        doc_type=llm_doc.get("doc_type", "llm_brief_summary"),
+                        content_text=llm_doc.get("content_text", ""),
+                        metadata=llm_doc.get("metadata_json") or {},
+                        embedding=llm_emb,
+                    )
+                merged["llm_reasoning_layer"] = llm_reasoning_layer
+                merged["cohort_count"] = llm_reasoning_layer.get("cohort_count")
+                merged["cohort_close_rate"] = llm_reasoning_layer.get("cohort_close_rate")
+                merged["top_constraints"] = llm_reasoning_layer.get("top_constraints")
+                merged["top_outreach_angles"] = llm_reasoning_layer.get("top_outreach_angles")
+                merged["similar_leads_count"] = llm_reasoning_layer.get("similar_leads_count")
+                merged["rag_used"] = llm_reasoning_layer.get("rag_used")
+                merged["retrieval_time_ms"] = llm_reasoning_layer.get("retrieval_time_ms")
+                merged["num_similar_docs"] = llm_reasoning_layer.get("num_similar_docs")
+                merged["extraction_method"] = merged.get("signal_extraction_method")
                 sales_intel = build_sales_intervention_intelligence(
                     business_snapshot=merged,
                     dentist_profile_v1=dentist_profile_v1,
@@ -712,6 +1023,12 @@ def run_diagnostic(
 
         update_run_completed(run_id, 1, run_stats={"total": 1})
         response = _build_diagnostic_response(lead_id, merged, resolved_city, state=resolved_state)
+        lead_quality = None
+        try:
+            lead_quality = score_diagnostic_response(response)
+            response["lead_quality"] = {k: v for k, v in lead_quality.items() if k != "features"}
+        except Exception:
+            logger.exception("Failed scoring diagnostic lead-quality for lead %s", lead_id)
 
         # Store predictions for outcome tracking / calibration
         try:
@@ -727,7 +1044,6 @@ def run_diagnostic(
                 "missing_services": svc_intel.get("missing_high_value_pages", []),
                 "detected_services": svc_intel.get("high_ticket_services_detected", []),
                 "has_booking": merged.get("signal_has_automated_scheduling"),
-                "has_schema": merged.get("signal_has_schema_microdata"),
                 "runs_google_ads": merged.get("signal_runs_paid_ads"),
                 "review_count": merged.get("signal_review_count") or merged.get("user_ratings_total"),
                 "review_velocity_30d": merged.get("signal_review_velocity_30d"),

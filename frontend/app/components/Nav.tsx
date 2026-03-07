@@ -7,11 +7,11 @@ import { checkHealth } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 const links = [
-  { href: "/dashboard", label: "Dashboard" },
+  { href: "/dashboard", label: "Workspace" },
   { href: "/ask", label: "Ask Neyma" },
-  { href: "/territory/new", label: "Run Territory" },
+  { href: "/territory/new", label: "Territory Scan" },
   { href: "/lists", label: "Lists" },
-  { href: "/diagnostic/new", label: "New Diagnostic" },
+  { href: "/diagnostic/new", label: "Build Brief" },
   { href: "/settings", label: "Settings" },
 ];
 

@@ -31,6 +31,13 @@ The system is specialized for dental practices. For each lead we produce:
 - **Lead outcomes** — Contacted, proposal sent, closed, close value, service sold
 - **Similarity stats** — Conversion rates and top service sold across similar historical profiles (used for UI and future analytics)
 
+### Hybrid RAG (cohort + similarity + outcomes)
+- **Typed lead docs (`lead_docs_v1`)**: `signal_profile`, `service_coverage`, `market_context`, `conversion_path`, `llm_brief_summary`
+- **Cohort retrieval**: SQL-filtered peers by vertical/city/review-gap bucket/market-density
+- **Vector retrieval**: semantic nearest docs from other leads (when embeddings available)
+- **Outcome patterns**: observed constraint/leverage/outreach patterns weighted by booked/closed outcomes
+- **Guardrails**: dentist LLM receives only retrieved context and must emit strict JSON with evidence references
+
 ---
 
 ## Architecture
@@ -43,6 +50,7 @@ The system is specialized for dental practices. For each lead we produce:
 | **Export** | `export_leads.py` — Context-first or legacy export from DB |
 | **Briefs** | `render_brief.py` — Revenue Intelligence Brief HTML per lead |
 | **Outcomes** | `update_outcome.py` — Create/update outcome records for the loop |
+| **Hybrid RAG** | `pipeline/doc_builder.py` + `pipeline/rag/hybrid_retriever.py` |
 | **API** | FastAPI backend — `POST /diagnostic` for single-lead enrichment |
 
 ### Run the API server
@@ -84,9 +92,46 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). The UI shows API status and a diagnostic form (business name, city, optional website) and displays the structured result.
 
+### Measure Capture Accuracy (gold-set benchmark)
+
+Use this to measure real precision/recall/F1 for brief-critical capture signals:
+- online booking
+- contact form
+- phone prominence
+- phone clickable
+- CTA presence
+- form structure accuracy
+
+1. Prepare input CSV with at least:
+`business_name,city,state,website`
+
+2. Generate model predictions:
+
+```bash
+python3 scripts/generate_capture_benchmark.py \
+  --csv data/capture_benchmark_input.csv \
+  --output output/capture_benchmark_predictions.csv
+```
+
+3. Human-label the same CSV by filling:
+`label_online_booking,label_contact_form,label_phone_prominent,label_phone_clickable,label_has_cta,label_form_structure`
+using:
+- bool labels: `true` or `false`
+- form structure: `single_step`, `multi_step`, `none`, or `unknown`
+
+4. Evaluate:
+
+```bash
+python3 scripts/evaluate_capture_benchmark.py \
+  --csv output/capture_benchmark_predictions.csv \
+  --json-out output/capture_benchmark_metrics.json
+```
+
+The evaluator prints per-signal precision/recall/F1/accuracy and summary macro/micro F1.
+
 ### Database
 - SQLite: runs, leads, signals, decisions, embeddings (versioned), outcomes
-- Tables: `runs`, `leads`, `lead_signals`, `decisions`, `lead_embeddings_v2`, `lead_outcomes`
+- Tables: `runs`, `leads`, `lead_signals`, `decisions`, `lead_embeddings_v2`, `lead_outcomes`, `lead_intel_v1`, `lead_docs_v1`
 
 ### Key modules
 - **Objective intelligence** — Root bottleneck, growth vector, service intel, competitive profile

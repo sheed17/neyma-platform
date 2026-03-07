@@ -90,6 +90,9 @@ def _confidence_notes(
     if rev_count < 15:
         notes.append("Very low review count; revenue band is indicative.")
     svc = service_intelligence or {}
+    crawl_conf = str(svc.get("crawl_confidence") or "").strip().lower()
+    if crawl_conf == "low":
+        notes.append("Low crawl confidence; service and conversion gaps were not fully evaluated.")
     high_ticket = svc.get("high_ticket_procedures_detected") or []
     general = svc.get("general_services_detected") or []
     if not high_ticket and not general:
@@ -109,6 +112,8 @@ def _build_supporting_evidence(
     rev: Dict,
     dentist_profile: Dict,
     paid_intelligence: Optional[Dict] = None,
+    suppress_service_gap: bool = False,
+    suppress_conversion_absence_claims: bool = False,
 ) -> Dict[str, List[str]]:
     """Evidence buckets: reputation, market, digital, traffic, revenue. Max 4 per category (traffic 3)."""
     out = {
@@ -196,16 +201,21 @@ def _build_supporting_evidence(
         else:
             out["digital_signals"].append("Paid ads active")
     missing = (service_intelligence or {}).get("missing_high_value_pages") or []
-    for m in missing[:3]:
-        label = m if isinstance(m, str) else str(m)
-        if label:
-            out["digital_signals"].append(f"Missing dedicated {label} page")
+    if not suppress_service_gap:
+        for m in missing[:3]:
+            label = m if isinstance(m, str) else str(m)
+            if label:
+                out["digital_signals"].append(f"Missing dedicated {label} page")
     booking_path = lead.get("signal_booking_conversion_path")
     has_online_booking = booking_path in ("Online booking (limited)", "Online booking (full)")
     if booking_path is None:
         has_online_booking = lead.get("signal_has_automated_scheduling") is True
-    if not has_online_booking and (missing or lead.get("signal_runs_paid_ads")):
+    if (not suppress_conversion_absence_claims) and (not has_online_booking) and (missing or lead.get("signal_runs_paid_ads")):
         out["digital_signals"].append("No online booking detected")
+    if suppress_conversion_absence_claims:
+        out["digital_signals"].append("Conversion infrastructure not fully evaluated (limited crawl depth)")
+    if suppress_service_gap:
+        out["digital_signals"].append("Service visibility not fully evaluated (limited crawl depth)")
     schema = bool(lead.get("signal_has_schema_microdata")) or bool(lead.get("signal_schema_types") or [])
     if not schema:
         out["digital_signals"].append("No schema markup")
@@ -344,7 +354,14 @@ def build_canonical_summary_60s(
     confidence_summary = _confidence_summary(revenue_confidence_score, lead)
     confidence_notes = _confidence_notes(lead, rev, service_intelligence)
     supporting_evidence = _build_supporting_evidence(
-        lead, competitive_snapshot, service_intelligence, rev, dentist_profile or {}, paid_intelligence,
+        lead,
+        competitive_snapshot,
+        service_intelligence,
+        rev,
+        dentist_profile or {},
+        paid_intelligence,
+        suppress_service_gap=bool((service_intelligence or {}).get("suppress_service_gap")),
+        suppress_conversion_absence_claims=bool((service_intelligence or {}).get("suppress_conversion_absence_claims")),
     )
     traffic_estimate = _traffic_estimate_for_summary(rev)
     disclaimers = _disclaimers(rev)

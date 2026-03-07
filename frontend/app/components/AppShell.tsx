@@ -5,23 +5,24 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { checkHealth } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import Footer from "@/app/components/Footer";
 
 const links = [
-  { href: "/dashboard", label: "Dashboard" },
+  { href: "/dashboard", label: "Workspace" },
   { href: "/ask", label: "Ask Neyma" },
-  { href: "/territory/new", label: "Territory" },
+  { href: "/territory/new", label: "Territory Scan" },
   { href: "/lists", label: "Lists" },
-  { href: "/diagnostic/new", label: "Diagnostics" },
+  { href: "/diagnostic/new", label: "Build Brief" },
   { href: "/settings", label: "Settings" },
 ];
 
 function titleFromPath(pathname: string): string {
   if (pathname.startsWith("/ask")) return "Ask Neyma";
-  if (pathname.startsWith("/territory/")) return "Territory";
+  if (pathname.startsWith("/territory/")) return "Territory Scan";
   if (pathname.startsWith("/lists/")) return "Lists";
-  if (pathname.startsWith("/diagnostic/")) return "Diagnostic";
+  if (pathname.startsWith("/diagnostic/")) return "Brief";
   if (pathname.startsWith("/settings")) return "Settings";
-  return "Dashboard";
+  return "Workspace";
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -38,29 +39,31 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-[var(--bg-app)] text-[var(--text-primary)]">
-      <div className="flex">
-        <aside className="hidden h-screen w-64 shrink-0 border-r border-[var(--border-default)] bg-gradient-to-b from-white to-[#f7fbff] px-3 py-4 lg:block">
-          <Link href="/dashboard" className="mb-4 block rounded-[var(--radius-md)] px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Workspace</p>
-            <p className="display-title mt-1 text-2xl font-black tracking-tight">Neyma</p>
-          </Link>
-          <nav className="space-y-1">
-            {links.map((l) => {
-              const active = pathname === l.href || pathname.startsWith(`${l.href}/`);
-              return (
-                <Link
-                  key={l.href}
-                  href={l.href}
-                  className={`block rounded-[var(--radius-md)] px-3 py-2.5 text-sm font-medium transition ${active ? "bg-[var(--accent-soft)] text-[var(--accent)] shadow-[inset_0_0_0_1px_rgba(13,148,136,0.15)]" : "text-[var(--text-secondary)] hover:bg-slate-100"}`}
-                >
-                  {l.label}
-                </Link>
-              );
-            })}
-          </nav>
+      <div className="flex min-h-screen">
+        <aside className="hidden min-h-screen w-64 shrink-0 self-stretch border-r border-[var(--border-default)] bg-gradient-to-b from-white to-[#f7fbff] lg:block">
+          <div className="sticky top-0 px-3 py-4">
+            <Link href="/dashboard" className="mb-4 block rounded-[var(--radius-md)] px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Workspace</p>
+              <p className="mt-1 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">Neyma</p>
+            </Link>
+            <nav className="space-y-1">
+              {links.map((l) => {
+                const active = pathname === l.href || pathname.startsWith(`${l.href}/`);
+                return (
+                  <Link
+                    key={l.href}
+                    href={l.href}
+                    className={`block rounded-[var(--radius-md)] px-3 py-2.5 text-sm font-medium transition ${active ? "bg-[var(--accent-soft)] text-[var(--accent)] shadow-[inset_0_0_0_1px_rgba(13,148,136,0.15)]" : "text-[var(--text-secondary)] hover:bg-slate-100"}`}
+                  >
+                    {l.label}
+                  </Link>
+                );
+              })}
+            </nav>
+          </div>
         </aside>
 
-        <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
           <header className="sticky top-0 z-30 border-b border-[var(--border-default)] bg-[var(--bg-card)]/95 backdrop-blur">
             <div className="flex h-16 items-center justify-between px-4 sm:px-6">
               <div className="flex items-center gap-3">
@@ -113,7 +116,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           )}
 
-          <main className="px-4 py-6 sm:px-6">{children}</main>
+          <main className="flex-1 px-4 py-6 sm:px-6">{children}</main>
+          <Footer />
         </div>
       </div>
     </div>

@@ -39,6 +39,8 @@ export async function submitDiagnostic(body: {
   city: string;
   state: string;
   website?: string;
+  deep_audit?: boolean;
+  source_diagnostic_id?: number;
 }): Promise<JobSubmitResponse> {
   const res = await fetch(`${getBaseUrl()}/diagnostic`, {
     method: "POST",
@@ -352,30 +354,12 @@ export async function getOutcomesList(limit = 200): Promise<{ items: OutcomesLis
 
 export async function runAskQuery(
   query: string,
-  accuracyMode: "fast" | "verified" = "verified",
   confirmedLowConfidence = false,
 ): Promise<AskStartResponse> {
   const res = await fetch(`${getBaseUrl()}/ask`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, accuracy_mode: accuracyMode, confirmed_low_confidence: confirmedLowConfidence }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || res.statusText);
-  }
-  return res.json();
-}
-
-export async function runAskAgenticQuery(
-  query: string,
-  accuracyMode: "fast" | "verified" = "verified",
-  confirmedLowConfidence = false,
-): Promise<AskStartResponse> {
-  const res = await fetch(`${getBaseUrl()}/ask/agentic`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, accuracy_mode: accuracyMode, confirmed_low_confidence: confirmedLowConfidence }),
+    body: JSON.stringify({ query, confirmed_low_confidence: confirmedLowConfidence }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));

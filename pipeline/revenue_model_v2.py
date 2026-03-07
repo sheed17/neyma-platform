@@ -4,6 +4,7 @@ Revenue model v2: tier-based annual revenue bands, capped organic gap, confidenc
 Deterministic, versioned, calibratable. No LLM. No linear review_count * multiplier.
 """
 
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 REVENUE_MODEL_VERSION = "v2"
@@ -38,12 +39,33 @@ def _base_revenue_band(review_count: int) -> Tuple[int, int]:
     return (3_000_000, 5_000_000)
 
 
-def _high_ticket_emphasized(high_ticket_procedures: List[Any]) -> bool:
+def _normalize_label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _in_scope(label: Any, expected_services: List[str]) -> bool:
+    target = _normalize_label(label)
+    if not target:
+        return False
+    for svc in expected_services or []:
+        s = _normalize_label(svc)
+        if not s:
+            continue
+        if target == s or target in s or s in target:
+            return True
+    return False
+
+
+def _high_ticket_emphasized(high_ticket_procedures: List[Any], practice_type: str = "general_dentist", expected_services: Optional[List[str]] = None) -> bool:
     """True if implants, orthodontics, or veneers explicitly present (high-ticket emphasis)."""
     if not high_ticket_procedures:
         return False
+    expected_services = expected_services or []
+    non_general = str(practice_type or "").strip().lower() not in {"", "general_dentist"}
     for p in high_ticket_procedures:
         s = (p.get("procedure") if isinstance(p, dict) else p) or ""
+        if non_general and expected_services and not _in_scope(s, expected_services):
+            continue
         s = str(s).lower()
         if any(kw in s for kw in ("implant", "invisalign", "orthodontic", "veneer", "cosmetic")):
             return True
@@ -159,7 +181,20 @@ def compute_revenue_v2(
     """
     obj = objective_layer or {}
     svc = obj.get("service_intelligence") or {}
+    if str(svc.get("crawl_confidence") or "").strip().lower() == "low" or bool(svc.get("suppress_revenue_modeling") or svc.get("suppress_service_gap")):
+        return {
+            "revenue_band_estimate": None,
+            "organic_revenue_gap_estimate": None,
+            "revenue_confidence_score": 0,
+            "indicative_only": True,
+            "revenue_reliability_grade": "C",
+            "model_version": REVENUE_MODEL_VERSION,
+            "suppressed_due_to_low_crawl_confidence": True,
+        }
+
     high_ticket = svc.get("high_ticket_procedures_detected") or []
+    practice_type = str(svc.get("practice_type") or "general_dentist")
+    expected_services = [str(x) for x in (svc.get("expected_services") or []) if str(x).strip()]
     missing_pages = svc.get("missing_high_value_pages") or []
     missing_high_value = bool(missing_pages)
     ads_active = context.get("signal_runs_paid_ads") is True
@@ -182,7 +217,11 @@ def compute_revenue_v2(
     if not multiple_locations and dentist_profile:
         multiple_locations = (dentist_profile.get("operations") or {}).get("multiple_locations") is True
 
-    high_ticket_emph = _high_ticket_emphasized(high_ticket)
+    high_ticket_emph = _high_ticket_emphasized(
+        high_ticket,
+        practice_type=practice_type,
+        expected_services=expected_services,
+    )
     rating = context.get("signal_rating")
     if rating is not None:
         try:
@@ -230,13 +269,13 @@ def compute_revenue_v2(
         pricing_page_detected,
     )
 
-    # Confidence gating: summary should show "Indicative only" when data is weak
     has_website = context.get("signal_has_website") is True
     has_services = bool(high_ticket or svc.get("general_services_detected"))
     indicative_only = (
         not has_website
         or review_count < 15
         or not has_services
+        or revenue_confidence_score < 40
     )
 
     # revenue_reliability_grade: A = GA4/direct (we have none), B = strong proxy + competitor context, C = weak proxy only

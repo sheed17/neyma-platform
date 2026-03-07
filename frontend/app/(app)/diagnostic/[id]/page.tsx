@@ -1,53 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   addProspectsToList,
+  createDiagnosticShareLink,
   createProspectList,
   deleteDiagnostic,
   getDiagnostic,
-  createDiagnosticShareLink,
   getDiagnosticBriefPdfUrl,
   getProspectLists,
   pollUntilDone,
+  recordOutcome,
   submitDiagnostic,
 } from "@/lib/api";
 import type { DiagnosticResponse, ProspectList } from "@/lib/types";
+import { computeVerdict } from "@/lib/verdict";
+import { generatePitchBullets } from "@/lib/pitch";
+import { cleanWebsiteDisplay, isSchemaRelated } from "@/lib/present";
 import Button from "@/app/components/ui/Button";
 import { Card } from "@/app/components/ui/Card";
 import ListPickerModal from "@/app/components/ListPickerModal";
 
-function oppProfileText(op: unknown): string {
-  if (!op) return "";
-  if (typeof op === "object" && op !== null && "label" in op) {
-    const o = op as { label?: string; why?: string };
-    return o.why ? `${o.label} (${o.why})` : o.label ?? "";
-  }
-  return String(op);
-}
+type SignalTab = "overview" | "competitors" | "siteGaps" | "fullAudit";
+type OutreachAction = "Called" | "Left VM" | "Emailed" | "No Answer";
 
-function leverageDriversText(op: unknown): string {
-  if (!op || typeof op !== "object") return "";
-  const drivers = (op as {
-    leverage_drivers?: {
-      missing_high_value_pages?: boolean;
-      market_density_high?: boolean;
-      structured_trust_weak?: boolean;
-      paid_active?: boolean;
-      review_deficit?: boolean;
-    };
-  }).leverage_drivers;
-  if (!drivers) return "";
-  return [
-    `missing high-value pages: ${drivers.missing_high_value_pages ? "yes" : "no"}`,
-    `high-density market: ${drivers.market_density_high ? "yes" : "no"}`,
-    `paid ads active: ${drivers.paid_active ? "yes" : "no"}`,
-    `review deficit: ${drivers.review_deficit ? "yes" : "no"}`,
-    `structured trust weak: ${drivers.structured_trust_weak ? "yes" : "no"}`,
-  ].join(", ");
-}
+type CompetitorRow = {
+  name: string;
+  reviews: number;
+  rating?: number | null;
+  distance: string;
+  note: string;
+  isYou?: boolean;
+};
+
+type CtaTypeRow = {
+  type: "Book" | "Schedule" | "Contact" | "Call";
+  count: number;
+  pages: string[];
+  clickableCount?: number;
+};
 
 function firstNumber(value: unknown): number | null {
   if (value == null) return null;
@@ -57,40 +50,121 @@ function firstNumber(value: unknown): number | null {
   return Number.isFinite(num) ? num : null;
 }
 
-function boolValueLabel(value: unknown): string {
+function formatMiles(value: unknown): string {
   if (value == null) return "—";
-  return value ? "Yes" : "No";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return `${String(value)} mi`;
+  return Number.isInteger(num) ? `${num} mi` : `${num.toFixed(1)} mi`;
 }
 
-function triStateLabel(value: unknown): string {
-  if (value === "detected") return "Detected";
-  if (value === "not_detected") return "Not detected";
+function paidStatusLabel(raw: string): "Active" | "Not detected" | "Unknown" {
+  const s = (raw || "").toLowerCase();
+  if (!s || s === "—" || s.includes("unknown")) return "Unknown";
+  if (s.includes("active") || s.includes("running")) return "Active";
+  return "Not detected";
+}
+
+function boolLabel(value: boolean | null | undefined): string {
+  if (value === true) return "Detected";
+  if (value === false) return "Not detected in this scan";
+  return "Not evaluated";
+}
+
+function boolIcon(value: boolean | null | undefined): string {
+  if (value === true) return "✓";
+  if (value === false) return "✕";
+  return "—";
+}
+
+function crawlMethodLabel(raw: unknown): string {
+  const v = String(raw || "").trim().toLowerCase();
+  if (v === "hybrid_playwright_landing_only") return "Hybrid (Playwright on landing pages)";
+  if (v === "playwright") return "Playwright (JS-rendered)";
+  if (v === "requests") return "Requests (static)";
+  if (v === "requests_fallback_playwright_unavailable") return "Requests fallback (Playwright unavailable)";
   return "Unknown";
 }
 
-function wiringBadge(count: unknown): string {
-  const n = Number(count || 0);
-  if (!Number.isFinite(n) || n <= 0) return "❌ Orphan";
-  if (n <= 2) return "⚠ Weak";
-  if (n <= 7) return "✓ Linked";
-  return "⭐ Core";
+function urlTitle(url: string): string {
+  try {
+    const u = new URL(url);
+    const part = (u.pathname || "/").split("/").filter(Boolean).pop() || "homepage";
+    return part.replace(/[-_]+/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  } catch {
+    return "Page";
+  }
 }
 
-function parseCompetitorLine(value: string): { name: string; reviews: string; distance: string; notes: string } {
+function normalizeUrlForMatch(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withProtocol = raw.startsWith("http://") || raw.startsWith("https://") ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(withProtocol);
+    const host = parsed.hostname.replace(/^www\./, "");
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return `${host}${path}`.toLowerCase();
+  } catch {
+    return raw.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "").toLowerCase();
+  }
+}
+
+function urlsMatch(a: string, b: string): boolean {
+  const left = normalizeUrlForMatch(a);
+  const right = normalizeUrlForMatch(b);
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function parseCompetitorLine(value: string): { name: string; reviews: number; distance: string; notes: string } {
   const parts = value
     .split(/[—-]/g)
     .map((p) => p.trim())
     .filter(Boolean);
   const name = parts[0] || value.trim();
   const reviewsMatch = value.match(/(\d+(?:\.\d+)?)\s*reviews?/i);
-  const ratingMatch = value.match(/\((\d\.\d)\)/);
   const distanceMatch = value.match(/(\d+(?:\.\d+)?)\s*mi\b/i);
-  const reviews = reviewsMatch
-    ? `${reviewsMatch[1]}${ratingMatch ? ` (${ratingMatch[1]})` : ""}`
-    : "—";
+  const reviews = reviewsMatch ? Number(reviewsMatch[1]) : 0;
   const distance = distanceMatch ? `${distanceMatch[1]} mi` : "—";
   const notes = parts.slice(1).join(" — ") || "Competitive context";
   return { name, reviews, distance, notes };
+}
+
+function pct(n: number, d: number): number {
+  if (d <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((n / d) * 100)));
+}
+
+function inferCtaTypeRows(totalCtas: number, pages: string[], evidenceText: string): CtaTypeRow[] {
+  const types: Array<{ type: CtaTypeRow["type"]; tokens: RegExp[] }> = [
+    { type: "Book", tokens: [/\bbook\b/gi] },
+    { type: "Schedule", tokens: [/\bschedule\b/gi, /\bappointment\b/gi] },
+    { type: "Contact", tokens: [/\bcontact\b/gi, /\bget in touch\b/gi] },
+    { type: "Call", tokens: [/\bcall\b/gi, /\btel:\b/gi, /\bphone\b/gi] },
+  ];
+
+  const rawCounts = types.map((t) =>
+    t.tokens.reduce((acc, rgx) => acc + (evidenceText.match(rgx)?.length || 0), 0),
+  );
+  const rawSum = rawCounts.reduce((a, b) => a + b, 0);
+
+  let counts = rawCounts;
+  if (totalCtas > 0 && rawSum > 0) {
+    counts = rawCounts.map((c) => Math.round((c / rawSum) * totalCtas));
+    const diff = totalCtas - counts.reduce((a, b) => a + b, 0);
+    if (diff !== 0) counts[0] += diff;
+  }
+
+  return types.map((t, i) => {
+    const token = t.type.toLowerCase();
+    const pageMatches = pages.filter((p) => p.toLowerCase().includes(token)).slice(0, 5);
+    return {
+      type: t.type,
+      count: counts[i] || 0,
+      pages: pageMatches,
+      clickableCount: undefined,
+    };
+  });
 }
 
 export default function DiagnosticDetailPage() {
@@ -98,26 +172,39 @@ export default function DiagnosticDetailPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const id = Number(params.id);
-  const invalidId = !id || isNaN(id);
+  const invalidId = !id || Number.isNaN(id);
   const from = String(searchParams.get("from") || "").toLowerCase();
   const scanId = searchParams.get("scanId") || "";
+  const listId = searchParams.get("listId") || "";
 
   const [result, setResult] = useState<DiagnosticResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [noticeHref, setNoticeHref] = useState<string | null>(null);
+  const [noticeCta, setNoticeCta] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+
   const [lists, setLists] = useState<ProspectList[]>([]);
   const [addListOpen, setAddListOpen] = useState(false);
   const [addingToList, setAddingToList] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+
+  const [activeTab, setActiveTab] = useState<SignalTab>("overview");
+  const [showMobileFooter, setShowMobileFooter] = useState(false);
+  const [outreachOpen, setOutreachOpen] = useState(false);
+  const [outreachAction, setOutreachAction] = useState<OutreachAction>("Called");
+  const [outreachNote, setOutreachNote] = useState("");
+  const [loggingOutreach, setLoggingOutreach] = useState(false);
+  const [activeCtaType, setActiveCtaType] = useState<CtaTypeRow["type"] | null>(null);
+  const [ctaDrawerOpen, setCtaDrawerOpen] = useState(false);
+
+  const headerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (invalidId) {
-      return;
-    }
+    if (invalidId) return;
     getDiagnostic(id)
       .then(setResult)
       .catch((e) => setError(e.message))
@@ -136,39 +223,56 @@ export default function DiagnosticDetailPage() {
     };
   }, []);
 
-  const navContext = (() => {
-    if (from === "ask") {
-      return {
-        crumbLabel: "Ask Neyma",
-        backLabel: "Back to results",
-        backHref: "/ask",
-      };
+  useEffect(() => {
+    function onScrollOrResize() {
+      const isMobile = window.innerWidth < 1024;
+      const heroBottom = headerRef.current?.getBoundingClientRect().bottom ?? Number.POSITIVE_INFINITY;
+      setShowMobileFooter(isMobile || heroBottom < 0);
     }
-    if (from === "territory" && scanId) {
-      return {
-        crumbLabel: "Territory",
-        backLabel: "Back to territory",
-        backHref: `/territory/${encodeURIComponent(scanId)}`,
-      };
-    }
-    return {
-      crumbLabel: "Dashboard",
-      backLabel: "Back to Dashboard",
-      backHref: "/dashboard",
+    onScrollOrResize();
+    window.addEventListener("scroll", onScrollOrResize, { passive: true });
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize);
+      window.removeEventListener("resize", onScrollOrResize);
     };
+  }, []);
+
+  const navContext = (() => {
+    if (from === "ask") return { crumbLabel: "Ask Neyma", backLabel: "Back to results", backHref: "/ask" };
+    if (from === "territory" && scanId) {
+      return { crumbLabel: "Territory Scan", backLabel: "Back to territory scan", backHref: `/territory/${encodeURIComponent(scanId)}` };
+    }
+    if (from === "list" && listId) {
+      return { crumbLabel: "List", backLabel: "Back to list", backHref: `/lists/${encodeURIComponent(listId)}` };
+    }
+    return { crumbLabel: "Workspace", backLabel: "Back to workspace", backHref: "/dashboard" };
   })();
 
-  async function handleRerun() {
+  async function handleRerun(deepAudit = false) {
     if (!result) return;
+    setError(null);
+    setNoticeHref(null);
+    setNoticeCta(null);
     setRerunning(true);
     try {
       const { job_id } = await submitDiagnostic({
         business_name: result.business_name,
         city: result.city,
         state: result.state || "",
+        ...(result.website ? { website: result.website } : {}),
+        deep_audit: deepAudit,
+        source_diagnostic_id: id,
       });
-      const job = await pollUntilDone(job_id);
+      setNotice(deepAudit ? "Deep audit started..." : "Brief refresh started...");
+      const job = await pollUntilDone(job_id, undefined, 2000, deepAudit ? 300 : 150);
       if (job.status === "completed" && job.diagnostic_id) {
+        if (Number(job.diagnostic_id) === Number(id)) {
+          router.replace(`/diagnostic/${job.diagnostic_id}?refresh=${Date.now()}`);
+          setNotice("Results refreshed.");
+          setRerunning(false);
+          return;
+        }
         router.push(`/diagnostic/${job.diagnostic_id}`);
       } else {
         setError(job.error || "Re-run failed");
@@ -181,7 +285,7 @@ export default function DiagnosticDetailPage() {
   }
 
   async function handleDelete() {
-    if (!confirm("Delete this diagnostic?")) return;
+    if (!confirm("Delete this brief?")) return;
     setDeleting(true);
     try {
       await deleteDiagnostic(id);
@@ -198,7 +302,9 @@ export default function DiagnosticDetailPage() {
       const uiUrl = `${window.location.origin}/brief/s/${res.token}`;
       setShareUrl(uiUrl);
       await navigator.clipboard.writeText(uiUrl);
-      alert("Share link copied to clipboard");
+      setNotice("Share link copied");
+      setNoticeHref(null);
+      setNoticeCta(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create share link");
     } finally {
@@ -210,15 +316,19 @@ export default function DiagnosticDetailPage() {
     setAddingToList(true);
     try {
       let listId = payload.listId;
+      let createdNew = false;
       if (!listId) {
         if (!payload.newListName) throw new Error("List name is required");
         const created = await createProspectList(payload.newListName);
         listId = created.id;
+        createdNew = true;
       }
       await addProspectsToList(listId, [id]);
       const updated = await getProspectLists().catch(() => ({ items: [] }));
       setLists(updated.items);
-      setNotice(`Added ${result?.business_name || "lead"} to list.`);
+      setNotice(`Added ${result?.business_name || "prospect"} to ${createdNew ? "new list" : "list"}.`);
+      setNoticeHref(`/lists/${listId}`);
+      setNoticeCta("Open list");
       setAddListOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add to list");
@@ -227,206 +337,647 @@ export default function DiagnosticDetailPage() {
     }
   }
 
-  if (invalidId) {
-    return (
-      <div className="mx-auto max-w-5xl px-2 py-10">
-        <main className="text-center">
-          <p className="text-red-600">Invalid diagnostic ID</p>
-          <Link href="/dashboard" className="mt-4 inline-block text-sm text-zinc-600 underline">Back to dashboard</Link>
-        </main>
-      </div>
-    );
+  async function handleLogOutreach() {
+    if (!result) return;
+    setLoggingOutreach(true);
+    try {
+      await recordOutcome({
+        diagnostic_id: id,
+        outcome_type: "outreach_log",
+        outcome_data: {
+          action: outreachAction,
+          note: outreachNote,
+          logged_at: new Date().toISOString(),
+        },
+      });
+      setNotice(`Outreach logged: ${outreachAction}`);
+      setNoticeHref(null);
+      setNoticeCta(null);
+      setOutreachOpen(false);
+      setOutreachNote("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to log outreach");
+    } finally {
+      setLoggingOutreach(false);
+    }
   }
 
+  if (invalidId) return <div className="mx-auto max-w-6xl px-2 py-10"><p className="text-red-600">Invalid brief ID</p></div>;
   if (loading) {
     return (
-      <div className="mx-auto max-w-5xl px-2 py-10">
-        <main className="text-center">
-          <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600" />
-          <p className="mt-3 text-sm text-zinc-400">Loading diagnostic…</p>
-        </main>
+      <div className="mx-auto max-w-6xl px-2 py-10 text-center">
+        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600" />
+        <p className="mt-3 text-sm text-zinc-500">Loading brief...</p>
       </div>
     );
   }
+  if (!result) return <div className="mx-auto max-w-6xl px-2 py-10"><p className="text-red-600">{error || "Brief not found"}</p></div>;
 
-  if (!result) {
-    return (
-      <div className="mx-auto max-w-5xl px-2 py-10">
-        <main className="text-center">
-          <p className="text-red-600">{error || "Diagnostic not found"}</p>
-          <Link href="/dashboard" className="mt-4 inline-block text-sm text-zinc-600 underline">Back to dashboard</Link>
-        </main>
-      </div>
-    );
-  }
+  const b = result.brief || {};
+  const ed = b?.executive_diagnosis || {};
+  const mp = b?.market_position || {};
+  const ds = b?.demand_signals || {};
+  const sg = b?.strategic_gap || {};
+  const csg = b?.competitive_service_gap || {};
+  const conv = b?.conversion_infrastructure || result.conversion_infrastructure || {};
+  const convStruct = b?.conversion_structure || {};
+  const reviewIntel = b?.review_intelligence || result.review_intelligence || {};
+  const svc = result.service_intelligence || {};
+  const spaV2 = (b?.service_page_analysis?.v2 as Record<string, unknown> | undefined)
+    || (svc.service_page_analysis_v2 as Record<string, unknown> | undefined)
+    || {};
 
-  const b = result.brief;
-  const ed = b?.executive_diagnosis;
-  const mp = b?.market_position;
-  const cc = b?.competitive_context;
-  const ds = b?.demand_signals;
-  const csg = b?.competitive_service_gap;
-  const sg = b?.strategic_gap;
-  const ht = b?.high_ticket_gaps;
-  const rucg = b?.revenue_upside_capture_gap;
-  const ci = b?.conversion_infrastructure;
-  const cd = b?.competitive_delta as Record<string, unknown> | undefined;
-  const reviewIntel = b?.review_intelligence as Record<string, unknown> | undefined;
-  const convStruct = b?.conversion_structure as Record<string, unknown> | undefined;
-  const marketSat = b?.market_saturation as Record<string, unknown> | undefined;
-  const geo = b?.geo_coverage as Record<string, unknown> | undefined;
-  const reviewComplaintThemes = (reviewIntel?.complaint_themes as Record<string, unknown>) || {};
-  const ccLine3Items = Array.isArray((cc as Record<string, unknown> | undefined)?.line3_items)
-    ? ((cc as Record<string, unknown>).line3_items as string[])
-    : [];
-  const parsedCompetitorRows = ccLine3Items.map(parseCompetitorLine);
-  const formatMiles = (value: unknown): string => {
-    if (value == null) return "—";
-    const num = Number(value);
-    if (Number.isFinite(num)) {
-      return Number.isInteger(num) ? `${num} mi` : `${num.toFixed(1)} mi`;
-    }
-    return `${String(value)} mi`;
-  };
-  const conversionFormValue = (value: unknown): string => {
-    if (value === "multi_step") return "Multi-step (more than one step to submit)";
-    if (value === "single_step") return "Single-step";
-    return String(value);
-  };
+  const verdict = computeVerdict(result);
   const websiteHref = result.website
     ? (result.website.startsWith("http://") || result.website.startsWith("https://") ? result.website : `https://${result.website}`)
     : null;
-  const reviewsNum = firstNumber(mp?.reviews);
-  const localAvgNum = firstNumber(mp?.local_avg);
-  const belowLocalAverage = reviewsNum != null && localAvgNum != null && reviewsNum < (localAvgNum * 0.8);
-  const adStatus = ds?.google_ads_line || result.paid_status || "—";
-  const missingLandingPages = ht?.missing_landing_pages ?? result.service_intelligence?.missing_services ?? [];
-  const detectedServices = ht?.high_ticket_services_detected ?? result.service_intelligence?.detected_services ?? [];
-  const serviceUpsideMap = new Map(
-    (ht?.service_level_upside ?? [])
-      .filter((x) => x?.service)
-      .map((x) => [String(x.service).toLowerCase(), String(x.upside || "—")]),
+  const websiteLabel = cleanWebsiteDisplay(result.website);
+  const phoneLabel = result.phone ? String(result.phone).trim() : "";
+  const phoneHref = phoneLabel ? `tel:${phoneLabel}` : null;
+  const paidStatus = paidStatusLabel(String(ds?.google_ads_line || result.paid_status || "Unknown"));
+  const reviewCount = firstNumber(mp?.reviews) || firstNumber(result.review_position) || 0;
+  const rating = firstNumber(result.review_position);
+  const localAvgReviews = firstNumber(mp?.local_avg) || firstNumber((result.evidence || []).find((e) => String(e.label || "").toLowerCase().includes("review"))?.value) || 0;
+
+  const opportunityBand = String(
+    ed?.modeled_revenue_upside
+    || (b?.revenue_upside_capture_gap?.annual_low != null
+      ? `$${Number(b.revenue_upside_capture_gap.annual_low).toLocaleString()}-$${Number(b.revenue_upside_capture_gap.annual_high ?? 0).toLocaleString()}`
+      : result.opportunity_profile || "—"),
   );
-  const servicePageAnalysis = (b?.service_page_analysis as Record<string, unknown> | undefined) ?? {};
-  const servicePageAnalysisV2 = (
-    (servicePageAnalysis.v2 as Record<string, unknown> | undefined)
-    ?? (result.service_intelligence?.service_page_analysis_v2 as Record<string, unknown> | undefined)
-    ?? {}
+  const opportunityLabel = String(ed?.opportunity_profile?.label || verdict.label || "Opportunity Signal");
+  const topGap = String(verdict.topGap || csg?.service || sg?.service || "—");
+
+  const crawlMethodRaw = String(svc.crawl_method || "").toLowerCase();
+  const usesPlaywrightPath = crawlMethodRaw.includes("playwright");
+  const crawlWarning = String(svc.crawl_warning || "").trim();
+  const jsDetected = Boolean(svc.js_detected);
+  const pagesCrawled = Number(svc.pages_crawled || 0);
+  const geoIntentPages = Number(
+    (svc.geo_intent_pages?.length ?? 0)
+    || (spaV2 as Record<string, Record<string, unknown>>).local_intent_coverage?.city_or_near_me_pages
+    || svc.city_or_near_me_page_count
+    || 0,
   );
-  const spaCoverage = (servicePageAnalysisV2.service_coverage as Record<string, unknown> | undefined) ?? {};
-  const spaDepth = (servicePageAnalysisV2.content_depth as Record<string, unknown> | undefined) ?? {};
-  const spaConversion = (servicePageAnalysisV2.conversion_readiness as Record<string, unknown> | undefined) ?? {};
-  const spaLocal = (servicePageAnalysisV2.local_intent_coverage as Record<string, unknown> | undefined) ?? {};
-  const spaTrust = (servicePageAnalysisV2.structured_trust_signals as Record<string, unknown> | undefined) ?? {};
-  const spaCrawl = (servicePageAnalysisV2.crawl_coverage as Record<string, unknown> | undefined) ?? {};
-  const crawlConfidence = String(spaCrawl.confidence || "unknown");
-  const coverageStatus = triStateLabel(spaCoverage.status);
-  const depthStatus = triStateLabel(spaDepth.status);
-  const conversionStatus = triStateLabel(spaConversion.status);
-  const localStatus = triStateLabel(spaLocal.status);
-  const wiringPagesWithSupport = Number(spaTrust.pages_with_wiring_support ?? 0);
-  const wiringAvgBodyUnique = Number(spaTrust.avg_inbound_unique_pages_body_only ?? 0);
-  const highValueServices = (servicePageAnalysis.services as Array<Record<string, unknown>> | undefined)
-    ?? (result.service_intelligence?.high_value_services as Array<Record<string, unknown>> | undefined)
-    ?? [];
-  const highValueSummary = (servicePageAnalysis.summary as Record<string, unknown> | undefined)
-    ?? (result.service_intelligence?.high_value_summary as Record<string, unknown> | undefined)
-    ?? {};
-  const highValueLeverage = String(
-    (servicePageAnalysis.leverage as string | undefined)
-    ?? (result.service_intelligence?.high_value_service_leverage as string | undefined)
-    ?? "—",
+  const servicePages = Number(svc.service_page_count || 0);
+  const ctaElements = Array.isArray(svc.cta_elements) ? svc.cta_elements : [];
+  const ctaCount = Number(
+    ctaElements.reduce((sum, row) => sum + Number(row?.count || 0), 0)
+    || convStruct.cta_count
+    || 0,
   );
-  const allServices = Array.from(new Set([...detectedServices, ...missingLandingPages]));
-  const hasWebsite = Boolean(result.website);
-  const targetServicePageCount = Number(cd?.target_service_page_count ?? 0);
-  const hasServiceCoverageData = highValueServices.length > 0 || allServices.length > 0 || targetServicePageCount > 0;
-  const landingPagesValue = !hasWebsite
-    ? "Not available"
-    : (missingLandingPages.length ? `${missingLandingPages.length} missing` : (hasServiceCoverageData ? "All key pages present" : "Insufficient crawl data"));
-  const landingPagesTone: "good" | "warn" | "neutral" = (!hasWebsite || !hasServiceCoverageData || missingLandingPages.length > 0) ? "warn" : "good";
-  const landingPagesStatus = !hasWebsite
-    ? "No website detected"
-    : (!hasServiceCoverageData ? "Coverage could not be validated from crawl data" : undefined);
-  const leadDensity = mp?.market_density ?? result.market_density ?? "—";
-  const oppText = oppProfileText(ed?.opportunity_profile || result.opportunity_profile);
-  const demandContextLine =
-    ds?.google_ads_line
-    || ds?.organic_visibility_tier
-    || (ds?.review_velocity_30d != null ? `Review velocity is ${ds.review_velocity_30d} in the last 30 days.` : "")
-    || "";
-  const problemHeadline = `${ed?.constraint || result.constraint || "Constraint unclear"}, ${ed?.primary_leverage || result.primary_leverage || "leverage unclear"}.`;
-  const problemContext = [
-    oppText ? `Opportunity profile: ${oppText}.` : "",
-    `Market density is ${leadDensity}.`,
-    demandContextLine ? `${demandContextLine}` : "",
-  ].filter(Boolean).join(" ");
-  const strategicReviewComparison = (() => {
-    const competitorReviews = firstNumber(sg?.competitor_reviews);
-    const leadReviews = firstNumber(mp?.reviews);
-    if (competitorReviews == null || leadReviews == null) return "relative to that competitor";
-    if (leadReviews < competitorReviews) return "below that competitor";
-    if (leadReviews > competitorReviews) return "above that competitor";
-    return "in line with that competitor";
-  })();
-  const structuredPlan = Array.isArray((b as Record<string, unknown> | undefined)?.intervention_plan_structured)
-    ? ((b as Record<string, unknown>).intervention_plan_structured as Array<Record<string, unknown>>)
-    : [];
-  const planItems = structuredPlan.length > 0
-    ? structuredPlan.map((item, index) => ({
-      step: Number(item.step) || index + 1,
-      category: String(item.category || "Operational"),
-      action: String(item.action || ""),
-    }))
-    : (b?.intervention_plan?.length
-      ? b.intervention_plan.map((action, index) => ({
-        step: index + 1,
-        category: "Operational",
-        action,
-      }))
-      : result.intervention_plan.map((item) => ({
-        step: item.step,
-        category: item.category,
-        action: item.action,
-      })));
-  const suggestionHrefFromCategory = (category: string): string => {
-    const cat = category.toLowerCase();
-    if (cat.includes("demand")) return "#demand-signals-full";
-    if (cat.includes("capture")) return "#service-page-analysis";
-    if (cat.includes("conversion")) return "#conversion-infrastructure";
-    if (cat.includes("trust")) return "#review-authority";
-    if (cat.includes("reputation")) return "#review-authority";
-    if (cat.includes("seo")) return "#service-page-analysis";
-    if (cat.includes("operational")) return "#conversion-infrastructure";
-    if (cat.includes("strategic")) return "#competitive-context-full";
-    return "#market-position-full";
+
+  const talkingPoints = generatePitchBullets(result).slice(0, 3);
+  const revenueDrivers = verdict.reasons.slice(0, 4);
+
+  const rawRisks = ((b?.risk_flags || result.risk_flags || []) as string[])
+    .filter((flag) => {
+      const text = String(flag || "").toLowerCase();
+      if (isSchemaRelated(text)) return false;
+      if (!usesPlaywrightPath && (text.includes("landing page") || text.includes("high-value service pages"))) return false;
+      return true;
+    });
+
+  const competitorRows: CompetitorRow[] = [];
+  competitorRows.push({
+    name: result.business_name,
+    reviews: reviewCount,
+    rating: rating ?? null,
+    distance: "—",
+    note: "You",
+    isYou: true,
+  });
+
+  if (Array.isArray(result.competitors) && result.competitors.length) {
+    for (const comp of result.competitors) {
+      const n = String(comp?.name || "").trim();
+      if (!n) continue;
+      if (competitorRows.some((r) => r.name.toLowerCase() === n.toLowerCase())) continue;
+      competitorRows.push({
+        name: n,
+        reviews: Number(comp?.reviews || 0),
+        rating: comp?.rating ?? null,
+        distance: String(comp?.distance || "—"),
+        note: String(comp?.note || "Nearby competitor"),
+      });
+    }
+  }
+
+  const addRow = (name: unknown, reviewsVal: unknown, distanceVal: unknown, note: string) => {
+    const n = String(name || "").trim();
+    if (!n) return;
+    if (competitorRows.some((r) => r.name.toLowerCase() === n.toLowerCase())) return;
+    competitorRows.push({
+      name: n,
+      reviews: Number(firstNumber(reviewsVal) || 0),
+      distance: formatMiles(distanceVal),
+      note,
+    });
   };
-  const ctaCount = Number(convStruct?.cta_count ?? 0);
-  const ctaLabels = Array.isArray(convStruct?.cta_labels)
-    ? (convStruct.cta_labels as string[])
-    : (ctaCount > 0 ? ["Book", "Schedule", "Contact", "Call"] : []);
+
+  addRow(sg?.competitor_name, sg?.competitor_reviews, sg?.distance_miles, "Nearest competitor");
+  addRow(csg?.competitor_name, csg?.competitor_reviews, csg?.distance_miles, "Service-gap competitor");
+
+  const line3 = Array.isArray((b?.competitive_context as Record<string, unknown> | undefined)?.line3_items)
+    ? ((b?.competitive_context as Record<string, unknown>).line3_items as string[])
+    : [];
+  for (const item of line3) {
+    const p = parseCompetitorLine(item);
+    addRow(p.name, p.reviews, p.distance, p.notes);
+  }
+
+  const maxReviews = Math.max(...competitorRows.map((r) => r.reviews), 1);
+  const nearestReviews = Number(firstNumber(sg?.competitor_reviews) || firstNumber(csg?.competitor_reviews) || 0);
+  const reviewDelta = nearestReviews > 0 ? reviewCount - nearestReviews : 0;
+
+  const cityTokens = String(result.city || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const geoExamples = (
+    ((spaV2 as Record<string, Record<string, unknown>>).local_intent_coverage?.examples as string[] | undefined)
+    || (svc.geo_page_examples as string[] | undefined)
+    || []
+  ).filter(Boolean);
+
+  const detectedGeoPages = (Array.isArray(svc.geo_intent_pages) && svc.geo_intent_pages.length
+    ? svc.geo_intent_pages.map((row) => ({
+      url: String(row.url || ""),
+      title: String(row.title || urlTitle(String(row.url || ""))),
+      signals: ((row.signals || []) as Array<"city" | "near-me" | "schema" | "meta">),
+      hasCTA: Boolean(row.hasCTA),
+    }))
+    : geoExamples.map((url) => {
+    const lower = String(url).toLowerCase();
+    const hasCity = cityTokens.some((t) => t.length >= 3 && lower.includes(t));
+    const hasNearMe = lower.includes("near") || lower.includes("near-me") || lower.includes("nearme");
+    const hasCTA = /(book|schedule|appointment|contact|call|tel:)/i.test(lower) || ctaCount > 0;
+    const signals = [hasCity ? "city" : "", hasNearMe ? "near-me" : ""].filter(Boolean) as Array<"city" | "near-me">;
+    return {
+      url,
+      title: urlTitle(url),
+      signals,
+      hasCTA,
+    };
+  }));
+
+  const missingGeoPages = (Array.isArray(svc.missing_geo_pages) && svc.missing_geo_pages.length
+    ? svc.missing_geo_pages
+      .filter((row) => String(row.priority || "low").toLowerCase() === "high")
+      .map((row) => ({
+        slug: String(row.slug || ""),
+        title: String(row.title || "Service Page"),
+        reason: String(row.reason || "No crawled URL matched expected service page slug."),
+      }))
+    : []);
+  const verifiedServiceSignals = (Array.isArray(svc.signal_verification?.services) ? svc.signal_verification?.services : [])
+    .map((row) => ({
+      service: String(row?.display_name || row?.service || "Service"),
+      verdict: String(row?.final_verdict || row?.deterministic_verdict || "not_evaluated").toLowerCase(),
+      confidence: String(row?.final_confidence || row?.deterministic_confidence || "low").toLowerCase(),
+      reason: String(row?.reason || "No reason captured."),
+      url: row?.url ? String(row.url) : "",
+      aiVerdict: row?.ai_validation?.enabled ? String(row?.ai_validation?.verdict || "").toLowerCase() : "",
+      aiConfidence: row?.ai_validation?.enabled ? String(row?.ai_validation?.confidence || "").toLowerCase() : "",
+      aiReason: row?.ai_validation?.enabled ? String(row?.ai_validation?.reason || "") : "",
+    }));
+
+  const crawlPages = (((svc as unknown as { service_page_detection_debug?: { pages_crawled?: string[] } }).service_page_detection_debug?.pages_crawled) || []).map(String);
+  const evidenceText = `${(b?.evidence_bullets || []).join(" ")} ${(result.evidence || []).map((e) => `${e.label}: ${e.value}`).join(" ")}`;
+  const ctaRows = ctaElements.length
+    ? ctaElements.map((row) => ({
+      type: String(row.type || "Contact") as CtaTypeRow["type"],
+      count: Number(row.count || 0),
+      pages: Array.isArray(row.pages) ? row.pages.map(String).slice(0, 5) : [],
+      clickableCount: Number(row.clickable_count || 0),
+    }))
+    : inferCtaTypeRows(ctaCount, crawlPages, evidenceText);
+  const clickableCtaCount = Number(
+    svc.cta_clickable_count
+    ?? ctaRows.reduce((sum, row) => sum + Number(row.clickableCount || 0), 0)
+    ?? 0,
+  );
+  const activeCtaRow = activeCtaType ? ctaRows.find((row) => row.type === activeCtaType) || null : null;
+  const activeCtaPages = activeCtaRow?.pages || [];
+  const activeCtaPageCount = activeCtaPages.length;
+
+  const statusBadge = verdict.verdict === "HIGH_LEVERAGE" ? "STRONG LEAD" : "QUALIFIED LEAD";
 
   return (
-    <div className="mx-auto max-w-6xl text-[var(--text-primary)]">
-      <main>
-        {/* Top bar */}
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-[var(--text-muted)]">
-            <Link href={navContext.backHref} className="app-link">{navContext.crumbLabel}</Link> {"→"} <span className="text-[var(--text-secondary)]">{result.business_name}</span>
-          </p>
-          <div className="flex items-center gap-2">
-            <Link href={navContext.backHref} className="app-link text-sm">{navContext.backLabel}</Link>
-            <Button
-              onClick={() => setAddListOpen(true)}
-            >
-              Add to list
-            </Button>
-            <Button
-              onClick={handleShare}
-              disabled={sharing}
-            >
-              {sharing ? "Sharing…" : "Share"}
-            </Button>
+    <div className="mx-auto max-w-7xl px-2 pb-24 md:px-4">
+      <main className="space-y-4">
+        <p className="text-sm text-[var(--text-muted)]">
+          <Link href={navContext.backHref} className="app-link">{navContext.crumbLabel}</Link>
+          <span> → </span>
+          <span>{result.business_name}</span>
+        </p>
+
+        {(notice || error) && (
+          <Card className="p-3">
+            {notice && (
+              <div className="flex flex-wrap items-center gap-2 text-sm text-emerald-700">
+                <span>{notice}</span>
+                {noticeHref && noticeCta ? <Link href={noticeHref} className="app-link font-medium">{noticeCta}</Link> : null}
+              </div>
+            )}
+            {error && <p className="text-sm text-red-600">{error}</p>}
+          </Card>
+        )}
+
+        <Card ref={headerRef} className="sticky top-2 z-20 border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h1 className="text-lg font-semibold tracking-tight text-slate-900">{result.business_name}</h1>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                <span>{result.city}{result.state ? `, ${result.state}` : ""}</span>
+                {(websiteHref || phoneHref) ? <span>•</span> : null}
+                {websiteHref ? (
+                  <a href={websiteHref} target="_blank" rel="noreferrer" className="font-medium text-slate-700 hover:underline">
+                    {websiteLabel || websiteHref}
+                  </a>
+                ) : <span>Website not available</span>}
+                {phoneHref ? (
+                  <>
+                    <span>•</span>
+                    <a href={phoneHref} className="font-medium text-slate-700 hover:underline">
+                      {phoneLabel}
+                    </a>
+                  </>
+                ) : null}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
+                {statusBadge}
+              </span>
+              <Button onClick={() => setAddListOpen(true)}>Add to Pipeline</Button>
+              <Button onClick={() => setOutreachOpen(true)} className="border-[var(--border-default)]">Log Outreach</Button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            <QuickStat label="Opportunity" value={opportunityBand} />
+            <QuickStat label="Reviews / Rating" value={`${reviewCount || "—"}${rating ? ` / ${rating.toFixed(1)}` : ""}`} />
+            <QuickStat label="Paid Ads" value={paidStatus} />
+            <QuickStat label="Top Gap" value={topGap} />
+            <QuickStat label="Market Density" value={String(mp?.market_density || result.market_density || "—")} />
+          </div>
+        </Card>
+
+        <Card className="p-4">
+          <div className="mb-3 flex flex-wrap gap-2">
+            <TabButton active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>Overview</TabButton>
+            <TabButton active={activeTab === "competitors"} onClick={() => setActiveTab("competitors")}>Competitors</TabButton>
+            <TabButton active={activeTab === "siteGaps"} onClick={() => setActiveTab("siteGaps")}>Site Gaps</TabButton>
+            <TabButton active={activeTab === "fullAudit"} onClick={() => setActiveTab("fullAudit")}>Full Audit</TabButton>
+          </div>
+          {activeCtaRow && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-[20px] border border-[#4f79c7]/16 bg-[linear-gradient(135deg,rgba(79,121,199,0.08)_0%,rgba(242,191,47,0.08)_100%)] px-3 py-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Active filter</span>
+              <span className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-3 py-1.5 text-xs font-medium text-[var(--text-primary)]">
+                CTA: {activeCtaRow.type}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveCtaType(null);
+                    setCtaDrawerOpen(false);
+                  }}
+                  className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-black/6 text-[10px] text-[var(--text-secondary)] hover:bg-black/10"
+                  aria-label="Clear CTA filter"
+                >
+                  ×
+                </button>
+              </span>
+              <span className="text-xs text-[var(--text-secondary)]">
+                Highlighting {activeCtaPageCount} related page{activeCtaPageCount === 1 ? "" : "s"} in this brief.
+              </span>
+            </div>
+          )}
+
+          {activeTab === "overview" && (
+            <div className="space-y-3 text-sm">
+              <div className="grid gap-3 lg:grid-cols-2">
+                <Card className="border border-slate-200 p-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Revenue Signal</h3>
+                  <div className="mt-2 space-y-2">
+                    <p><span className="text-xs text-slate-500">Opportunity Band:</span> <span className="font-semibold">{opportunityBand}</span></p>
+                    <p><span className="text-xs text-slate-500">Opportunity Label:</span> <span className="font-semibold">{opportunityLabel}</span></p>
+                    <div>
+                      <p className="text-xs text-slate-500">Revenue Drivers</p>
+                      <ul className="mt-1 list-disc space-y-1 pl-5 text-slate-700">
+                        {revenueDrivers.length ? revenueDrivers.map((r, i) => <li key={i}>{r}</li>) : <li>No urgent revenue drivers detected.</li>}
+                      </ul>
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="border border-slate-200 p-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Talking Points</h3>
+                  <ol className="mt-2 list-decimal space-y-1 pl-5 text-slate-700">
+                    {talkingPoints.length ? talkingPoints.map((t, i) => <li key={i}>{t}</li>) : <li>No talking points generated.</li>}
+                  </ol>
+                </Card>
+              </div>
+
+              {rawRisks.length > 0 ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
+                  <p className="text-xs font-semibold uppercase tracking-wide">Risk Flags</p>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {rawRisks.slice(0, 5).map((flag, idx) => (
+                      <span key={idx} className="rounded border border-amber-300 bg-white px-2 py-1 text-xs">{flag}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {activeTab === "competitors" && (
+            <div className="space-y-3 text-sm">
+              <div className="grid gap-3 md:grid-cols-3">
+                <MetricCard label="Market Density" value={String(mp?.market_density || result.market_density || "—")} />
+                <MetricCard label="Review Delta vs Nearest" value={nearestReviews > 0 ? `${reviewDelta >= 0 ? "+" : ""}${reviewDelta}` : "—"} />
+                <MetricCard label="Local Avg Reviews" value={localAvgReviews ? String(localAvgReviews) : "—"} />
+              </div>
+
+              <div className="overflow-x-auto rounded-md border border-slate-200">
+                <table className="min-w-full text-left text-xs sm:text-sm">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Practice</th>
+                      <th className="px-3 py-2 font-medium">Reviews</th>
+                      <th className="px-3 py-2 font-medium">Distance</th>
+                      <th className="px-3 py-2 font-medium">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {competitorRows.map((row, idx) => (
+                      <tr key={`${row.name}-${idx}`} className={`border-t border-slate-200 ${row.isYou ? "bg-blue-50" : "bg-white"}`}>
+                        <td className="px-3 py-2 font-medium text-slate-900">{row.name}{row.isYou ? " (You)" : ""}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <span className="w-10 text-right tabular-nums">{row.reviews || "—"}</span>
+                            <div className="h-2 w-28 rounded bg-slate-100">
+                              <div className={`h-2 rounded ${row.isYou ? "bg-blue-600" : "bg-slate-400"}`} style={{ width: `${pct(row.reviews, maxReviews)}%` }} />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">{row.distance}</td>
+                        <td className="px-3 py-2 text-slate-700">{row.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-slate-700">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Key Insight</p>
+                <p className="mt-1">{verdict.reasons[0] || "Competitive pressure appears moderate; prioritize converting existing demand."}</p>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "siteGaps" && (
+            <div className="space-y-3 text-sm">
+              <div className="grid gap-3 md:grid-cols-4">
+                <MetricCard label="Pages Crawled" value={String(pagesCrawled || "—")} />
+                <MetricCard label="Geo Intent Pages" value={String(geoIntentPages || 0)} />
+                <MetricCard label="Service Pages" value={String(servicePages || 0)} tone={servicePages < 3 ? "danger" : "default"} />
+                <MetricCard label="CTA Elements" value={String(ctaCount || 0)} />
+              </div>
+
+              <Card className="border border-slate-200 p-3">
+                <h3 className="text-sm font-semibold text-slate-900">Capture Readiness</h3>
+                <div className="mt-2 space-y-2">
+                  <CaptureReadinessRow
+                    label="Online Scheduling"
+                    status={boolLabel(conv.online_booking as boolean | null | undefined)}
+                    icon={boolIcon(conv.online_booking as boolean | null | undefined)}
+                    note="Booking path detection from rendered page content."
+                  />
+                  <CaptureReadinessRow
+                    label="Contact Form"
+                    status={boolLabel(conv.contact_form as boolean | null | undefined)}
+                    icon={boolIcon(conv.contact_form as boolean | null | undefined)}
+                    note={convStruct.form_single_or_multi_step ? `Form structure: ${String(convStruct.form_single_or_multi_step)}` : "No form structure signal found."}
+                  />
+                  <CaptureReadinessRow
+                    label="Phone Prominent"
+                    status={boolLabel(conv.phone_prominent as boolean | null | undefined)}
+                    icon={boolIcon(conv.phone_prominent as boolean | null | undefined)}
+                    note="Phone prominence from homepage and key page scan."
+                  />
+                  <CaptureReadinessRow
+                    label="Clickable Phone (tel:)"
+                    status={boolLabel(convStruct.phone_clickable as boolean | null | undefined)}
+                    icon={boolIcon(convStruct.phone_clickable as boolean | null | undefined)}
+                    note="Homepage tap-to-call detection."
+                  />
+                  <CaptureReadinessRow
+                    label="JS Rendering"
+                    status={usesPlaywrightPath ? "Enabled" : "Unavailable"}
+                    icon={usesPlaywrightPath ? "✓" : "✕"}
+                    note={crawlMethodLabel(svc.crawl_method)}
+                  />
+                </div>
+              </Card>
+
+              {!usesPlaywrightPath ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900">
+                  <p className="text-xs font-semibold uppercase tracking-wide">Accuracy Note</p>
+                  <p className="mt-1 text-sm">{crawlWarning || "Playwright was unavailable; this run used static crawl signals only."}</p>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {activeTab === "fullAudit" && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <MetaChip label="Pages" value={String(pagesCrawled || 0)} />
+                  <MetaChip label="JS Detected" value={jsDetected ? "Yes" : "No"} tone="badge" />
+                  <MetaChip label="Method" value={crawlMethodLabel(svc.crawl_method)} />
+                </div>
+                {!usesPlaywrightPath ? (
+                  <p className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+                    Static-only crawl warning: {crawlWarning || "Playwright unavailable for this run."}
+                  </p>
+                ) : null}
+              </div>
+
+              <section className="grid gap-3 lg:grid-cols-2">
+                <Card className="border border-slate-200 p-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Reviews & Reputation</h3>
+                  <ul className="mt-2 space-y-1 text-slate-700">
+                    <li>Your reviews vs avg: <strong>{reviewCount || "—"} vs {localAvgReviews || "—"}</strong></li>
+                    <li>Last review date: <strong>{(ds as Record<string, unknown>).last_review_days_ago != null ? `${String((ds as Record<string, unknown>).last_review_days_ago)} days ago` : "—"}</strong></li>
+                    <li>Competitors sampled: <strong>{String((result.evidence || []).find((e) => String(e.label || "").toLowerCase().includes("reviews vs market")) ? competitorRows.length - 1 : competitorRows.length - 1)}</strong></li>
+                  </ul>
+                  <div className="mt-2 rounded border border-slate-200 bg-slate-50 p-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Review Summary</p>
+                    <p className="mt-1 text-xs text-slate-700">
+                      {String((reviewIntel as Record<string, unknown>).summary || "No review-theme summary available for this lead yet.")}
+                    </p>
+                  </div>
+                </Card>
+
+                <Card className="border border-slate-200 p-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Market Context</h3>
+                  <ul className="mt-2 space-y-1 text-slate-700">
+                    <li>Density: <strong>{String(mp?.market_density || result.market_density || "—")}</strong></li>
+                    <li>Visibility gap: <strong>{String(svc.visibility_gap || svc.high_value_service_leverage || "—")}</strong></li>
+                    <li>Service pages found: <strong>{servicePages}</strong></li>
+                    <li>Form structure: <strong>{String(convStruct.form_single_or_multi_step || "unknown")}</strong></li>
+                    <li>Visibility channel: <strong>{result.website ? "Website present" : "No website"}</strong></li>
+                  </ul>
+                </Card>
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">Geo Intent Coverage</h3>
+                <div className="rounded-md border border-slate-200 p-3">
+                  <div className="mb-2 flex items-center justify-between text-xs text-slate-600">
+                    <span>{geoIntentPages} of 30 pages</span>
+                    <span>{pct(geoIntentPages, 30)}%</span>
+                  </div>
+                  <div className="h-2 rounded bg-slate-100">
+                    <div className="h-2 rounded bg-blue-600" style={{ width: `${pct(geoIntentPages, 30)}%` }} />
+                  </div>
+                </div>
+
+                <Card className="border border-slate-200 p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Detected</p>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-left text-xs sm:text-sm">
+                      <thead className="bg-slate-50 text-slate-600">
+                        <tr>
+                          <th className="px-2 py-1.5">Page Title</th>
+                          <th className="px-2 py-1.5">URL</th>
+                          <th className="px-2 py-1.5">Signal Tags</th>
+                          <th className="px-2 py-1.5">CTA present</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detectedGeoPages.length ? detectedGeoPages.map((row, idx) => {
+                          const highlighted = activeCtaPages.some((page) => urlsMatch(page, row.url));
+                          return (
+                          <tr key={`${row.url}-${idx}`} className={`border-t border-slate-200 ${highlighted ? "bg-amber-50/70" : ""}`}>
+                            <td className="px-2 py-1.5 text-slate-900">{row.title}</td>
+                            <td className={`px-2 py-1.5 font-mono text-[11px] ${highlighted ? "text-amber-900" : "text-slate-700"}`}>{row.url}</td>
+                            <td className="px-2 py-1.5">
+                              <div className="flex flex-wrap gap-1">
+                                {row.signals.includes("city") ? <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-700">📍 city</span> : null}
+                                {row.signals.includes("near-me") ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">🔍 near-me</span> : null}
+                                {row.signals.includes("schema") ? <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] text-violet-700">🏷 schema</span> : null}
+                                {row.signals.includes("meta") ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800">📝 meta</span> : null}
+                                {!row.signals.length ? <span className="text-slate-400">—</span> : null}
+                              </div>
+                            </td>
+                            <td className="px-2 py-1.5">{row.hasCTA ? "Yes" : "No"}</td>
+                          </tr>
+                        );}) : (
+                          <tr><td className="px-2 py-2 text-slate-500" colSpan={4}>No geo-intent pages captured.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+
+                <Card className="border border-red-200 bg-red-50 p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-red-700">Missing Geo Intent</p>
+                  {missingGeoPages.length ? (
+                    <ul className="space-y-1.5 text-red-900">
+                      {missingGeoPages.map((row, idx) => (
+                        <li key={`${row.slug}-${idx}`} className="rounded border border-red-200 bg-white px-2 py-1.5">
+                          <p className="font-medium">{row.title}</p>
+                          <p className="font-mono text-[11px]">/{row.slug}</p>
+                          <p className="text-xs">{row.reason}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="text-xs text-red-800">No high-value pages were flagged as missing geo intent in this run.</p>}
+                </Card>
+
+                {verifiedServiceSignals.length ? (
+                  <Card className="border border-slate-200 p-3">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Service Signal Verification</p>
+                    <div className="space-y-1.5">
+                      {verifiedServiceSignals.slice(0, 8).map((row, idx) => {
+                        const verdictLabel = row.verdict === "missing" ? "Missing" : row.verdict === "present" ? "Present" : "Not evaluated";
+                        const verdictTone = row.verdict === "missing" ? "bg-red-100 text-red-700" : row.verdict === "present" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700";
+                        const confTone = row.confidence === "high" ? "bg-emerald-100 text-emerald-700" : row.confidence === "medium" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700";
+                        const highlighted = row.url ? activeCtaPages.some((page) => urlsMatch(page, row.url)) : false;
+                        return (
+                          <div key={`${row.service}-${idx}`} className={`rounded border px-2 py-1.5 ${highlighted ? "border-amber-300 bg-amber-50/70" : "border-slate-200 bg-white"}`}>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="font-medium text-slate-900">{row.service}</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${verdictTone}`}>{verdictLabel}</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${confTone}`}>{row.confidence}</span>
+                              {row.aiVerdict ? <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">AI: {row.aiVerdict}</span> : null}
+                            </div>
+                            <p className="mt-1 text-xs text-slate-700">{row.reason}</p>
+                            {row.aiReason ? <p className="mt-0.5 text-[11px] text-slate-500">AI note: {row.aiReason}</p> : null}
+                            {row.url ? <p className={`mt-0.5 font-mono text-[10px] ${highlighted ? "text-amber-900" : "text-slate-500"}`}>{row.url}</p> : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Card>
+                ) : null}
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">CTA Elements</h3>
+                <Card className="border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500">Total CTA elements detected</p>
+                  <p className="text-2xl font-semibold text-slate-900">{ctaCount}</p>
+                  <p className="mt-1 text-xs text-slate-500">Of these, {clickableCtaCount} are clickable links/buttons.</p>
+                  <div className="mt-3 space-y-2">
+                    {ctaRows.map((row) => (
+                      <button
+                        key={row.type}
+                        type="button"
+                        onClick={() => {
+                          setActiveCtaType(row.type);
+                          setCtaDrawerOpen(true);
+                        }}
+                        className={`block w-full rounded border p-2 text-left transition ${activeCtaType === row.type ? "border-amber-300 bg-amber-50/70" : activeCtaType && activeCtaType !== row.type ? "border-slate-200 bg-white opacity-40 hover:opacity-70" : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}`}
+                      >
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${row.type === "Book" ? "bg-blue-100 text-blue-700" : row.type === "Schedule" ? "bg-emerald-100 text-emerald-700" : row.type === "Contact" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{row.type}</span>
+                          <span className="text-xs font-semibold text-slate-900">{row.count}</span>
+                        </div>
+                        <p className="mb-1 text-[11px] text-slate-500">{Number(row.clickableCount || 0)} clickable</p>
+                        <div className="h-1.5 rounded bg-slate-100">
+                          <div className="h-1.5 rounded bg-slate-600" style={{ width: `${pct(row.count, Math.max(ctaCount, 1))}%` }} />
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {row.pages.length ? row.pages.map((u, idx) => (
+                            <span key={`${u}-${idx}`} className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${activeCtaType === row.type ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-700"}`}>{u}</span>
+                          )) : <span className="text-[11px] text-slate-400">No explicit page-level URL match captured.</span>}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </Card>
+              </section>
+
+              <section>
+                <h3 className="mb-2 text-sm font-semibold text-slate-900">Risk Flags</h3>
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+                  <div className="flex flex-wrap gap-2">
+                    {rawRisks.length ? rawRisks.map((flag, idx) => (
+                      <span key={idx} className="rounded border border-amber-300 bg-white px-2 py-1 text-xs text-amber-900">{flag}</span>
+                    )) : <span className="text-xs text-amber-900">No high-priority risks detected for this run.</span>}
+                  </div>
+                </div>
+              </section>
+            </div>
+          )}
+        </Card>
+
+        <Card className="p-3 text-xs text-[var(--text-secondary)]">
+          <div className="flex flex-wrap gap-2">
+            <Link href={navContext.backHref} className="app-link">{navContext.backLabel}</Link>
+            <Button onClick={handleShare} disabled={sharing}>{sharing ? "Sharing..." : "Share"}</Button>
             <a
               href={getDiagnosticBriefPdfUrl(id)}
               target="_blank"
@@ -435,537 +986,32 @@ export default function DiagnosticDetailPage() {
             >
               Download PDF
             </a>
-            <Button
-              onClick={handleRerun}
-              disabled={rerunning}
-            >
-              {rerunning ? "Re-running…" : "Re-run diagnostic"}
-            </Button>
-            <Button
-              onClick={handleDelete}
-              disabled={deleting}
-              className="border-rose-200 text-rose-600 hover:bg-rose-50"
-            >
-              Delete
-            </Button>
+            <Button onClick={() => handleRerun(false)} disabled={rerunning}>{rerunning ? "Refreshing..." : "Refresh brief"}</Button>
+            <Button onClick={handleDelete} disabled={deleting} className="border-rose-200 text-rose-600 hover:bg-rose-50">Delete</Button>
           </div>
-        </div>
-
-        {(notice || error) && (
-          <div className="mb-4">
-            {notice && <p className="text-sm text-emerald-700">{notice}</p>}
-            {error && <p className="text-sm text-red-600">{error}</p>}
-          </div>
-        )}
-
-        <Card className="mb-4 p-4">
-          <h2 className="mb-2 text-sm font-semibold text-[var(--text-primary)]">Contact</h2>
-          <div className="grid gap-2 text-sm sm:grid-cols-2">
-            <p>
-              <strong>Phone:</strong>{" "}
-              {result.phone ? <a href={`tel:${result.phone}`} className="app-link">{result.phone}</a> : "—"}
-            </p>
-            <p className="break-all">
-              <strong>Website:</strong>{" "}
-              {websiteHref ? <a href={websiteHref} target="_blank" rel="noreferrer" className="app-link">{result.website}</a> : "—"}
-            </p>
-          </div>
-        </Card>
-
-        <Card className="p-6">
-          <h2 className="mb-1 text-sm font-medium uppercase tracking-wider text-zinc-500">Revenue Intelligence Brief</h2>
-          <p className="mb-5 text-sm text-zinc-700">Lead #{result.lead_id} · {result.business_name} · {result.city}{result.state ? `, ${result.state}` : ""}</p>
-
-          <div className="space-y-6 text-sm">
-            {shareUrl && (
-              <BriefSection title="Share Link">
-                <p className="break-all text-zinc-700">{shareUrl}</p>
-              </BriefSection>
-            )}
-            <BriefSection title="Problem">
-              <p className="text-base font-semibold text-[var(--text-primary)]">{problemHeadline}</p>
-              <p>{problemContext}</p>
-              {leverageDriversText(ed?.opportunity_profile) && (
-                <p className="text-xs text-[var(--text-muted)]">Leverage drivers: {leverageDriversText(ed?.opportunity_profile)}.</p>
-              )}
-              {b?.executive_footnote && <p className="text-xs text-[var(--text-muted)]">{b.executive_footnote}</p>}
-            </BriefSection>
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-              <MetricCard
-                label="Reviews"
-                value={mp?.reviews || "—"}
-                status={belowLocalAverage ? "Need more vs local avg" : (localAvgNum != null ? "In line with local avg" : undefined)}
-                tone={belowLocalAverage ? "warn" : "good"}
-              />
-              <MetricCard label="Conversion Rate" value="—" status="No GA4 data" />
-              <MetricCard label="Ad Status" value={adStatus} tone={/active|running/i.test(adStatus) ? "good" : "warn"} />
-              <MetricCard label="Market Density" value={leadDensity} />
-              <MetricCard
-                label="Last Review"
-                value={ds?.last_review_days_ago != null ? `${ds.last_review_days_ago} days ago` : "—"}
-                tone={ds?.last_review_days_ago != null && ds.last_review_days_ago > 45 ? "warn" : "good"}
-              />
-              <MetricCard
-                label="Review Velocity"
-                value={ds?.review_velocity_30d != null ? `${ds.review_velocity_30d} in 30d` : "—"}
-                tone={ds?.review_velocity_30d != null && ds.review_velocity_30d < 2 ? "warn" : "good"}
-              />
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <MetricCard
-                label="PPC Status"
-                value={ds?.google_ads_line || "—"}
-                status={ds?.paid_channels_detected?.length ? `Channels: ${ds.paid_channels_detected.join(", ")}` : undefined}
-              />
-              <MetricCard
-                label="Landing Pages"
-                value={landingPagesValue}
-                status={landingPagesStatus}
-                tone={landingPagesTone}
-              />
-            </div>
-
-            <BriefSection title="Paid & Demand">
-              <div className="grid gap-3 md:grid-cols-2">
-                <MetricCard label="Paid Status" value={ds?.google_ads_line || "—"} status={ds?.paid_channels_detected?.length ? ds.paid_channels_detected.join(", ") : undefined} />
-                <MetricCard label="Opportunity Value" value={ed?.modeled_revenue_upside || (rucg?.annual_low != null ? `$${rucg.annual_low.toLocaleString()}-$${(rucg.annual_high ?? 0).toLocaleString()} annually` : "—")} tone="good" />
-              </div>
-              {(ds?.paid_channels_detected?.length || ds?.organic_visibility_tier) && (
-                <div className="rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-card)] p-3">
-                  {ds?.paid_channels_detected?.length ? <p><strong>Paid channels:</strong> {ds.paid_channels_detected.join(", ")}</p> : null}
-                  {ds?.organic_visibility_tier ? <p><strong>Organic visibility:</strong> {ds.organic_visibility_tier}{ds.organic_visibility_reason ? ` — ${ds.organic_visibility_reason}` : ""}</p> : null}
-                </div>
-              )}
-            </BriefSection>
-
-            {(highValueServices.length > 0 || allServices.length > 0 || cd || ht?.schema || ci?.page_load_ms != null) ? (
-              <BriefSection title="Service / Page Analysis" sectionId="service-page-analysis">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <MetricCard
-                    label="Service Coverage"
-                    value={spaCoverage.status === "unknown"
-                      ? "Unknown"
-                      : (spaCoverage.total != null
-                      ? `${spaCoverage.present ?? 0} of ${spaCoverage.total} pages`
-                      : (cd?.target_service_page_count != null ? `${cd.target_service_page_count} pages` : "—"))}
-                    status={`${coverageStatus}${spaCoverage.ratio != null ? ` · ${Math.round(Number(spaCoverage.ratio) * 100)}% coverage` : ""}`}
-                  />
-                  <MetricCard
-                    label="Content Depth"
-                    value={spaDepth.status === "unknown"
-                      ? "Unknown"
-                      : (spaDepth.average_words != null
-                      ? `${Math.round(Number(spaDepth.average_words))} words avg`
-                      : (cd?.target_avg_word_count_service_pages != null ? `${Math.round(Number(cd.target_avg_word_count_service_pages))} words` : "—"))}
-                    status={`${depthStatus}${spaDepth.min_words != null && spaDepth.max_words != null ? ` · Min ${spaDepth.min_words} · Max ${spaDepth.max_words}` : ""}`}
-                  />
-                  <MetricCard
-                    label="Conversion Readiness"
-                    value={spaConversion.status === "unknown"
-                      ? "Unknown"
-                      : (spaConversion.pages_with_cta != null
-                      ? `${spaConversion.pages_with_cta} pages with CTA`
-                      : "—")}
-                    status={`${conversionStatus}${spaConversion.pages_with_booking != null || spaConversion.pages_with_financing != null ? ` · Booking ${spaConversion.pages_with_booking ?? 0} · Financing ${spaConversion.pages_with_financing ?? 0}` : ""}`}
-                  />
-                  <MetricCard
-                    label="Local Pages"
-                    value={spaLocal.status === "unknown"
-                      ? "Unknown"
-                      : (spaLocal.city_or_near_me_pages != null
-                      ? String(spaLocal.city_or_near_me_pages)
-                      : String(geo?.city_or_near_me_page_count ?? "—"))}
-                    status={`${localStatus}${spaLocal.has_multi_location_page != null ? ` · Multi-location: ${spaLocal.has_multi_location_page ? "Yes" : "No"}` : ""}`}
-                  />
-                </div>
-                {(spaDepth.thin_pages != null || ci?.page_load_ms != null || spaCrawl.pages_checked != null || spaTrust.pages_with_wiring_support != null) && (
-                  <p className="text-xs text-[var(--text-muted)]">
-                    {spaDepth.thin_pages != null ? `Thin pages (<${spaDepth.thin_page_threshold_words ?? 300} words): ${spaDepth.thin_pages}. ` : ""}
-                    {spaTrust.pages_with_wiring_support != null ? `Wiring support: ${wiringPagesWithSupport} pages linked in-body (avg ${wiringAvgBodyUnique.toFixed(2)}). ` : ""}
-                    {spaCrawl.pages_checked != null ? `Based on ${spaCrawl.pages_checked} pages checked (${crawlConfidence} confidence). ` : ""}
-                    {ci?.page_load_ms != null ? `Page load ${ci.page_load_ms} ms. ` : ""}
-                  </p>
-                )}
-                {highValueServices.length > 0 ? (
-                  <div className="mt-3 overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border-default)]">
-                    <table className="min-w-full text-left text-xs sm:text-sm">
-                      <thead className="bg-slate-50 text-[var(--text-muted)]">
-                        <tr>
-                          <th className="px-3 py-2 font-medium">Service</th>
-                          <th className="px-3 py-2 font-medium">Page</th>
-                          <th className="px-3 py-2 font-medium">Depth</th>
-                          <th className="px-3 py-2 font-medium text-[var(--text-muted)]">Wiring (bonus)</th>
-                          <th className="px-3 py-2 font-medium">Tier</th>
-                          <th className="px-3 py-2 font-medium">Validation</th>
-                          <th className="px-3 py-2 font-medium">CTA / Conv</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {highValueServices.map((svc, idx) => {
-                          const name = String(svc.display_name || svc.service || `Service ${idx + 1}`);
-                          const pageExists = Boolean(svc.page_exists);
-                          const wordCount = Number(svc.word_count || 0);
-                          const depth = String(svc.depth_score || "—");
-                          const conv = (svc.conversion as Record<string, unknown>) || {};
-                          const inboundBodyOnly = Number(svc.inbound_unique_pages_body_only ?? 0);
-                          const wiring = wiringBadge(inboundBodyOnly);
-                          const tier = String(svc.optimization_tier || "—");
-                          const predictionStatus = String(svc.prediction_status || svc.qualification_status || svc.optimization_tier || "—");
-                          const coreRules = (svc.core_rules_passed as Record<string, unknown>) || {};
-                          return (
-                            <tr key={`${name}-${idx}`} className="border-t border-[var(--border-default)]">
-                              <td className="px-3 py-2">{name}</td>
-                              <td className="px-3 py-2">
-                                <span className="inline-flex items-center gap-2">
-                                  {pageExists ? (
-                                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 text-xs font-bold">✓</span>
-                                  ) : (
-                                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-100 text-red-600 text-xs font-bold">✗</span>
-                                  )}
-                                  {pageExists ? String(svc.url || "Page exists") : "Missing page"}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2">{pageExists ? `${depth} (${wordCount} words)` : "—"}</td>
-                              <td className="px-3 py-2">{`${inboundBodyOnly} · ${wiring}`}</td>
-                              <td className="px-3 py-2">{tier}</td>
-                              <td className="px-3 py-2">
-                                <p>
-                                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${statusBadgeClass(predictionStatus)}`}>
-                                    {predictionStatus}
-                                  </span>
-                                </p>
-                                {Object.keys(coreRules).length > 0 && (
-                                  <details className="mt-1 text-xs text-[var(--text-secondary)]">
-                                    <summary className="cursor-pointer select-none">Validation details</summary>
-                                    <div className="mt-1 space-y-1">
-                                      {Object.entries(coreRules).map(([k, v]) => (
-                                        <p key={k}>
-                                          {k}: {v ? "pass" : "fail"}
-                                        </p>
-                                      ))}
-                                    </div>
-                                  </details>
-                                )}
-                              </td>
-                              <td className="px-3 py-2">
-                                {`CTA ${Number(conv.cta_count || 0)} · Booking ${Boolean(conv.booking_link) ? "Yes" : "No"} · Links ${Number(conv.internal_links || 0)} · Financing ${Boolean(conv.financing_mentioned) ? "Yes" : "No"}`}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : allServices.length > 0 && (
-                  <div className="overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border-default)]">
-                    <table className="min-w-full text-left text-xs sm:text-sm">
-                      <thead className="bg-slate-50 text-[var(--text-muted)]">
-                        <tr>
-                          <th className="px-3 py-2 font-medium">Service</th>
-                          <th className="px-3 py-2 font-medium">Landing Page</th>
-                          <th className="px-3 py-2 font-medium text-[var(--text-muted)]">Wiring (bonus)</th>
-                          <th className="px-3 py-2 font-medium">Revenue Impact</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {allServices.map((service) => {
-                          const hasPage = !missingLandingPages.some((s) => s.toLowerCase() === service.toLowerCase());
-                          return (
-                            <tr key={service} className="border-t border-[var(--border-default)]">
-                              <td className="px-3 py-2">{service}</td>
-                              <td className="px-3 py-2">
-                                <span className="inline-flex items-center gap-2">
-                                  {hasPage ? (
-                                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 text-xs font-bold">✓</span>
-                                  ) : (
-                                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-100 text-red-600 text-xs font-bold">✗</span>
-                                  )}
-                                  {hasPage ? "Page exists" : "Missing page"}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2">—</td>
-                              <td className="px-3 py-2">{serviceUpsideMap.get(service.toLowerCase()) || "—"}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                {highValueServices.length > 0 && (
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <MetricCard label="Total high-value services" value={String(highValueSummary.total_high_value_services ?? "—")} />
-                    <MetricCard label="Coverage ratio" value={highValueSummary.service_coverage_ratio != null ? String(highValueSummary.service_coverage_ratio) : "—"} />
-                    <MetricCard label="Optimized ratio" value={highValueSummary.optimized_ratio != null ? String(highValueSummary.optimized_ratio) : "—"} />
-                    <MetricCard label="Leverage" value={highValueLeverage} tone={highValueLeverage === "high" ? "warn" : "good"} />
-                  </div>
-                )}
-              </BriefSection>
-            ) : null}
-
-            <BriefSection title="Share of Voice">
-              <p className="text-[var(--text-secondary)]">Local competitive position snapshot.</p>
-              <div className="overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border-default)]">
-                <table className="min-w-full text-left text-xs sm:text-sm">
-                  <thead className="bg-slate-50 text-[var(--text-muted)]">
-                    <tr>
-                      <th className="px-3 py-2 font-medium">Name</th>
-                      <th className="px-3 py-2 font-medium">Reviews</th>
-                      <th className="px-3 py-2 font-medium">Distance</th>
-                      <th className="px-3 py-2 font-medium">Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="border-t border-[var(--border-default)] bg-emerald-50/40">
-                      <td className="px-3 py-2 font-semibold">{result.business_name} (You)</td>
-                      <td className="px-3 py-2">{mp?.reviews || "—"}</td>
-                      <td className="px-3 py-2">—</td>
-                      <td className="px-3 py-2">{result.review_position || "Lead baseline"}</td>
-                    </tr>
-                    {sg?.competitor_name && (
-                      <tr className="border-t border-[var(--border-default)]">
-                        <td className="px-3 py-2">{sg.competitor_name}</td>
-                        <td className="px-3 py-2">{sg.competitor_reviews ?? "—"}</td>
-                        <td className="px-3 py-2">{formatMiles(sg.distance_miles)}</td>
-                        <td className="px-3 py-2">Nearest competitor</td>
-                      </tr>
-                    )}
-                    {csg?.competitor_name && csg.competitor_name !== sg?.competitor_name && (
-                      <tr className="border-t border-[var(--border-default)]">
-                        <td className="px-3 py-2">{csg.competitor_name}</td>
-                        <td className="px-3 py-2">{csg.competitor_reviews ?? "—"}</td>
-                        <td className="px-3 py-2">{formatMiles(csg.distance_miles)}</td>
-                        <td className="px-3 py-2">{csg.service ? `${csg.service} gap` : "Service gap competitor"}</td>
-                      </tr>
-                    )}
-                    {parsedCompetitorRows.map((item, i) => (
-                      <tr key={`cc-${i}`} className="border-t border-[var(--border-default)]">
-                        <td className="px-3 py-2">{item.name}</td>
-                        <td className="px-3 py-2">{item.reviews}</td>
-                        <td className="px-3 py-2">{item.distance}</td>
-                        <td className="px-3 py-2">{item.notes}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </BriefSection>
-
-            <BriefSection title="Review Authority & Velocity" sectionId="review-authority">
-              <div className="grid gap-3 md:grid-cols-3">
-                <MetricCard label="Reviews" value={mp?.reviews || "—"} status={belowLocalAverage ? "Need more vs local avg" : (mp?.local_avg ? "In line with local avg" : undefined)} tone={belowLocalAverage ? "warn" : "good"} />
-                <MetricCard label="Last Review" value={ds?.last_review_days_ago != null ? `${ds.last_review_days_ago} days ago` : "—"} />
-                <MetricCard label="Velocity" value={ds?.review_velocity_30d != null ? `${ds.review_velocity_30d} in 30d` : "—"} />
-              </div>
-              {reviewIntel?.summary && <p>{String(reviewIntel.summary)}</p>}
-              {Object.keys(reviewComplaintThemes).length > 0 && (
-                <p>
-                  <strong>Complaint themes:</strong>{" "}
-                  {Object.entries(reviewComplaintThemes).map(([k, v]) => `${k}: ${v}`).join(", ")}
-                </p>
-              )}
-            </BriefSection>
-
-            <BriefSection title="Validated Revenue Uplift">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                {rucg?.primary_service && (
-                  <UpliftCard
-                    title={`Optimized ${rucg.primary_service} page`}
-                    amount={rucg.annual_low != null ? `$${rucg.annual_low.toLocaleString()}-$${(rucg.annual_high ?? 0).toLocaleString()}` : "—"}
-                    subtitle={`${rucg.consult_low ?? "—"}-${rucg.consult_high ?? "—"} consults/mo`}
-                  />
-                )}
-                {(ht?.service_level_upside ?? []).map((svc, idx) => (
-                  <UpliftCard key={idx} title={svc.service || "Service lever"} amount={svc.upside || "—"} />
-                ))}
-                <UpliftCard
-                  title="Total Projected Uplift"
-                  amount={ed?.modeled_revenue_upside || "—"}
-                  subtitle="Modeled annual upside"
-                  tone="total"
-                />
-              </div>
-              {rucg?.gap_service && <p><strong>Competitive gap service:</strong> {rucg.gap_service}</p>}
-              {rucg?.method_note && <p className="text-xs text-[var(--text-muted)]">{rucg.method_note}</p>}
-            </BriefSection>
-
-            {planItems.length > 0 && (
-              <BriefSection title={`Intervention Plan (${planItems.length} steps)`}>
-                <div className="space-y-2">
-                  {planItems.map((item) => (
-                    <InterventionStepCard key={item.step} step={item.step} category={item.category} action={item.action} href={suggestionHrefFromCategory(item.category)} />
-                  ))}
-                </div>
-              </BriefSection>
-            )}
-
-            {((ci && (ci.online_booking != null || ci.contact_form != null || ci.phone_prominent != null || ci.mobile_optimized != null || ci.page_load_ms != null)) || convStruct) && (
-              <BriefSection title="Conversion Infrastructure" sectionId="conversion-infrastructure">
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-                  <MetricCard label="Contact Form" value={boolValueLabel(ci?.contact_form)} tone={ci?.contact_form ? "good" : "warn"} />
-                  <MetricCard label="Calendar / Booking" value={boolValueLabel(ci?.online_booking)} tone={ci?.online_booking ? "good" : "warn"} />
-                  <MetricCard label="Phone Clickable" value={boolValueLabel(convStruct?.phone_clickable ?? ci?.phone_prominent)} tone={(convStruct?.phone_clickable ?? ci?.phone_prominent) ? "good" : "warn"} />
-                  <MetricCard label="Page Load" value={ci?.page_load_ms != null ? `${ci.page_load_ms} ms` : "—"} />
-                  <MetricCard label="Form Structure" value={convStruct?.form_single_or_multi_step != null ? conversionFormValue(convStruct.form_single_or_multi_step) : "—"} />
-                  <MetricCard label="CTA Count" value={convStruct?.cta_count != null ? String(convStruct.cta_count) : "—"} />
-                </div>
-                <p className="text-xs text-[var(--text-muted)]">
-                  <strong>CTA labels detected:</strong> {ctaLabels.length ? ctaLabels.join(", ") : "None detected"}
-                </p>
-              </BriefSection>
-            )}
-
-            {(mp?.revenue_band || mp?.reviews || mp?.local_avg || mp?.market_density || result.review_position || result.market_density) ? (
-              <BriefSection title="Market Position (Full Detail)" sectionId="market-position-full">
-                <KV label="Revenue Band" value={mp?.revenue_band} />
-                {mp?.revenue_band_method && <p className="text-xs text-zinc-500">{mp.revenue_band_method}</p>}
-                <KV label="Reviews" value={mp?.reviews} />
-                <KV label="Local Avg" value={mp?.local_avg} />
-                <KV label="Market Density" value={mp?.market_density ?? result.market_density} />
-                {!mp && result.review_position && <KV label="Review Position" value={result.review_position} />}
-              </BriefSection>
-            ) : null}
-
-            {(cc?.line1 || cc?.line2 || cc?.line3) ? (
-              <BriefSection title="Competitive Context (Full Detail)" sectionId="competitive-context-full">
-                {cc?.line1 && <p>{cc.line1}</p>}
-                {cc?.line2 && <p>{cc.line2}</p>}
-                {cc?.line3 && <p>{cc.line3}</p>}
-                {ccLine3Items.length > 0 && (
-                  <ul className="list-inside list-disc space-y-1">
-                    {ccLine3Items.map((item, i) => <li key={i}>{item}</li>)}
-                  </ul>
-                )}
-              </BriefSection>
-            ) : null}
-
-            {csg && (csg.service || csg.competitor_name) ? (
-              <BriefSection title="Competitive Service Gap (Full Detail)">
-                <KV label="Type" value={csg.type ?? "High-Margin Capture Gap"} />
-                <KV label="Service" value={csg.service} />
-                <KV label="Nearest competitor" value={csg.competitor_name} />
-                {csg.competitor_reviews != null && <KV label="Competitor reviews" value={String(csg.competitor_reviews)} />}
-                {csg.lead_reviews != null && <KV label="Lead reviews" value={String(csg.lead_reviews)} />}
-                {csg.distance_miles != null && <KV label="Distance" value={`${csg.distance_miles} mi`} />}
-                {csg.schema_missing && <KV label="Schema" value="Missing" />}
-              </BriefSection>
-            ) : null}
-
-            {cd ? (
-              <BriefSection title="Competitive Delta (Full Detail)" sectionId="competitive-delta-full">
-                <KV
-                  label="Service pages"
-                  value={
-                    cd.competitor_avg_service_pages != null
-                      ? `${cd.target_service_page_count ?? 0} pages with service-like paths (for example, /implants, /cosmetic) vs competitor avg ${Number(cd.competitor_avg_service_pages).toFixed(1)}`
-                      : `Target ${cd.target_service_page_count ?? 0} pages with service-like paths (e.g. /implants, /cosmetic).`
-                  }
-                />
-                {cd.target_pages_with_faq_schema != null && (
-                  <KV
-                    label="FAQ/structured trust coverage"
-                    value={
-                      cd.competitor_avg_pages_with_schema != null
-                        ? `${cd.target_pages_with_faq_schema} of ${cd.target_service_page_count ?? 0} service pages vs competitor avg ${Number(cd.competitor_avg_pages_with_schema).toFixed(1)} pages`
-                        : `${cd.target_pages_with_faq_schema} of ${cd.target_service_page_count ?? 0} service pages`
-                    }
-                  />
-                )}
-                <KV
-                  label="Service page depth"
-                  value={
-                    cd.competitor_avg_word_count != null
-                      ? `Average word count across ${cd.target_service_page_count ?? 0} service pages: ~${Math.round(Number(cd.target_avg_word_count_service_pages ?? 0))} (min ${cd.target_min_word_count_service_pages ?? "N/A"}, max ${cd.target_max_word_count_service_pages ?? "N/A"}) vs competitor avg ~${Math.round(Number(cd.competitor_avg_word_count))}`
-                      : cd.target_avg_word_count_service_pages != null
-                        ? `Average word count across ${cd.target_service_page_count ?? 0} service pages: ~${Math.round(Number(cd.target_avg_word_count_service_pages))} (min ${cd.target_min_word_count_service_pages ?? "N/A"}, max ${cd.target_max_word_count_service_pages ?? "N/A"})`
-                        : undefined
-                  }
-                />
-                <p className="text-xs text-zinc-500">
-                  {cd.competitors_sampled ? `Based on ${cd.competitors_sampled} nearby competitors.` : "Target-only snapshot for this run."}
-                </p>
-                {cd.competitor_site_metrics_count != null && Number(cd.competitor_site_metrics_count) > 0 && (
-                  <p className="text-xs text-zinc-500">
-                    Competitor averages from {String(cd.competitor_site_metrics_count)} competitor sites crawled.
-                  </p>
-                )}
-                {cd.competitor_avg_service_pages == null && (
-                  <p className="text-xs text-zinc-500">
-                    {String(cd.competitor_crawl_note || "Competitor site metrics were not run for this brief; only target metrics are shown.")}
-                  </p>
-                )}
-              </BriefSection>
-            ) : null}
-
-            {(ds?.google_ads_line != null || ds?.meta_ads_line != null || ds?.organic_visibility_tier || ds?.last_review_days_ago != null || ds?.review_velocity_30d != null) || (!ds && result.paid_status) ? (
-              <BriefSection title="Demand Signals (Full Detail)" sectionId="demand-signals-full">
-                <KV label="Google Ads" value={ds?.google_ads_line} />
-                {ds?.google_ads_source && <p className="text-xs text-zinc-500">Source: {ds.google_ads_source}</p>}
-                <KV label="Meta Ads" value={ds?.meta_ads_line} />
-                {ds?.meta_ads_source && <p className="text-xs text-zinc-500">Source: {ds.meta_ads_source}</p>}
-                {ds?.paid_channels_detected?.length ? <KV label="Paid channels detected" value={ds.paid_channels_detected.join(", ")} /> : null}
-                {ds?.organic_visibility_tier && (
-                  <KV label="Organic Visibility" value={`${ds.organic_visibility_tier}${ds.organic_visibility_reason ? ` — ${ds.organic_visibility_reason}` : ""}`} />
-                )}
-                {ds?.last_review_days_ago != null && <KV label="Last Review" value={`~${ds.last_review_days_ago} days ago`} />}
-                {ds?.review_velocity_30d != null && <KV label="Review Velocity" value={`~${ds.review_velocity_30d} in last 30 days`} />}
-                {!ds && result.paid_status && <KV label="Paid Status" value={result.paid_status} />}
-              </BriefSection>
-            ) : null}
-
-            {sg && sg.competitor_name ? (
-              <BriefSection title="Strategic Gap (Full Detail)">
-                <p>Nearest competitor {sg.competitor_name} is {formatMiles(sg.distance_miles)} away and has {sg.competitor_reviews ?? "—"} reviews.</p>
-                <p>Market density: {sg.market_density ?? "High"}. This practice&apos;s review position is {strategicReviewComparison}.</p>
-              </BriefSection>
-            ) : null}
-
-            {marketSat ? (
-              <BriefSection title="Market Saturation">
-                {marketSat.top_5_avg_reviews != null && <KV label="Top 5 avg reviews" value={String(marketSat.top_5_avg_reviews)} />}
-                {marketSat.competitor_median_reviews != null && marketSat.target_gap_from_median != null && (
-                  <KV label="Median comparison" value={`Median ${marketSat.competitor_median_reviews}; target is ${marketSat.target_gap_from_median}`} />
-                )}
-              </BriefSection>
-            ) : null}
-
-            {geo ? (
-              <BriefSection title="Geographic Coverage">
-                {geo.city_or_near_me_page_count != null && <KV label="City/near-me pages" value={`${geo.city_or_near_me_page_count} detected`} />}
-                {geo.city_or_near_me_page_count != null && (
-                  <p className="text-xs text-zinc-500">(URLs with city name or &apos;near me&apos; in path/title).</p>
-                )}
-                {geo.has_multi_location_page != null && <KV label="Multi-location page" value={geo.has_multi_location_page ? "Detected" : "Not detected"} />}
-              </BriefSection>
-            ) : null}
-
-            {(b?.risk_flags?.length || result.risk_flags?.length) ? (
-              <BriefSection title="Risk Flags">
-                <ul className="list-inside list-disc space-y-1">
-                  {(b?.risk_flags ?? result.risk_flags ?? []).map((f, i) => <li key={i}>{f}</li>)}
-                </ul>
-              </BriefSection>
-            ) : null}
-
-            {(b?.evidence_bullets?.length || result.evidence?.length) ? (
-              <BriefSection title="Evidence">
-                <ul className="list-inside list-disc space-y-1 text-zinc-700">
-                  {b?.evidence_bullets?.length
-                    ? b.evidence_bullets.map((e, i) => <li key={i}>{e}</li>)
-                    : (result.evidence ?? []).map((e, i) => <li key={i}><strong>{e.label}:</strong> {e.value}</li>)}
-                </ul>
-              </BriefSection>
-            ) : null}
-          </div>
+          {shareUrl ? <p className="mt-2 break-all">Share URL: {shareUrl}</p> : null}
         </Card>
       </main>
+
+      {showMobileFooter && (
+        <div className="fixed inset-x-0 bottom-0 z-50 border-t border-[var(--border-default)] bg-[var(--bg-card)]/95 p-3 backdrop-blur lg:hidden">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold">{result.business_name}</p>
+              <p className="truncate text-[11px] text-[var(--text-muted)]">{opportunityBand || "Opportunity: —"}</p>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={() => setAddListOpen(true)}>Add to Pipeline</Button>
+              <Button onClick={() => setOutreachOpen(true)} className="border-[var(--border-default)]">Log Outreach</Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {addListOpen && (
         <ListPickerModal
           open={addListOpen}
-          title="Add this lead to list"
+          title="Add this prospect to pipeline"
           lists={lists}
           busy={addingToList}
           onClose={() => {
@@ -975,107 +1021,170 @@ export default function DiagnosticDetailPage() {
           onConfirm={handleAddToList}
         />
       )}
+
+      {outreachOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
+            <h3 className="text-sm font-semibold">Log Outreach</h3>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Record latest rep action and outcome.</p>
+
+            <div className="mt-3 space-y-2">
+              <label className="text-xs font-medium text-[var(--text-muted)]">Outcome</label>
+              <select
+                className="w-full rounded-md border border-[var(--border-default)] bg-white px-2 py-2 text-sm"
+                value={outreachAction}
+                onChange={(e) => setOutreachAction(e.target.value as OutreachAction)}
+              >
+                <option>Called</option>
+                <option>Left VM</option>
+                <option>Emailed</option>
+                <option>No Answer</option>
+              </select>
+
+              <label className="text-xs font-medium text-[var(--text-muted)]">Notes</label>
+              <textarea
+                className="h-24 w-full rounded-md border border-[var(--border-default)] bg-white px-2 py-2 text-sm"
+                value={outreachNote}
+                onChange={(e) => setOutreachNote(e.target.value)}
+                placeholder="Optional call notes"
+              />
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <Button onClick={() => setOutreachOpen(false)} className="border-[var(--border-default)]">Cancel</Button>
+              <Button onClick={handleLogOutreach} disabled={loggingOutreach}>{loggingOutreach ? "Saving..." : "Save"}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeCtaRow && ctaDrawerOpen && (
+        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md border-l border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_20px_60px_rgba(23,20,17,0.18)]">
+          <div className="flex h-full flex-col">
+            <div className="border-b border-[var(--border-default)] px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">CTA Drill-Down</p>
+                  <h3 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">{activeCtaRow.type}</h3>
+                  <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                    {activeCtaRow.count} instances found across {activeCtaPageCount || 0} matched page{activeCtaPageCount === 1 ? "" : "s"}.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCtaDrawerOpen(false)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-slate-50"
+                  aria-label="Close CTA drawer"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+              <div className="rounded-[22px] border border-black/6 bg-[#fbfaf7] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Active focus</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className={`rounded px-2 py-1 text-xs font-semibold ${activeCtaRow.type === "Book" ? "bg-blue-100 text-blue-700" : activeCtaRow.type === "Schedule" ? "bg-emerald-100 text-emerald-700" : activeCtaRow.type === "Contact" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>
+                    {activeCtaRow.type}
+                  </span>
+                  <span className="text-xs text-[var(--text-secondary)]">
+                    {Number(activeCtaRow.clickableCount || 0)} clickable
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Matched pages</p>
+                <div className="mt-2 space-y-2">
+                  {activeCtaPages.length ? activeCtaPages.map((page, idx) => (
+                    <div key={`${page}-${idx}`} className="rounded-[20px] border border-black/6 bg-white px-3 py-3">
+                      <p className="text-sm font-medium text-[var(--text-primary)]">{urlTitle(page)}</p>
+                      <p className="mt-1 break-all font-mono text-[11px] text-[var(--text-muted)]">{page}</p>
+                    </div>
+                  )) : (
+                    <div className="rounded-[20px] border border-black/6 bg-white px-3 py-3 text-sm text-[var(--text-secondary)]">
+                      No explicit page-level matches were captured for this CTA in this run.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-[var(--border-default)] px-4 py-3">
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => {
+                    setActiveCtaType(null);
+                    setCtaDrawerOpen(false);
+                  }}
+                  className="border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-secondary)]"
+                >
+                  Clear filter
+                </Button>
+                <Button onClick={() => setCtaDrawerOpen(false)}>Keep highlights</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function BriefSection({ title, children, sectionId }: { title: string; children: React.ReactNode; sectionId?: string }) {
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <div id={sectionId} className="rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 scroll-mt-24">
-      <h3 className="mb-2 text-sm font-semibold text-[var(--text-primary)]">{title}</h3>
-      <div className="space-y-1.5 text-[var(--text-secondary)]">{children}</div>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${active
+        ? "border-slate-900 bg-slate-900 text-white"
+        : "border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-secondary)] hover:bg-slate-50"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function QuickStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+      <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="truncate text-xs font-semibold text-slate-900">{value || "—"}</p>
     </div>
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  status,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  status?: string;
-  tone?: "good" | "warn" | "neutral";
-}) {
-  const toneClass = tone === "good"
-    ? "border-emerald-200 bg-emerald-50/40"
-    : tone === "warn"
-      ? "border-amber-200 bg-amber-50/40"
-      : "border-[var(--border-default)] bg-[var(--bg-card)]";
+function MetricCard({ label, value, status, tone = "default" }: { label: string; value: string; status?: string; tone?: "default" | "danger" }) {
+  const toneClass = tone === "danger" ? "border-red-200 bg-red-50" : "border-[var(--border-default)] bg-[var(--bg-card)]";
   return (
     <div className={`rounded-[var(--radius-md)] border p-3 ${toneClass}`}>
       <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">{label}</p>
       <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">{value || "—"}</p>
-      {status && <p className="mt-1 text-xs text-[var(--text-secondary)]">{status}</p>}
+      {status ? <p className="mt-1 text-xs text-[var(--text-secondary)]">{status}</p> : null}
     </div>
   );
 }
 
-function UpliftCard({
-  title,
-  amount,
-  subtitle,
-  tone = "normal",
-}: {
-  title: string;
-  amount: string;
-  subtitle?: string;
-  tone?: "normal" | "total";
-}) {
-  const classes = tone === "total"
-    ? "border-emerald-300 bg-emerald-50"
-    : "border-[var(--border-default)] bg-[var(--bg-card)]";
+function CaptureReadinessRow({ label, status, icon, note }: { label: string; status: string; icon: string; note: string }) {
+  const ok = icon === "✓";
   return (
-    <div className={`rounded-[var(--radius-md)] border p-3 ${classes}`}>
-      <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">{title}</p>
-      <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">{amount}</p>
-      {subtitle && <p className="text-xs text-[var(--text-secondary)]">{subtitle}</p>}
-    </div>
-  );
-}
-
-function InterventionStepCard({
-  step,
-  category,
-  action,
-  href,
-}: {
-  step: number;
-  category: string;
-  action: string;
-  href: string;
-}) {
-  const cat = category.toLowerCase();
-  const tone = cat.includes("critical")
-    ? "border-red-200 bg-red-50/40"
-    : cat.includes("important") || cat.includes("conversion")
-      ? "border-amber-200 bg-amber-50/40"
-      : cat.includes("strategic") || cat.includes("demand") || cat.includes("capture") || cat.includes("trust")
-        ? "border-blue-200 bg-blue-50/40"
-        : "border-yellow-200 bg-yellow-50/40";
-  return (
-    <div className={`rounded-[var(--radius-md)] border px-3 py-2 ${tone}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="font-semibold text-[var(--text-primary)]">Step {step}: {category}</p>
-        <a href={href} className="text-xs font-medium text-[var(--text-secondary)] underline underline-offset-2">View suggestions</a>
+    <div className="grid grid-cols-[24px_1fr] items-start gap-2 rounded border border-slate-200 px-2 py-1.5">
+      <span className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold ${ok ? "bg-emerald-100 text-emerald-700" : icon === "✕" ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-500"}`}>{icon}</span>
+      <div>
+        <p className="text-xs font-semibold text-slate-900">{label}</p>
+        <p className="text-xs text-slate-700">{status}</p>
+        <p className="text-[11px] text-slate-500">{note}</p>
       </div>
-      <p className="mt-1 text-[var(--text-secondary)]">{action}</p>
     </div>
   );
 }
 
-function KV({ label, value }: { label: string; value?: string | null }) {
-  if (value == null || value === "") return null;
-  return <p><strong>{label}:</strong> {value}</p>;
-}
-
-function statusBadgeClass(status: string): string {
-  const s = (status || "").toLowerCase();
-  if (s === "strong") return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  if (s === "moderate") return "border-blue-200 bg-blue-50 text-blue-700";
-  if (s === "weak" || s === "weak_stub_page") return "border-amber-200 bg-amber-50 text-amber-700";
-  if (s === "umbrella_only" || s === "rejected_non_service" || s === "missing") return "border-rose-200 bg-rose-50 text-rose-700";
-  return "border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-secondary)]";
+function MetaChip({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "badge" }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs ${tone === "badge" ? "border-slate-300 bg-white font-semibold text-slate-800" : "border-slate-200 bg-white text-slate-700"}`}>
+      <span className="text-slate-500">{label}:</span>
+      <span>{value}</span>
+    </span>
+  );
 }

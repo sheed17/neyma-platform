@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --bg-app: #f4f7fb;
+  --bg-app: #ede9df;
   --bg-card: #ffffff;
-  --border-default: #dde4ee;
-  --text-primary: #0b1220;
-  --text-secondary: #334155;
-  --text-muted: #64748b;
-  --accent: #0d9488;
+  --border-default: #d8d0c2;
+  --text-primary: #171411;
+  --text-secondary: #5d564c;
+  --text-muted: #7c7468;
+  --accent: #0b7a53;
   --accent-ink: #ffffff;
-  --accent-soft: #ebfffb;
+  --accent-soft: #edf7f0;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
@@ -17,9 +17,9 @@
   --space-block: 56px;
   --max-content: 1200px;
   --max-reading: 760px;
-  --shadow-card: 0 1px 1px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.04);
-  --shadow-elevated: 0 20px 48px rgba(15, 23, 42, 0.18);
-  --font-ui-stack: "Soehne", var(--font-ui-sans), "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  --shadow-card: 0 1px 1px rgba(23, 20, 17, 0.03), 0 8px 24px rgba(23, 20, 17, 0.04);
+  --shadow-elevated: 0 20px 48px rgba(23, 20, 17, 0.14);
+  --font-ui-stack: "Soehne", var(--font-geist-sans), "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
   --background: var(--bg-app);
   --foreground: var(--text-primary);
 }
@@ -36,8 +36,16 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-ui-stack);
-  letter-spacing: 0.01em;
+  letter-spacing: 0.004em;
   line-height: 1.5;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-ui-stack);
+  font-weight: 650;
+  letter-spacing: -0.018em;
+  line-height: 1.12;
 }
 
 .app-card {
@@ -61,6 +69,6 @@ body {
 
 .display-title {
   font-family: var(--font-ui-stack);
-  letter-spacing: -0.02em;
-  line-height: 1.06;
+  letter-spacing: -0.028em;
+  line-height: 1.03;
 }

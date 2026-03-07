@@ -6,7 +6,7 @@ import json
 import os
 import re
 from typing import Any, Dict, Iterable, List, Optional
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from backend.services.criteria_registry import (
     CRITERIA_REGISTRY,
@@ -602,11 +602,11 @@ def run_lightweight_service_page_check(
     criterion: Dict[str, Any],
     timeout_seconds: int = 5,
 ) -> Dict[str, Any]:
-    """Strict deterministic service page check.
+    """Fast deterministic service page check.
 
-    For "missing service page" criteria, matches=True means missing/weak_stub.
+    For "missing service page" criteria, matches=True means likely missing.
+    This intentionally prefers speed; strict confirmation happens in deep verification.
     """
-    _ = timeout_seconds  # retained for compatibility
     service = str(criterion.get("service") or "").strip().lower()
     if not website or not service:
         return {
@@ -617,40 +617,537 @@ def run_lightweight_service_page_check(
             "service_mentioned": False,
             "dedicated_page_detected": False,
         }
+    aliases = list(SERVICE_ALIASES.get(service) or [service.replace("_", " ")])
+    aliases = [str(a).strip().lower() for a in aliases if str(a).strip()]
+    if not aliases:
+        aliases = [service.replace("_", " ")]
+
+    def _normalize_site(url: str) -> str:
+        u = str(url or "").strip()
+        if not u:
+            return ""
+        if not u.startswith(("http://", "https://")):
+            u = "https://" + u
+        parsed = urlsplit(u)
+        scheme = parsed.scheme or "https"
+        netloc = parsed.netloc.lower()
+        path = parsed.path or "/"
+        if path != "/" and path.endswith("/"):
+            path = path[:-1]
+        return f"{scheme}://{netloc}{path}"
+
+    def _same_domain(a: str, b: str) -> bool:
+        pa = urlsplit(a)
+        pb = urlsplit(b)
+        da = (pa.netloc or "").lower().replace("www.", "")
+        db = (pb.netloc or "").lower().replace("www.", "")
+        return bool(da and db and da == db)
+
+    def _path_has_alias(path_or_url: str) -> bool:
+        path = (urlsplit(path_or_url).path or "").lower().replace("_", "-")
+        path_tokens = set(re.findall(r"[a-z0-9]+", path))
+        compact = "".join(path_tokens)
+        for alias in aliases:
+            alias_tokens = re.findall(r"[a-z0-9]+", alias)
+            if not alias_tokens:
+                continue
+            if len(alias_tokens) == 1:
+                tok = alias_tokens[0]
+                if tok in path_tokens or tok in path:
+                    return True
+            elif all(tok in path_tokens for tok in alias_tokens):
+                return True
+            alias_compact = "".join(alias_tokens)
+            if alias_compact and alias_compact in compact:
+                return True
+        return False
+
+    def _text_has_alias(text: str) -> bool:
+        lower = str(text or "").lower()
+        for alias in aliases:
+            if re.search(rf"\b{re.escape(alias)}\b", lower):
+                return True
+        return False
+
     try:
-        from pipeline.service_depth import run_strict_single_service_page_check
-        strict = run_strict_single_service_page_check(
-            website_url=website,
-            service_slug=service,
-            city=None,
-            state=None,
-            vertical="dentist",
+        import requests
+        base = _normalize_site(website)
+        if not base:
+            raise ValueError("invalid website")
+        r = requests.get(
+            base,
+            timeout=max(2, int(timeout_seconds)),
+            allow_redirects=True,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                )
+            },
         )
+        if int(r.status_code or 0) >= 400:
+            return {
+                "criterion": criterion,
+                "matches": False,
+                "reason": f"lightweight_http_{r.status_code}",
+                "service": service,
+                "service_mentioned": False,
+                "dedicated_page_detected": False,
+                "method": "fast_homepage",
+                "evidence": {"homepage_url": base},
+            }
+
+        html = str(r.text or "")
+        homepage_url = _normalize_site(str(r.url or base))
+        title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+        title = re.sub(r"<[^>]+>", " ", title_m.group(1) if title_m else "")
+        title = re.sub(r"\s+", " ", title).strip()
+        h1_text = " ".join(
+            re.sub(r"<[^>]+>", " ", m.group(1))
+            for m in re.finditer(r"<h1[^>]*>(.*?)</h1>", html, re.I | re.S)
+        )
+        h1_text = re.sub(r"\s+", " ", h1_text).strip()
+        plain = re.sub(r"<script[^>]*>[\s\S]*?</script>", " ", html, flags=re.I)
+        plain = re.sub(r"<style[^>]*>[\s\S]*?</style>", " ", plain, flags=re.I)
+        plain = re.sub(r"<[^>]+>", " ", plain)
+        plain = re.sub(r"\s+", " ", plain).strip()
+        excerpt = plain[:600]
+        internal_paths: List[str] = []
+        for m in re.finditer(r"<a[^>]*href\s*=\s*[\"']([^\"'#]+)[\"'][^>]*>", html, re.I | re.S):
+            href = (m.group(1) or "").strip()
+            if not href:
+                continue
+            abs_url = _normalize_site(urljoin(homepage_url, href))
+            if not abs_url or not _same_domain(homepage_url, abs_url):
+                continue
+            path = (urlsplit(abs_url).path or "/").lower()
+            if path not in internal_paths:
+                internal_paths.append(path)
+            if len(internal_paths) >= 20:
+                break
+        evidence = {
+            "homepage_url": homepage_url,
+            "title": title,
+            "h1": h1_text,
+            "internal_paths": internal_paths,
+            "excerpt": excerpt,
+        }
+        if _path_has_alias(homepage_url):
+            return {
+                "criterion": criterion,
+                "matches": False,
+                "reason": "service_path_detected_on_home_or_canonical",
+                "service": service,
+                "service_mentioned": True,
+                "dedicated_page_detected": True,
+                "method": "fast_homepage",
+                "url": homepage_url,
+                "evidence": evidence,
+            }
+
+        # Fast same-page signals (title/h1)
+        if _text_has_alias(title) or _text_has_alias(h1_text):
+            return {
+                "criterion": criterion,
+                "matches": False,
+                "reason": "strong_title_or_h1_signal",
+                "service": service,
+                "service_mentioned": True,
+                "dedicated_page_detected": True,
+                "method": "fast_homepage",
+                "url": homepage_url,
+                "evidence": evidence,
+            }
+
+        strong_link_found = False
+        for m in re.finditer(r"<a[^>]*href\s*=\s*[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>", html, re.I | re.S):
+            href = (m.group(1) or "").strip()
+            if not href:
+                continue
+            abs_url = _normalize_site(urljoin(homepage_url, href))
+            if not abs_url or not _same_domain(homepage_url, abs_url):
+                continue
+            anchor = re.sub(r"<[^>]+>", " ", m.group(2) or "")
+            anchor = re.sub(r"\s+", " ", anchor).strip().lower()
+            if _path_has_alias(abs_url) or _text_has_alias(anchor):
+                strong_link_found = True
+                break
+
+        if strong_link_found:
+            return {
+                "criterion": criterion,
+                "matches": False,
+                "reason": "service_link_detected_on_homepage",
+                "service": service,
+                "service_mentioned": True,
+                "dedicated_page_detected": True,
+                "method": "fast_homepage",
+                "evidence": evidence,
+            }
+
+        return {
+            "criterion": criterion,
+            "matches": True,
+            "reason": "no_strong_service_page_signal_in_fast_check",
+            "service": service,
+            "service_mentioned": False,
+            "dedicated_page_detected": False,
+            "method": "fast_homepage",
+            "evidence": evidence,
+        }
     except Exception:
         return {
             "criterion": criterion,
             "matches": False,
-            "reason": "strict detector failed",
+            "reason": "fast detector failed",
             "service": service,
             "service_mentioned": False,
             "dedicated_page_detected": False,
         }
 
-    matches = bool(strict.get("matches"))
-    status = str(strict.get("qualification_status") or "missing")
-    return {
-        "criterion": criterion,
-        "matches": matches,
-        "reason": str(strict.get("reason") or strict.get("detection_reason") or ""),
+
+def review_lightweight_match_with_ai(
+    *,
+    website: Optional[str],
+    criterion: Dict[str, Any],
+    lightweight_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Optional Ask-only AI review for borderline lightweight positives.
+
+    Returns verdict metadata and never raises.
+    """
+    service = str(criterion.get("service") or "").strip().lower()
+    if not website or not service:
+        return {"enabled": False, "verdict": "skipped", "reason": "missing website or service"}
+    if not os.getenv("OPENAI_API_KEY"):
+        return {"enabled": False, "verdict": "skipped", "reason": "missing_openai_key"}
+    try:
+        from openai import OpenAI
+    except Exception:
+        return {"enabled": False, "verdict": "skipped", "reason": "openai_sdk_unavailable"}
+
+    evidence = lightweight_result.get("evidence") if isinstance(lightweight_result.get("evidence"), dict) else {}
+    payload = {
+        "website": website,
+        "criterion_type": str(criterion.get("type") or ""),
         "service": service,
-        "service_mentioned": bool(status != "missing"),
-        "dedicated_page_detected": bool(strict.get("page_detected")),
-        "qualification_status": status,
-        "url": strict.get("url"),
-        "word_count": strict.get("word_count"),
-        "keyword_density": strict.get("keyword_density"),
-        "h1_match": strict.get("h1_match"),
-        "structural_signals": strict.get("structural_signals"),
-        "internal_links_to_page": strict.get("internal_links_to_page"),
-        "debug": strict.get("debug"),
+        "lightweight_reason": str(lightweight_result.get("reason") or ""),
+        "lightweight_method": str(lightweight_result.get("method") or ""),
+        "lightweight_matches": bool(lightweight_result.get("matches")),
+        "evidence": {
+            "homepage_url": evidence.get("homepage_url"),
+            "title": evidence.get("title"),
+            "h1": evidence.get("h1"),
+            "internal_paths": evidence.get("internal_paths") if isinstance(evidence.get("internal_paths"), list) else [],
+            "excerpt": evidence.get("excerpt"),
+        },
     }
+
+    prompt = (
+        "You are reviewing whether a dental lead likely matches the request "
+        "'missing service page' for a specific service.\n"
+        "Use only the provided evidence, do not browse.\n"
+        "Return JSON only with schema: "
+        '{"verdict":"likely_match|unclear|likely_not_match","confidence":"low|medium|high","reason":"..."}.\n'
+        "Interpretation:\n"
+        "- likely_match = service page likely missing or not findable from evidence.\n"
+        "- likely_not_match = service page likely present from evidence.\n"
+        "- unclear = insufficient/conflicting evidence.\n"
+        f"Evidence JSON: {json.dumps(payload, ensure_ascii=True)}"
+    )
+    try:
+        client = OpenAI()
+        model = os.getenv("ASK_AI_REVIEW_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        r = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": "Output valid JSON only."}, {"role": "user", "content": prompt}],
+        )
+        txt = (r.choices[0].message.content or "") if getattr(r, "choices", None) else ""
+        obj = _extract_json(txt)
+        verdict = str(obj.get("verdict") or "").strip().lower()
+        if verdict not in {"likely_match", "unclear", "likely_not_match"}:
+            verdict = "unclear"
+        confidence = str(obj.get("confidence") or "").strip().lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "low"
+        reason = str(obj.get("reason") or "").strip()[:240]
+        return {
+            "enabled": True,
+            "model": model,
+            "verdict": verdict,
+            "confidence": confidence,
+            "reason": reason or "AI review completed.",
+        }
+    except Exception:
+        return {"enabled": False, "verdict": "skipped", "reason": "openai_call_failed"}
+
+
+def ai_batch_rerank_candidates(
+    *,
+    rows: List[Dict[str, Any]],
+    criteria: List[Dict[str, Any]],
+    purpose: str,
+    max_items: int = 20,
+) -> Dict[str, Dict[str, Any]]:
+    """Single-call LLM rerank adjustments for top rows.
+
+    Returns map: place_id -> {"delta": float, "confidence": str, "reason": str}
+    """
+    if not rows:
+        return {}
+    if not os.getenv("OPENAI_API_KEY"):
+        return {}
+    try:
+        from openai import OpenAI
+    except Exception:
+        return {}
+
+    subset = rows[: max(1, min(int(max_items), len(rows)))]
+    slim_rows: List[Dict[str, Any]] = []
+    for r in subset:
+        pid = str(r.get("place_id") or "").strip()
+        if not pid:
+            continue
+        lightweight_reason = None
+        light = r.get("_light_results")
+        if isinstance(light, dict) and light:
+            # Keep one reason for compact prompt payload.
+            one = next(iter(light.values()))
+            if isinstance(one, dict):
+                lightweight_reason = str(one.get("reason") or "")[:120]
+        slim_rows.append(
+            {
+                "id": pid,
+                "business_name": str(r.get("business_name") or "")[:120],
+                "city": str(r.get("city") or "")[:80],
+                "state": str(r.get("state") or "")[:10],
+                "rank_key": float(r.get("rank_key") or 0.0),
+                "rating": r.get("rating"),
+                "reviews": int(r.get("user_ratings_total") or 0),
+                "has_website": bool(r.get("has_website")),
+                "has_contact_form": bool(r.get("has_contact_form")),
+                "ssl": bool(r.get("ssl")),
+                "has_schema": bool(r.get("has_schema")),
+                "lightweight_reason": lightweight_reason,
+            }
+        )
+    if not slim_rows:
+        return {}
+
+    criteria_text = ", ".join(
+        f"{str(c.get('type') or '')}:{str(c.get('service') or '').strip()}"
+        for c in (criteria or [])
+        if str(c.get("type") or "").strip()
+    )[:400]
+    payload = {
+        "purpose": purpose[:60],
+        "criteria": criteria_text,
+        "rows": slim_rows,
+    }
+    prompt = (
+        "You are reranking local-business leads for an operator.\n"
+        "Use only provided data. No browsing.\n"
+        "Return JSON only with schema:\n"
+        '{"adjustments":[{"id":"...", "delta": -2.0..2.0, "confidence":"low|medium|high", "reason":"..."}]}\n'
+        "Rules:\n"
+        "- Keep deltas small and conservative.\n"
+        "- Positive delta only when evidence strongly supports criteria fit.\n"
+        "- Negative delta for obvious mismatch/low trust signals.\n"
+        f"Input: {json.dumps(payload, ensure_ascii=True)}"
+    )
+    try:
+        client = OpenAI()
+        model = os.getenv("ASK_AI_REVIEW_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        r = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": "Output valid JSON only."}, {"role": "user", "content": prompt}],
+        )
+        txt = (r.choices[0].message.content or "") if getattr(r, "choices", None) else ""
+        obj = _extract_json(txt)
+        out: Dict[str, Dict[str, Any]] = {}
+        for item in (obj.get("adjustments") or []):
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("id") or "").strip()
+            if not pid:
+                continue
+            try:
+                delta = float(item.get("delta") or 0.0)
+            except (TypeError, ValueError):
+                delta = 0.0
+            delta = max(-2.0, min(2.0, delta))
+            conf = str(item.get("confidence") or "").strip().lower()
+            if conf not in {"low", "medium", "high"}:
+                conf = "low"
+            reason = str(item.get("reason") or "").strip()[:180]
+            out[pid] = {"delta": delta, "confidence": conf, "reason": reason}
+        return out
+    except Exception:
+        return {}
+
+
+def ai_batch_explain_matches(
+    *,
+    rows: List[Dict[str, Any]],
+    criteria: List[Dict[str, Any]],
+    max_items: int = 10,
+) -> Dict[str, str]:
+    """Single-call short explanations for top rows."""
+    if not rows:
+        return {}
+    if not os.getenv("OPENAI_API_KEY"):
+        return {}
+    try:
+        from openai import OpenAI
+    except Exception:
+        return {}
+    subset = rows[: max(1, min(int(max_items), len(rows)))]
+    slim_rows: List[Dict[str, Any]] = []
+    for r in subset:
+        pid = str(r.get("place_id") or "").strip()
+        if not pid:
+            continue
+        slim_rows.append(
+            {
+                "id": pid,
+                "business_name": str(r.get("business_name") or "")[:120],
+                "rating": r.get("rating"),
+                "reviews": int(r.get("user_ratings_total") or 0),
+                "rank_key": float(r.get("rank_key") or 0.0),
+                "has_website": bool(r.get("has_website")),
+                "has_contact_form": bool(r.get("has_contact_form")),
+                "ssl": bool(r.get("ssl")),
+            }
+        )
+    if not slim_rows:
+        return {}
+    criteria_text = ", ".join(
+        f"{str(c.get('type') or '')}:{str(c.get('service') or '').strip()}"
+        for c in (criteria or [])
+        if str(c.get("type") or "").strip()
+    )[:400]
+    prompt = (
+        "Generate concise operator-facing reasons each lead matches target criteria.\n"
+        "Return JSON only: {\"explanations\":[{\"id\":\"...\",\"text\":\"...\"}]}\n"
+        "Constraints: 1 sentence, <= 140 chars, factual, no hype.\n"
+        f"Criteria: {criteria_text}\n"
+        f"Rows: {json.dumps(slim_rows, ensure_ascii=True)}"
+    )
+    try:
+        client = OpenAI()
+        model = os.getenv("ASK_AI_REVIEW_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        r = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": "Output valid JSON only."}, {"role": "user", "content": prompt}],
+        )
+        txt = (r.choices[0].message.content or "") if getattr(r, "choices", None) else ""
+        obj = _extract_json(txt)
+        out: Dict[str, str] = {}
+        for item in (obj.get("explanations") or []):
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("id") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if pid and text:
+                out[pid] = text[:160]
+        return out
+    except Exception:
+        return {}
+
+
+def ai_validate_brief_service_rows(
+    *,
+    website: Optional[str],
+    service_rows: List[Dict[str, Any]],
+    max_items: int = 8,
+) -> Dict[str, Dict[str, Any]]:
+    """Validate brief service-page signals in one bounded AI call.
+
+    Returns map: service_slug -> {"verdict","confidence","reason","model"}.
+    Deterministic pipeline remains source of truth; this is advisory.
+    """
+    if not website or not service_rows:
+        return {}
+    if not os.getenv("OPENAI_API_KEY"):
+        return {}
+    try:
+        from openai import OpenAI
+    except Exception:
+        return {}
+
+    subset = service_rows[: max(1, min(int(max_items), len(service_rows)))]
+    compact: List[Dict[str, Any]] = []
+    for row in subset:
+        slug = str(row.get("service") or "").strip().lower()
+        if not slug:
+            continue
+        compact.append(
+            {
+                "service": slug,
+                "display_name": str(row.get("display_name") or slug)[:80],
+                "service_status": str(row.get("service_status") or ""),
+                "detection_reason": str(row.get("detection_reason") or "")[:180],
+                "url": row.get("url"),
+                "word_count": int(row.get("word_count") or 0),
+                "h1_match": bool(row.get("h1_match")),
+                "confidence_level": str(row.get("confidence_level") or ""),
+            }
+        )
+    if not compact:
+        return {}
+
+    payload = {
+        "website": website,
+        "rows": compact,
+    }
+    prompt = (
+        "You are validating website service-page detection quality for a sales brief.\n"
+        "Use only provided evidence. Do not browse.\n"
+        "Return JSON only with schema:\n"
+        '{"items":[{"service":"...","verdict":"likely_missing|likely_present|unclear","confidence":"low|medium|high","reason":"..."}]}\n'
+        "Guidance:\n"
+        "- likely_present: evidence strongly indicates service page exists.\n"
+        "- likely_missing: evidence strongly indicates service page missing.\n"
+        "- unclear: weak or conflicting evidence.\n"
+        f"Input: {json.dumps(payload, ensure_ascii=True)}"
+    )
+    try:
+        client = OpenAI()
+        model = os.getenv("BRIEF_AI_VERIFY_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        r = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": "Output valid JSON only."}, {"role": "user", "content": prompt}],
+        )
+        txt = (r.choices[0].message.content or "") if getattr(r, "choices", None) else ""
+        obj = _extract_json(txt)
+        out: Dict[str, Dict[str, Any]] = {}
+        for item in (obj.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            slug = str(item.get("service") or "").strip().lower()
+            if not slug:
+                continue
+            verdict = str(item.get("verdict") or "").strip().lower()
+            if verdict not in {"likely_missing", "likely_present", "unclear"}:
+                verdict = "unclear"
+            conf = str(item.get("confidence") or "").strip().lower()
+            if conf not in {"low", "medium", "high"}:
+                conf = "low"
+            reason = str(item.get("reason") or "").strip()[:220]
+            out[slug] = {
+                "verdict": verdict,
+                "confidence": conf,
+                "reason": reason or "AI validation completed.",
+                "model": model,
+            }
+        return out
+    except Exception:
+        return {}

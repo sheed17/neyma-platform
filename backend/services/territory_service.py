@@ -19,10 +19,14 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 
 from backend.services.enrichment_service import run_diagnostic
+from backend.ml.store import persist_saved_diagnostic_response, persist_scored_entity
+from backend.ml.runtime import score_territory_row
+from backend.services.npl_service import ai_batch_explain_matches, ai_batch_rerank_candidates
 from backend.services.place_resolver import _geocode_city
 from pipeline.db import (
     add_scan_diagnostic,
     get_tier1_cache,
+    list_territory_prospects,
     list_members_for_list,
     save_diagnostic,
     save_territory_prospects,
@@ -53,6 +57,9 @@ EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 CACHE_TTL_SECONDS = 24 * 60 * 60
 MAX_CONSECUTIVE_EMPTY_PLACE_QUERIES = int(os.getenv("NEYMA_MAX_CONSECUTIVE_EMPTY_PLACE_QUERIES", "20"))
 MAX_ZERO_PLACE_QUERIES_WITH_NO_TOTAL = int(os.getenv("NEYMA_MAX_ZERO_PLACE_QUERIES_WITH_NO_TOTAL", "25"))
+TERRITORY_AI_ENABLED = str(os.getenv("TERRITORY_AI_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+TERRITORY_AI_RERANK_TOP_N = max(0, min(int(os.getenv("TERRITORY_AI_RERANK_TOP_N", "25")), 100))
+TERRITORY_AI_EXPLAIN_TOP_N = max(0, min(int(os.getenv("TERRITORY_AI_EXPLAIN_TOP_N", "20")), 80))
 
 
 def run_territory_scan_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -135,10 +142,70 @@ def run_territory_scan_job(job: Dict[str, Any]) -> Dict[str, Any]:
         progress_cb=_progress_cb,
     )
 
+    if TERRITORY_AI_ENABLED and tier1_rows:
+        update_territory_scan_status(
+            scan_id,
+            "running",
+            summary={
+                "phase": "ai_rerank",
+                "processed": 0,
+                "accepted": 0,
+                "failed": failed,
+                "total_candidates": total_candidates,
+                "scored_candidates": scored_cap,
+            },
+        )
+        adjustments = ai_batch_rerank_candidates(
+            rows=tier1_rows,
+            criteria=[{"type": "territory_opportunity", "service": None}],
+            purpose="territory",
+            max_items=TERRITORY_AI_RERANK_TOP_N,
+        )
+        if adjustments:
+            for row in tier1_rows:
+                pid = str(row.get("place_id") or "")
+                adj = adjustments.get(pid)
+                if not adj:
+                    continue
+                row["rank_key"] = round(float(row.get("rank_key") or 0.0) + float(adj.get("delta") or 0.0), 3)
+                row["ai_rerank"] = adj
+            tier1_rows.sort(key=lambda x: float(x.get("rank_key") or 0), reverse=True)
+
+        explanations = ai_batch_explain_matches(
+            rows=tier1_rows,
+            criteria=[{"type": "territory_opportunity", "service": None}],
+            max_items=TERRITORY_AI_EXPLAIN_TOP_N,
+        )
+        if explanations:
+            for row in tier1_rows:
+                pid = str(row.get("place_id") or "")
+                if pid in explanations:
+                    row["ai_explanation"] = explanations[pid]
+
     for idx, row in enumerate(tier1_rows, start=1):
         row["rank"] = idx
     top_rows = tier1_rows[:limit]
     save_territory_prospects(scan_id=scan_id, user_id=user_id, prospects=top_rows)
+    try:
+        persisted_rows = list_territory_prospects(scan_id, user_id)
+        by_place = {str((r.get("place_id") or "")): r for r in persisted_rows}
+        for row in top_rows:
+            place_id = str(row.get("place_id") or "")
+            persisted = by_place.get(place_id)
+            scored = row.get("lead_quality")
+            if not persisted or not isinstance(scored, dict):
+                continue
+            persist_scored_entity(
+                entity_type="territory_prospect",
+                entity_id=int(persisted["id"]),
+                place_id=place_id,
+                feature_scope="tier1",
+                feature_version=str(scored.get("feature_version") or ""),
+                score_payload=scored,
+                feature_payload=dict(scored.get("features") or {}),
+            )
+    except Exception:
+        logger.exception("Failed to persist territory lead-quality predictions for scan %s", scan_id)
 
     summary = {
         "phase": "completed",
@@ -193,6 +260,11 @@ def run_list_rescan_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 city=result.get("city") or city,
                 state=result.get("state") or state,
                 brief=result.get("brief"),
+                response=result,
+            )
+            persist_saved_diagnostic_response(
+                diagnostic_id=int(diag_id),
+                place_id=str(resolved_place_id or ""),
                 response=result,
             )
             change = _build_change_summary(previous=prev_resp, current=result)
@@ -456,11 +528,21 @@ def _build_tier1_rows(
         row["below_rating_avg"] = bool(avg_rating > 0 and (row.get("rating") or 0) < avg_rating)
         if not _matches_tier1_filters(row, filters):
             continue
+        row["avg_market_reviews"] = round(avg_reviews, 2) if avg_reviews > 0 else 0.0
+        row["avg_market_rating"] = round(avg_rating, 2) if avg_rating > 0 else 0.0
+        row["market_candidate_count"] = len(rows)
+        if avg_reviews >= 120:
+            row["market_density"] = "high"
+        elif avg_reviews >= 50:
+            row["market_density"] = "medium"
+        else:
+            row["market_density"] = "low"
         row["rank_key"] = _compute_tier1_rank_key(row, avg_reviews)
         rv = int(row.get("user_ratings_total") or 0)
         rating = row.get("rating")
         row["review_position_summary"] = f"{rv} reviews, rating {rating if rating is not None else 'N/A'}"
-        row["avg_market_rating"] = round(avg_rating, 2) if avg_rating > 0 else None
+        scored = score_territory_row(row)
+        row["lead_quality"] = scored
         ranked_rows.append(row)
 
     ranked_rows.sort(key=lambda x: float(x.get("rank_key") or 0), reverse=True)

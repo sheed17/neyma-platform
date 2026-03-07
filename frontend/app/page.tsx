@@ -3,72 +3,67 @@
 import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 
-const navItems = ["Product", "Use cases", "Solutions", "Resources", "Company", "Pricing"];
-
-const metrics = [
-  { label: "Signals per brief", value: "40+" },
-  { label: "Prospects ranked", value: "Top 20" },
-  { label: "Fast shortlist mode", value: "~15-30s" },
-  { label: "Verified service-page mode", value: "10-25 min" },
+const navItems = [
+  { label: "Product", href: "#product" },
+  { label: "Workflow", href: "#workflow" },
+  { label: "Why Neyma", href: "#why" },
+  { label: "Integrations", href: "#integrations" },
 ];
 
-const workflows = [
+const rankedPractices = [
+  { rank: "01", name: "Willow Glen Dental", signal: "Review gap + weak implants depth", action: "Open brief" },
+  { rank: "02", name: "Evergreen Smiles", signal: "Strong demand, weak conversion path", action: "Add to list" },
+  { rank: "03", name: "Almaden Family Dental", signal: "Service depth under-supported", action: "Watch" },
+  { rank: "04", name: "Rose Garden Dental", signal: "Booking friction on high-intent pages", action: "Open brief" },
+];
+
+const workflow = [
   {
-    title: "Run territory scan first",
-    body: "Start with market-wide ranking to identify where leverage is concentrated before narrowing to exact criteria.",
     step: "01",
+    title: "Run a territory scan",
+    text: "Start with a ranked market view, not a cold list.",
   },
   {
-    title: "Use Ask Neyma for intent filters",
-    body: "Query in plain English and choose Fast mode for speed or Verified mode for stricter service-page accuracy.",
     step: "02",
+    title: "Use Ask Neyma",
+    text: "Narrow the shortlist with plain-English intent.",
   },
   {
-    title: "Open full brief on demand",
-    body: "Build full diagnostics only for shortlisted prospects, then move winners into lists and outcomes.",
     step: "03",
+    title: "Open briefs on demand",
+    text: "Go deep only where the opportunity justifies it.",
   },
 ];
 
-const comparison = [
-  {
-    label: "Data model",
-    generic: "Contact records + enrichment snippets",
-    neyma: "Deterministic revenue intelligence with market context",
-  },
-  {
-    label: "Workflow",
-    generic: "Search tool + manual ops across tabs",
-    neyma: "Intent -> scan -> rank -> brief -> outcome in one workspace",
-  },
-  {
-    label: "Prioritization",
-    generic: "Sort by firmographics or generic score",
-    neyma: "Rank by structural revenue leverage and conversion readiness",
-  },
-  {
-    label: "Execution",
-    generic: "Export and continue elsewhere",
-    neyma: "Lists, outcomes, exports, and monitoring in-platform",
-  },
+const reasons = [
+  "Ranked prospects instead of undifferentiated contacts",
+  "Real structural signals instead of a generic lead score",
+  "Briefs, lists, and outcomes connected in one workflow",
 ];
 
-const faq = [
+const integrations = [
+  "high demand",
+  "weak service depth",
+  "review gap",
+  "booking friction",
+  "implant opportunity",
+  "conversion weakness",
+  "dense market",
+  "list ready",
+];
+
+const faqs = [
   {
-    q: "Does Neyma replace my CRM?",
-    a: "No. Neyma is your intelligence and prioritization layer before and alongside CRM execution.",
+    q: "What is Neyma?",
+    a: "A territory-first prospecting system for agencies focused on finding the practices most worth pursuing.",
   },
   {
-    q: "Do I need full briefs for every prospect?",
-    a: "No. Run territory + Ask first, then generate deep briefs only for selected prospects.",
+    q: "Who is it for today?",
+    a: "Dental is the strongest vertical today. The workflow is designed to expand into adjacent local-service categories over time.",
   },
   {
-    q: "How accurate is Ask Neyma for service-page requests?",
-    a: "Ask Fast returns likely matches quickly, while Ask Verified runs deeper validation and takes longer for higher precision.",
-  },
-  {
-    q: "Can agencies run multiple markets?",
-    a: "Yes. Neyma is built for multi-territory workflows and repeatable prospecting operations.",
+    q: "What does Ask Neyma do?",
+    a: "It turns a plain-English prospecting request into a tighter shortlist using the same ranking and signal system as the rest of the product.",
   },
 ];
 
@@ -76,197 +71,320 @@ export default function LandingPage() {
   const { user } = useAuth();
 
   return (
-    <div className="min-h-screen bg-[var(--bg-app)] text-[var(--text-primary)]">
-      <header className="sticky top-0 z-40 border-b border-[var(--border-default)]/80 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[var(--max-content)] items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="display-title text-2xl font-black tracking-tight">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#f6f0d9_0%,#ede9df_38%,#e8ece6_100%)] text-[#171411]">
+      <div className="bg-[#111111] text-white">
+        <div className="mx-auto flex h-12 max-w-[1280px] items-center justify-center gap-3 px-4 text-sm">
+          <span className="inline-flex h-2 w-2 rounded-full bg-[#f2bf2f]" />
+          <span className="text-white/70">Territory-first prospecting for agencies working local markets</span>
+          <a href="#product" className="font-medium text-white">See how it works</a>
+        </div>
+      </div>
+
+      <header className="px-4 pb-4 pt-6 sm:px-6">
+        <div className="mx-auto flex max-w-[1280px] items-center justify-between">
+          <Link href="/" className="text-[34px] font-semibold tracking-[-0.04em] text-[#171411]">
             neyma
           </Link>
-          <nav className="hidden items-center gap-7 text-sm text-[var(--text-secondary)] lg:flex">
+          <nav className="hidden items-center gap-8 text-sm text-[#5d564c] lg:flex">
             {navItems.map((item) => (
-              <a key={item} href="#" className="transition hover:text-[var(--text-primary)]">
-                {item}
+              <a key={item.href} href={item.href} className="transition hover:text-[#171411]">
+                {item.label}
               </a>
             ))}
           </nav>
-          <div className="flex items-center gap-2 sm:gap-3">
-            {user ? (
-              <Link href="/dashboard" className="inline-flex h-10 items-center rounded-full bg-black px-4 text-sm font-semibold text-white transition hover:opacity-90">
-                Open workspace
+          <div className="flex items-center gap-3">
+            {!user && (
+              <Link href="/login" className="hidden text-sm text-[#5d564c] transition hover:text-[#171411] sm:inline-flex">
+                Log in
               </Link>
-            ) : (
-              <>
-                <Link href="/login" className="hidden rounded-full px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition hover:text-[var(--text-primary)] sm:inline-flex">
-                  Log in
-                </Link>
-                <Link href="/register" className="inline-flex h-10 items-center rounded-full bg-black px-4 text-sm font-semibold text-white transition hover:opacity-90">
-                  Start free
-                </Link>
-              </>
             )}
+            <Link
+              href={user ? "/dashboard" : "/register"}
+              className="inline-flex h-11 items-center rounded-full bg-[#171411] px-5 text-sm font-medium text-white transition hover:opacity-90"
+            >
+              {user ? "Open workspace" : "Start free"}
+            </Link>
           </div>
         </div>
       </header>
 
       <main>
-        <section className="px-4 pb-8 pt-8 sm:px-6 sm:pt-12">
-          <div className="mx-auto max-w-[var(--max-content)] rounded-[34px] border border-[var(--border-default)] bg-[#f3f3f0] p-5 sm:p-10">
-            <div className="relative overflow-hidden rounded-[28px] border border-white/60 bg-gradient-to-br from-[#f8f7f2] via-[#f2f5f9] to-[#e8edf3] px-6 py-14 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)] sm:px-16 sm:py-20">
-              <div className="pointer-events-none absolute inset-0 opacity-80 [background:radial-gradient(circle_at_20%_20%,rgba(13,148,136,0.12),transparent_45%),radial-gradient(circle_at_80%_20%,rgba(59,130,246,0.12),transparent_35%),radial-gradient(circle_at_60%_80%,rgba(236,72,153,0.09),transparent_30%)]" />
-              <div className="relative mx-auto max-w-4xl text-center">
-                <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--text-muted)]">Revenue Intelligence Platform</p>
-                <h1 className="display-title text-balance text-4xl font-black leading-[1.03] tracking-tight sm:text-6xl md:text-7xl">
-                  Turn market noise into
-                  <span className="block bg-gradient-to-r from-[#0d9488] to-[#2563eb] bg-clip-text text-transparent">
-                    ranked revenue opportunities
-                  </span>
-                </h1>
-                <p className="mx-auto mt-6 max-w-2xl text-base text-[var(--text-secondary)] sm:text-xl">
-                  Neyma is built for territory-first prospecting. Scan a market, then use Ask Neyma in fast or verified mode to filter prospects with the right balance of speed and accuracy.
-                </p>
-                <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-                  <Link href={user ? "/territory/new" : "/register"} className="inline-flex h-12 min-w-[210px] items-center justify-center rounded-full bg-black px-7 text-sm font-semibold text-white transition hover:opacity-90">
-                    Run territory scan
-                  </Link>
-                  <Link href={user ? "/ask" : "/login"} className="inline-flex h-12 min-w-[190px] items-center justify-center rounded-full border border-[var(--border-default)] bg-white px-7 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[#f8fafc]">
-                    Ask Neyma
-                  </Link>
+        <section id="product" className="px-4 pb-8 sm:px-6 sm:pb-12">
+          <div className="mx-auto max-w-[1280px] rounded-[36px] border border-black/8 bg-[#f5f2ea] p-3 sm:p-4">
+            <div className="rounded-[30px] border border-black/6 bg-[linear-gradient(135deg,#f8f5ee_0%,#f7f4ea_48%,#eef3ed_100%)] p-6 sm:p-8 lg:p-10">
+              <div className="grid gap-10 lg:grid-cols-[0.95fr_1.05fr]">
+                <div className="max-w-[520px]">
+                  <p className="text-sm text-[#7c7468]">Dentist-first today. Expanding outward carefully.</p>
+                  <h1 className="mt-6 max-w-[12ch] text-5xl font-semibold leading-[0.96] tracking-[-0.055em] text-[#171411] sm:text-7xl">
+                    Find the practices most worth pursuing.
+                  </h1>
+                  <p className="mt-6 max-w-[44ch] text-lg leading-relaxed text-[#5d564c]">
+                    Neyma scans a market, ranks the strongest opportunities, narrows the shortlist with Ask Neyma, and opens full briefs only when deeper work is justified.
+                  </p>
+                  <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <Link
+                      href={user ? "/territory/new" : "/register"}
+                      className="inline-flex h-12 items-center justify-center rounded-full bg-[#171411] px-6 text-sm font-medium text-white transition hover:opacity-90"
+                    >
+                      Run territory scan
+                    </Link>
+                    <Link
+                      href={user ? "/ask" : "/login"}
+                      className="inline-flex h-12 items-center justify-center rounded-full border border-black/10 bg-white px-6 text-sm font-medium text-[#171411] transition hover:bg-black/[0.03]"
+                    >
+                      Ask Neyma
+                    </Link>
+                  </div>
                 </div>
-                <p className="mt-3 text-xs font-medium text-[var(--text-muted)]">
-                  Start with territory scan for market prioritization. Use Ask Neyma Fast (~15-30s) or Verified mode (10-25 min) for strict service-page validation.
-                </p>
+
+                <div className="rounded-[28px] border border-black/6 bg-white p-4 shadow-[0_20px_60px_rgba(23,20,17,0.06)] sm:p-5">
+                  <div className="grid gap-4">
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <span className="rounded-full bg-[#1b2432]/8 px-3 py-1 text-[#1b2432]">Territory scan</span>
+                      <span className="rounded-full bg-[#f2bf2f]/16 px-3 py-1 text-[#7c6111]">Ask Neyma</span>
+                      <span className="rounded-full bg-[#1f57c3]/10 px-3 py-1 text-[#1f57c3]">Brief</span>
+                    </div>
+
+                    <div className="rounded-[24px] border border-black/6 bg-[#fbfaf7] p-4">
+                      <div className="flex items-center justify-between gap-3 border-b border-black/6 pb-3">
+                        <div>
+                          <p className="text-sm font-medium text-[#171411]">San Jose, CA</p>
+                          <p className="text-xs text-[#7c7468]">Top 20 ranked prospects</p>
+                        </div>
+                        <span className="rounded-full bg-[#1b2432]/8 px-3 py-1 text-xs font-medium text-[#1b2432]">Market scan complete</span>
+                      </div>
+
+                      <div className="mt-3 space-y-2">
+                        {rankedPractices.map((row) => (
+                          <div key={row.rank} className="grid grid-cols-[36px_1fr_auto] items-center gap-3 rounded-2xl border border-black/6 bg-white px-3 py-3">
+                            <span className="text-xs font-medium text-[#7c7468]">{row.rank}</span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-[#171411]">{row.name}</p>
+                              <p className="truncate text-xs text-[#7c7468]">{row.signal}</p>
+                            </div>
+                            <span className="rounded-full border border-black/8 px-3 py-1 text-[11px] text-[#5d564c]">{row.action}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-[0.95fr_1.05fr]">
+                      <div className="rounded-[24px] border border-black/6 bg-[#fbfaf7] p-4">
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-[#7c7468]">Ask Neyma</p>
+                        <div className="mt-3 rounded-2xl border border-black/6 bg-white p-3">
+                          <p className="font-mono text-[12px] text-[#171411]">
+                            Find dentists with strong demand but weak service depth.
+                          </p>
+                        </div>
+                        <div className="mt-3 space-y-2 text-xs text-[#5d564c]">
+                          <div className="rounded-xl bg-white px-3 py-2">city: San Jose, CA</div>
+                          <div className="rounded-xl bg-white px-3 py-2">vertical: dentist</div>
+                          <div className="rounded-xl bg-white px-3 py-2">output: narrowed shortlist with reasons</div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-[24px] border border-black/6 bg-[#fbfaf7] p-4">
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-[#7c7468]">Brief snapshot</p>
+                        <div className="mt-3 space-y-2">
+                          <PreviewMetric label="Opportunity" value="$72k-$118k" tone="green" />
+                          <PreviewMetric label="Top gap" value="Implants page missing" tone="gold" />
+                          <PreviewMetric label="Constraint" value="Conversion + service depth" tone="blue" />
+                          <PreviewMetric label="Next step" value="Add to list and work outreach" tone="neutral" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <StatCard value="40+" label="Signals per brief" />
+                <StatCard value="Top 20" label="Ranked prospects returned" />
+                <StatCard value="Dental" label="Focused vertical today" />
               </div>
             </div>
           </div>
         </section>
 
-        <section className="px-4 pb-6 sm:px-6">
-          <div className="mx-auto max-w-[var(--max-content)] rounded-3xl border border-[var(--border-default)] bg-white px-6 py-7">
-            <p className="text-center text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">
-              Built for agencies running repeatable local growth workflows
-            </p>
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {metrics.map((metric) => (
-                <div key={metric.label} className="rounded-2xl border border-[var(--border-default)] bg-[#f8fafc] p-4 text-center">
-                  <div className="display-title text-2xl font-black tracking-tight">{metric.value}</div>
-                  <div className="mt-1 text-xs uppercase tracking-wide text-[var(--text-muted)]">{metric.label}</div>
-                </div>
+        <section id="workflow" className="px-4 py-8 sm:px-6 sm:py-10">
+          <div className="mx-auto max-w-[1280px]">
+            <div className="max-w-[680px]">
+              <p className="text-sm text-[#7c7468]">How it works</p>
+              <h2 className="mt-2 text-4xl font-semibold tracking-[-0.045em] text-[#171411] sm:text-5xl">
+                Simplicity first. Context built in.
+              </h2>
+            </div>
+
+            <div className="mt-8 grid gap-4 lg:grid-cols-3">
+              {workflow.map((item) => (
+                <article key={item.step} className="rounded-[28px] border border-black/8 bg-[#f5f2ea] p-5">
+                  <p className="text-xs font-medium text-[#7c7468]">{item.step}</p>
+                  <h3 className="mt-6 text-2xl font-semibold tracking-[-0.04em] text-[#171411]">{item.title}</h3>
+                  <p className="mt-3 max-w-[30ch] text-sm leading-relaxed text-[#5d564c]">{item.text}</p>
+                </article>
               ))}
             </div>
           </div>
         </section>
 
-        <section className="px-4 py-8 sm:px-6 sm:py-12">
-          <div className="mx-auto grid max-w-[var(--max-content)] gap-5 lg:grid-cols-3">
-            {workflows.map((item) => (
-              <article key={item.step} className="rounded-3xl border border-[var(--border-default)] bg-white p-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--accent)]">Step {item.step}</p>
-                <h2 className="display-title mt-3 text-2xl font-bold leading-tight text-[var(--text-primary)]">{item.title}</h2>
-                <p className="mt-4 text-sm leading-relaxed text-[var(--text-secondary)]">{item.body}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="px-4 py-8 sm:px-6 sm:py-12">
-          <div className="mx-auto max-w-[var(--max-content)] rounded-[30px] bg-[#0b1220] px-6 py-10 text-white sm:px-10 sm:py-14">
-            <div className="grid gap-8 lg:grid-cols-[1.2fr_1fr] lg:items-center">
+        <section id="why" className="px-4 py-8 sm:px-6 sm:py-10">
+          <div className="mx-auto max-w-[1280px] rounded-[36px] bg-[#171411] px-6 py-8 text-white sm:px-8 sm:py-10">
+            <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Why Neyma</p>
-                <h3 className="display-title mt-3 text-3xl font-black tracking-tight sm:text-5xl">Purpose-built for prioritization, not just prospect search.</h3>
-                <p className="mt-4 max-w-2xl text-slate-300">
-                  Major lead databases are broad. Neyma is intentionally opinionated for local service revenue leverage, so teams know which prospects to contact first.
+                <p className="text-sm text-white/50">Why Neyma</p>
+                <h2 className="mt-2 max-w-[12ch] text-4xl font-semibold leading-[0.98] tracking-[-0.05em] sm:text-5xl">
+                  Less noise. Better decisions.
+                </h2>
+              </div>
+              <div className="grid gap-3">
+                {reasons.map((item) => (
+                  <div key={item} className="rounded-[24px] border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/80">
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="integrations" className="px-4 py-8 sm:px-6 sm:py-10">
+          <div className="mx-auto max-w-[1280px] rounded-[36px] border border-black/8 bg-[#f5f2ea] px-6 py-8 sm:px-8 sm:py-10">
+            <div className="grid gap-6 lg:grid-cols-[0.82fr_1.18fr] lg:items-center">
+              <div>
+                <p className="text-sm text-[#7c7468]">Ask Neyma</p>
+                <h2 className="mt-2 text-4xl font-semibold tracking-[-0.045em] text-[#171411] sm:text-5xl">
+                  Less talking. More narrowing.
+                </h2>
+                <p className="mt-4 max-w-[42ch] text-sm leading-relaxed text-[#5d564c] sm:text-base">
+                  Ask Neyma should feel like a sharp command surface. You describe the kind of practice you want, and the shortlist gets tighter around the issues that actually matter.
                 </p>
-              </div>
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 sm:p-6">
-                <div className="space-y-3 text-sm">
-                  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Territory-first prioritization across local markets</div>
-                  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Ask Fast for speed, Ask Verified for precision</div>
-                  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">Deep briefs only when you request them</div>
+                <div className="mt-6 rounded-[24px] border border-black/8 bg-white p-4">
+                  <p className="font-mono text-[13px] text-[#171411]">
+                    Find dentists in Austin with high demand, thin implant coverage, and weak conversion paths.
+                  </p>
                 </div>
-                <Link href={user ? "/dashboard" : "/register"} className="mt-5 inline-flex h-11 items-center rounded-full bg-[var(--accent)] px-5 text-sm font-semibold text-white transition hover:brightness-95">
-                  {user ? "Open dashboard" : "Create workspace"}
-                </Link>
               </div>
-            </div>
-          </div>
-        </section>
+              <div className="rounded-[28px] border border-black/8 bg-white p-4 shadow-[0_20px_50px_rgba(23,20,17,0.05)]">
+                <div className="flex items-center justify-between gap-3 border-b border-black/6 pb-3">
+                  <div>
+                    <p className="text-sm font-medium text-[#171411]">Ask output</p>
+                    <p className="text-xs text-[#7c7468]">6 matches after narrowing</p>
+                  </div>
+                  <span className="rounded-full bg-[#1b2432]/8 px-3 py-1 text-[11px] font-medium text-[#1b2432]">Shortlist ready</span>
+                </div>
 
-        <section className="px-4 py-8 sm:px-6 sm:py-12">
-          <div className="mx-auto max-w-[var(--max-content)] rounded-3xl border border-[var(--border-default)] bg-white p-6 sm:p-8">
-            <div className="mb-5 max-w-[var(--max-reading)]">
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-muted)]">Comparison</p>
-              <h3 className="display-title mt-2 text-3xl font-black tracking-tight sm:text-4xl">A workflow replacement, not another search tab.</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border-default)] text-left text-xs uppercase tracking-[0.16em] text-[var(--text-muted)]">
-                    <th className="px-3 py-3">Capability</th>
-                    <th className="px-3 py-3">Generic tools</th>
-                    <th className="px-3 py-3">Neyma</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {comparison.map((row) => (
-                    <tr key={row.label} className="border-b border-[var(--border-default)]/70 align-top">
-                      <td className="px-3 py-3 font-semibold text-[var(--text-primary)]">{row.label}</td>
-                      <td className="px-3 py-3 text-[var(--text-secondary)]">{row.generic}</td>
-                      <td className="px-3 py-3 text-[var(--text-primary)]">{row.neyma}</td>
-                    </tr>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {integrations.map((item, index) => (
+                    <span
+                      key={item}
+                      className={`rounded-full border px-3 py-1.5 text-[12px] ${
+                        index === 0 || index === 1
+                          ? "border-[#1b2432]/16 bg-[#1b2432]/8 text-[#1b2432]"
+                          : index === 2 || index === 3
+                            ? "border-[#f2bf2f]/24 bg-[#f2bf2f]/12 text-[#7c6111]"
+                            : index === 4 || index === 5
+                              ? "border-[#1f57c3]/18 bg-[#1f57c3]/8 text-[#1f57c3]"
+                              : "border-black/8 bg-[#fbfaf7] text-[#5d564c]"
+                      }`}
+                    >
+                      {item}
+                    </span>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <section className="px-4 py-8 sm:px-6 sm:py-12">
-          <div className="mx-auto grid max-w-[var(--max-content)] gap-6 lg:grid-cols-2">
-            <CardBlock title="Outcome visibility" text="Track contacted, won, and lost directly against diagnostics to build a true feedback loop for your targeting strategy." />
-            <CardBlock title="Operational consistency" text="Standardize how your team researches, prioritizes, and briefs prospects with a repeatable command surface." />
-          </div>
-        </section>
-
-        <section className="px-4 pb-12 pt-8 sm:px-6 sm:pb-16 sm:pt-12">
-          <div className="mx-auto max-w-[var(--max-content)] rounded-3xl border border-[var(--border-default)] bg-white p-6 sm:p-8">
-            <div className="mb-6">
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-muted)]">FAQ</p>
-              <h3 className="display-title mt-2 text-3xl font-black tracking-tight sm:text-4xl">Questions teams ask before rolling out Neyma.</h3>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {faq.map((item) => (
-                <div key={item.q} className="rounded-2xl border border-[var(--border-default)] p-4">
-                  <p className="font-semibold text-[var(--text-primary)]">{item.q}</p>
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">{item.a}</p>
                 </div>
+
+                <div className="mt-4 space-y-2">
+                  <AskRow
+                    name="Barton Creek Dental"
+                    summary="Strong demand, implant gap, weak conversion path"
+                    tone="green"
+                  />
+                  <AskRow
+                    name="Westlake Family Smiles"
+                    summary="Review deficit in dense market, weak service depth"
+                    tone="gold"
+                  />
+                  <AskRow
+                    name="South Lamar Dental"
+                    summary="High-intent traffic, shallow page coverage"
+                    tone="blue"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="px-4 py-8 sm:px-6 sm:py-10">
+          <div className="mx-auto max-w-[1280px]">
+            <div className="grid gap-4 lg:grid-cols-3">
+              {faqs.map((item) => (
+                <article key={item.q} className="rounded-[28px] border border-black/8 bg-white px-5 py-5">
+                  <h3 className="text-lg font-medium text-[#171411]">{item.q}</h3>
+                  <p className="mt-3 text-sm leading-relaxed text-[#5d564c]">{item.a}</p>
+                </article>
               ))}
             </div>
           </div>
         </section>
       </main>
-
-      <footer className="border-t border-[var(--border-default)] bg-white px-4 py-8 sm:px-6">
-        <div className="mx-auto flex max-w-[var(--max-content)] flex-col gap-4 text-sm text-[var(--text-muted)] sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <span className="font-semibold text-[var(--text-primary)]">Neyma</span> Revenue Intelligence Platform
-          </div>
-          <div className="flex items-center gap-5">
-            <Link href="/ask" className="hover:text-[var(--text-primary)]">Ask Neyma</Link>
-            <Link href="/territory/new" className="hover:text-[var(--text-primary)]">Territory</Link>
-            <Link href="/diagnostic/new" className="hover:text-[var(--text-primary)]">New diagnostic</Link>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }
 
-function CardBlock({ title, text }: { title: string; text: string }) {
+function StatCard({ value, label }: { value: string; label: string }) {
   return (
-    <article className="rounded-3xl border border-[var(--border-default)] bg-white p-6">
-      <h4 className="display-title text-2xl font-bold text-[var(--text-primary)]">{title}</h4>
-      <p className="mt-3 text-sm leading-relaxed text-[var(--text-secondary)]">{text}</p>
-    </article>
+    <div className="rounded-[24px] border border-black/6 bg-white px-4 py-5">
+      <p className="text-3xl font-semibold tracking-[-0.04em] text-[#171411]">{value}</p>
+      <p className="mt-2 text-sm text-[#7c7468]">{label}</p>
+    </div>
+  );
+}
+
+function PreviewMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "green" | "gold" | "blue" | "neutral";
+}) {
+  const toneClass =
+    tone === "green"
+      ? "border-[#1b2432]/16 bg-[#1b2432]/8"
+      : tone === "gold"
+        ? "border-[#d8b429]/24 bg-[#d8b429]/12"
+        : tone === "blue"
+          ? "border-[#205ecf]/16 bg-[#205ecf]/8"
+          : "border-black/6 bg-white";
+
+  return (
+    <div className={`rounded-2xl border px-3 py-3 ${toneClass}`}>
+      <p className="text-[11px] uppercase tracking-[0.12em] text-[#7c7468]">{label}</p>
+      <p className="mt-1 text-sm font-medium text-[#171411]">{value}</p>
+    </div>
+  );
+}
+
+function AskRow({
+  name,
+  summary,
+  tone,
+}: {
+  name: string;
+  summary: string;
+  tone: "green" | "gold" | "blue";
+}) {
+  const dotClass =
+    tone === "green" ? "bg-[#1b2432]" : tone === "gold" ? "bg-[#f2bf2f]" : "bg-[#3c5b8a]";
+
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-black/8 bg-[#fbfaf7] px-3 py-3">
+      <span className={`inline-flex h-2.5 w-2.5 rounded-full ${dotClass}`} />
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium text-[#171411]">{name}</p>
+        <p className="truncate text-xs text-[#7c7468]">{summary}</p>
+      </div>
+    </div>
   );
 }

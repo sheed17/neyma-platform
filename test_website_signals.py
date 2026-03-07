@@ -56,7 +56,7 @@ TEST_SITES = [
 ]
 
 
-def test_site(site_config: dict) -> dict:
+def run_site_check(site_config: dict) -> dict:
     """Test a single site and compare to expected values."""
     url = site_config["url"]
     expected = site_config["expected"]
@@ -109,7 +109,7 @@ def main():
     total_failed = 0
     
     for site in TEST_SITES:
-        result = test_site(site)
+        result = run_site_check(site)
         all_results.append(result)
         total_passed += len(result["passed"])
         total_failed += len(result["failed"])

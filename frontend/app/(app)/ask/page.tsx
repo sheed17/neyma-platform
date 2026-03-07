@@ -10,16 +10,15 @@ import {
   getAskResults,
   getJobStatus,
   getProspectLists,
-  runAskAgenticQuery,
   runAskQuery,
 } from "@/lib/api";
 import type { ProspectList } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import { Card, CardBody } from "@/app/components/ui/Card";
 import Textarea from "@/app/components/ui/Textarea";
-import { Table, THead, TH, TR, TD } from "@/app/components/ui/Table";
 import EmptyState from "@/app/components/ui/EmptyState";
 import ListPickerModal from "@/app/components/ListPickerModal";
+import BriefBuildProgress, { type BriefBuildProgressState } from "@/app/components/BriefBuildProgress";
 
 type AskProspect = {
   diagnostic_id?: number | null;
@@ -32,6 +31,7 @@ type AskProspect = {
   user_ratings_total?: number;
   opportunity_profile?: string;
   primary_leverage?: string;
+  ai_explanation?: string;
 };
 
 const ASK_RESULTS_STORAGE_KEY = "ask_results";
@@ -54,12 +54,83 @@ type AskResultsCache = {
   saved_at: string;
 };
 
+type AskProgressState = {
+  phase: string;
+  candidates: number;
+  scored: number;
+  listed: number;
+  iteration: number;
+  maxIterations: number;
+};
+
+type AskProgressEvent = {
+  id: string;
+  label: string;
+  detail: string;
+};
+
+const promptIdeas = [
+  "Find 10 dentists in San Jose, CA with missing implants page",
+  "Find dentists in Austin, TX with strong demand but weak service depth",
+  "Find practices in Miami, FL below local review average with weak conversion paths",
+  "Find high-opportunity dentists in Phoenix, AZ with shallow Invisalign coverage",
+];
+
+function normalizeAskError(error: string | null) {
+  const raw = String(error || "").trim();
+  const lower = raw.toLowerCase();
+
+  if (lower.includes("we can't process this query") || lower.includes("please use a location")) {
+    return {
+      title: "Tighten the request",
+      description: "Ask Neyma needs a city and state, plus one supported filter, before it can build the shortlist.",
+      hints: [
+        "Use City, ST: San Jose, CA",
+        "Use supported filters like review gap, website quality, or missing service page",
+        "Example: Find dentists in Phoenix, AZ with shallow Invisalign coverage",
+      ],
+    };
+  }
+
+  if (!raw) {
+    return {
+      title: "Request could not run",
+      description: "Try again with a more specific query.",
+      hints: [],
+    };
+  }
+
+  return {
+    title: "Request could not run",
+    description: raw,
+    hints: [],
+  };
+}
+
+function formatPhaseLabel(phase: string) {
+  const normalized = phase.replaceAll("_", " ").trim();
+  if (!normalized) return "Preparing request";
+
+  const lower = normalized.toLowerCase();
+  if (lower.includes("candidate fetch")) return "Discovering candidates";
+  if (lower.includes("score")) return "Scoring opportunity signals";
+  if (lower.includes("list")) return "Building shortlist";
+  if (lower.includes("iter")) return "Refining the next pass";
+  if (lower.includes("complete")) return "Finalizing results";
+
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
 export default function AskPage() {
   const router = useRouter();
   const [query, setQuery] = useState("Find 10 dentists in San Jose that have missing implants page");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageHref, setMessageHref] = useState<string | null>(null);
+  const [messageCta, setMessageCta] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progressState, setProgressState] = useState<AskProgressState | null>(null);
+  const [progressEvents, setProgressEvents] = useState<AskProgressEvent[]>([]);
   const [results, setResults] = useState<AskProspect[]>([]);
   const [headline, setHeadline] = useState<string | null>(null);
   const [appliedCriteria, setAppliedCriteria] = useState<string[]>([]);
@@ -70,13 +141,41 @@ export default function AskPage() {
   const [requiresConfirmation, setRequiresConfirmation] = useState(false);
   const [agenticIterations, setAgenticIterations] = useState<Array<Record<string, unknown>>>([]);
   const [ensuringKey, setEnsuringKey] = useState<string | null>(null);
-  const [verifiedMode, setVerifiedMode] = useState(true);
-  const [agenticMode, setAgenticMode] = useState(false);
   const [lists, setLists] = useState<ProspectList[]>([]);
   const [listModalOpen, setListModalOpen] = useState(false);
   const [listBusy, setListBusy] = useState(false);
   const [listTargetDiagnosticId, setListTargetDiagnosticId] = useState<number | null>(null);
   const [listTargetBusinessName, setListTargetBusinessName] = useState<string>("");
+  const [briefProgress, setBriefProgress] = useState<BriefBuildProgressState | null>(null);
+
+  function applyPrompt(next: string) {
+    setQuery(next);
+    setError(null);
+  }
+
+  function updateProgress(next: AskProgressState) {
+    setProgressState(next);
+    setProgressEvents((prev) => {
+      const last = prev[0];
+      const nextLabel = formatPhaseLabel(next.phase);
+      const nextDetail = buildProgressEventDetail(next);
+      if (last && last.label === nextLabel && last.detail === nextDetail) {
+        return prev;
+      }
+
+      return [
+        {
+          id: `${Date.now()}-${next.phase}-${next.iteration}-${next.candidates}-${next.scored}-${next.listed}`,
+          label: nextLabel,
+          detail: nextDetail,
+        },
+        ...prev,
+      ].slice(0, 5);
+    });
+    setMessage(
+      `${next.phase.replaceAll("_", " ")} · Found ${next.candidates}, scored ${next.scored}, listed ${next.listed}${next.iteration ? ` · Iteration ${next.iteration}${next.maxIterations ? `/${next.maxIterations}` : ""}` : ""}`,
+    );
+  }
 
   useEffect(() => {
     try {
@@ -142,7 +241,12 @@ export default function AskPage() {
     setRequiresConfirmation(false);
     setAgenticIterations([]);
     setMessage(null);
+    setMessageHref(null);
+    setMessageCta(null);
     setError(null);
+    setProgressState(null);
+    setProgressEvents([]);
+    setBriefProgress(null);
     sessionStorage.removeItem(ASK_RESULTS_STORAGE_KEY);
   }
 
@@ -157,16 +261,22 @@ export default function AskPage() {
     setPendingIntent(null);
     setRequiresConfirmation(false);
     setAgenticIterations([]);
+    setProgressState(null);
+    setProgressEvents([]);
+    setBriefProgress(null);
     sessionStorage.removeItem(ASK_RESULTS_STORAGE_KEY);
     setLoading(true);
+    setMessageHref(null);
+    setMessageCta(null);
     try {
-      const start = agenticMode
-        ? await runAskAgenticQuery(query, verifiedMode ? "verified" : "fast", confirmedLowConfidence)
-        : await runAskQuery(query, verifiedMode ? "verified" : "fast", confirmedLowConfidence);
+      const start = await runAskQuery(query, confirmedLowConfidence);
       if (start.requires_confirmation || start.status === "requires_confirmation") {
-        setPendingIntent((start.intent || {}) as Record<string, unknown>);
+        setPendingIntent((start.normalized_intent || start.intent || {}) as Record<string, unknown>);
         setRequiresConfirmation(true);
-        setMessage(start.message || "Please confirm intent before running.");
+        setMessage(start.question || start.message || "Please confirm intent before running.");
+        if (Array.isArray(start.unsupported_parts)) {
+          setUnsupportedParts(start.unsupported_parts);
+        }
         setLoading(false);
         return;
       }
@@ -176,8 +286,8 @@ export default function AskPage() {
       setMessage(start.message);
 
       let completed = false;
-      const maxLoops = verifiedMode ? 720 : 240;
-      const sleepMs = verifiedMode ? 2500 : 1500;
+      const maxLoops = 360;
+      const sleepMs = 1500;
       for (let i = 0; i < maxLoops; i++) {
         const st = await getJobStatus(start.job_id);
         const progress = (st.progress || {}) as Record<string, unknown>;
@@ -186,19 +296,16 @@ export default function AskPage() {
         const candidates = Number(p.candidates_found || 0);
         const scored = Number(p.scored || 0);
         const listed = Number(p.list_count || 0);
-        const verifying = Number(p.verifying || 0);
-        const verifiedProcessed = Number(p.processed || p.verified_processed || 0);
-        if (phase === "agentic_iteration") {
-          const iteration = Number(p.iteration || 0);
-          const matched = Number(p.matched_count || listed || 0);
-          const maxIterations = Number(p.max_iterations || 0);
-          const base = `Iteration ${iteration}: ${candidates} scanned -> ${matched} matched${maxIterations ? ` (max ${maxIterations})` : ""}`;
-          setMessage(st.status === "completed" ? base : `${base}. Adjusting plan for next iteration...`);
-        } else if (verifiedMode && (phase === "verified_diagnostic" || verifying > 0)) {
-          setMessage(`Verifying accuracy · ${verifiedProcessed}/${verifying || "?"} checked, ${listed} confirmed matches`);
-        } else {
-          setMessage(`${phase.replaceAll("_", " ")} · Found ${candidates}, scored ${scored}, listed ${listed}`);
-        }
+        const iteration = Number(p.iteration || 0);
+        const maxIterations = Number(p.max_iterations || 0);
+        updateProgress({
+          phase,
+          candidates,
+          scored,
+          listed,
+          iteration,
+          maxIterations,
+        });
 
         const partial = Array.isArray(progress.partial_results) ? (progress.partial_results as AskProspect[]) : [];
         if (partial.length > 0) {
@@ -237,10 +344,9 @@ export default function AskPage() {
         ? ((result as Record<string, unknown>).iterations as Array<Record<string, unknown>>)
         : [];
       setAgenticIterations(iterations);
-      if (agenticMode && iterations.length > 0) {
+      if (iterations.length > 0) {
         const last = iterations[iterations.length - 1] || {};
-        const telemetry = (last.telemetry || {}) as Record<string, unknown>;
-        setMessage(`Iteration ${iterations.length}: ${Number(telemetry.candidate_count || 0)} scanned -> ${Number(telemetry.matched_count || 0)} matched`);
+        setMessage(`Iteration ${iterations.length}: ${Number(last.prefilter_count || 0)} scanned -> ${Number(last.postfilter_count || 0)} matched`);
       }
       setResults(prospects);
       setAppliedCriteria(applied);
@@ -252,7 +358,9 @@ export default function AskPage() {
       setHeadline(
         `Found ${total} matches${intent?.city ? ` in ${String(intent.city)}${intent?.state ? `, ${String(intent.state)}` : ""}` : ""}.`,
       );
-      setMessage(verifiedMode ? "Done. Verified matches only." : "Done.");
+      setProgressState(null);
+      setProgressEvents([]);
+      setMessage("Done.");
       sessionStorage.setItem(ASK_RESULTS_STORAGE_KEY, JSON.stringify({
         query,
         headline: `Found ${total} matches${intent?.city ? ` in ${String(intent.city)}${intent?.state ? `, ${String(intent.state)}` : ""}` : ""}.`,
@@ -266,6 +374,8 @@ export default function AskPage() {
         saved_at: new Date().toISOString(),
       } satisfies AskResultsCache));
     } catch (err) {
+      setProgressState(null);
+      setProgressEvents([]);
       setError(err instanceof Error ? err.message : "Failed to run request");
     } finally {
       setLoading(false);
@@ -285,6 +395,9 @@ export default function AskPage() {
     const key = `${row.place_id || ""}-${row.business_name || ""}`;
     setEnsuringKey(key);
     setError(null);
+    setMessageHref(null);
+    setMessageCta(null);
+    setBriefProgress(null);
     try {
       const ensure = await ensureAskProspectBrief({
         place_id: row.place_id,
@@ -298,13 +411,22 @@ export default function AskPage() {
       }
       if (!ensure.job_id) throw new Error("Failed to start brief build");
 
-      setMessage("Building your brief...");
+      setMessage("Building full brief...");
+      setBriefProgress({
+        phase: "preparing_brief",
+        businessName: row.business_name || "",
+        city: row.city || "",
+        state: row.state || "",
+        polls: 0,
+      });
       for (let i = 0; i < 240; i++) {
         const st = await getJobStatus(ensure.job_id);
         if (st.status === "completed" && st.diagnostic_id) {
+          setBriefProgress(null);
           return st.diagnostic_id;
         }
         if (st.status === "failed") throw new Error(st.error || "Brief build failed");
+        setBriefProgress(buildBriefProgressState(st.progress, i + 1, row));
         await new Promise((r) => setTimeout(r, 2000));
       }
       throw new Error("Brief build timed out");
@@ -313,6 +435,7 @@ export default function AskPage() {
       setError(e.message);
       throw e;
     } finally {
+      setBriefProgress(null);
       setEnsuringKey(null);
     }
   }
@@ -342,15 +465,19 @@ export default function AskPage() {
     setListBusy(true);
     try {
       let listId = payload.listId;
+      let createdNew = false;
       if (!listId) {
         if (!payload.newListName) throw new Error("List name is required");
         const created = await createProspectList(payload.newListName);
         listId = created.id;
+        createdNew = true;
       }
       await addProspectsToList(listId, [listTargetDiagnosticId]);
       const updated = await getProspectLists().catch(() => ({ items: [] }));
       setLists(updated.items);
-      setMessage(`Added ${listTargetBusinessName || "prospect"} to list.`);
+      setMessage(`Added ${listTargetBusinessName || "prospect"} to ${createdNew ? "new list" : "list"}.`);
+      setMessageHref(`/lists/${listId}`);
+      setMessageCta("Open list");
       setListModalOpen(false);
       setListTargetDiagnosticId(null);
       setListTargetBusinessName("");
@@ -361,69 +488,105 @@ export default function AskPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <h1 className="display-title text-3xl font-black tracking-tight">Ask Neyma</h1>
-      <p className="mt-1 text-sm text-[var(--text-muted)]">Describe exactly what you want and Neyma will return a shortlist. Use verified mode for service-page accuracy.</p>
+      <div className="mx-auto max-w-4xl text-center">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Ask Neyma</p>
+        <h1 className="display-title mt-3 text-4xl font-black tracking-tight sm:text-6xl">
+          Ask for the exact prospect you want.
+        </h1>
+        <p className="mx-auto mt-4 max-w-2xl text-sm text-[var(--text-secondary)] sm:text-base">
+          Describe the target in plain English. Neyma turns that request into a shortlist with reasons, not just names.
+        </p>
+      </div>
 
-      <Card className="mt-5">
-        <CardBody>
-          <form onSubmit={handleRun} className="space-y-3">
-            <Textarea
-              label="Request"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              rows={3}
-              placeholder="Find up to 20 dentists in San Jose, CA with missing implants page"
-            />
-            <div className="flex items-center gap-3">
-              <Button
-                type="submit"
-                disabled={loading}
-                variant="primary"
+      <Card className="mx-auto mt-6 max-w-4xl overflow-hidden border border-black/8 bg-[linear-gradient(180deg,#f8f5ee_0%,#ffffff_100%)] shadow-[0_20px_50px_rgba(23,20,17,0.05)]">
+        <CardBody className="p-4 sm:p-5">
+          <div className="mb-4 flex flex-wrap gap-2">
+            {promptIdeas.map((idea) => (
+              <button
+                key={idea}
+                type="button"
+                onClick={() => applyPrompt(idea)}
+                className="rounded-full border border-black/8 bg-white px-3 py-1.5 text-xs text-[var(--text-secondary)] transition hover:bg-black/[0.03] hover:text-[var(--text-primary)]"
               >
-                {loading ? "Finding prospects..." : "Run query"}
-              </Button>
-              <Link href="/territory/new" className="text-sm app-link">
-                Or run a structured territory scan
-              </Link>
+                {idea}
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={handleRun} className="space-y-3">
+            <div className="rounded-[28px] border border-black/8 bg-white p-3 shadow-[0_10px_30px_rgba(23,20,17,0.04)]">
+              <Textarea
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                rows={4}
+                placeholder="Find dentists in San Jose with strong demand but weak service depth"
+                className="resize-none border-0 bg-transparent px-1 py-1 text-base leading-relaxed focus:border-transparent"
+              />
+              <div className="mt-3 flex flex-col gap-3 border-t border-black/6 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--text-muted)]">
+                  <span className="rounded-full bg-[#1b2432]/8 px-2.5 py-1 text-[#1b2432]">Plain-English query</span>
+                  <span className="rounded-full bg-[#f2bf2f]/14 px-2.5 py-1 text-[#7c6111]">Shortlist with reasons</span>
+                  <Link href="/territory/new" className="app-link font-medium">
+                    Start from territory scan
+                  </Link>
+                </div>
+                <Button
+                  type="submit"
+                  disabled={loading}
+                  variant="primary"
+                  className="h-11 rounded-full bg-black px-5 text-white hover:bg-[#4f79c7]"
+                >
+                  {loading ? (
+                    <span className="inline-flex items-center gap-2">
+                      <span className="inline-flex h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" />
+                      Thinking
+                    </span>
+                  ) : "Ask Neyma"}
+                </Button>
+              </div>
             </div>
-            <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <input
-                type="checkbox"
-                checked={verifiedMode}
-                onChange={(e) => setVerifiedMode(e.target.checked)}
-                className="h-4 w-4 rounded border-[var(--border-default)]"
-              />
-              Extreme accuracy (verified mode, slower)
-            </label>
-            <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <input
-                type="checkbox"
-                checked={agenticMode}
-                onChange={(e) => setAgenticMode(e.target.checked)}
-                className="h-4 w-4 rounded border-[var(--border-default)]"
-              />
-              Agentic planner loop (iterative scan refinement)
-            </label>
-            {verifiedMode && (
-              <p className="text-xs text-[var(--text-muted)]">
-                For queries like “no implants page,” Neyma validates with deep diagnostics and may take 10-25 minutes.
-              </p>
+
+            {message && (
+              loading && progressState ? (
+                <AgentProgressPanel progress={progressState} events={progressEvents} />
+              ) : (
+                <div className="rounded-2xl border border-[#1f57c3]/10 bg-[#1f57c3]/[0.06] px-4 py-3 text-left text-sm text-[var(--text-secondary)]">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span>{message}</span>
+                    {messageHref && messageCta ? <Link href={messageHref} className="app-link font-medium">{messageCta}</Link> : null}
+                  </div>
+                </div>
+              )
             )}
-            {agenticMode && (
-              <p className="text-xs text-[var(--text-muted)]">
-                Agentic mode runs multiple deterministic scan iterations and adjusts radius/candidate cap/filter strategy between rounds.
-              </p>
+            {error && (
+              <div className="rounded-[24px] border border-[#4f79c7]/12 bg-[linear-gradient(135deg,rgba(79,121,199,0.08)_0%,rgba(242,191,47,0.08)_100%)] p-4 text-left">
+                <div className="rounded-[20px] border border-white/70 bg-[rgba(255,255,255,0.9)] px-4 py-3">
+                  <p className="text-sm font-semibold text-[var(--text-primary)]">{normalizeAskError(error).title}</p>
+                  <p className="mt-1 text-sm text-[var(--text-secondary)]">{normalizeAskError(error).description}</p>
+                  {normalizeAskError(error).hints.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {normalizeAskError(error).hints.map((hint) => (
+                        <span key={hint} className="rounded-full border border-black/8 bg-[#fbfaf7] px-3 py-1.5 text-xs text-[var(--text-secondary)]">
+                          {hint}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
-            {message && <p className="text-sm text-[var(--text-secondary)]">{message}</p>}
-            {error && <p className="text-sm text-red-600">{error}</p>}
           </form>
         </CardBody>
       </Card>
 
+      {briefProgress && (
+        <BriefBuildProgress progress={briefProgress} className="mx-auto mt-4 max-w-4xl" />
+      )}
+
       {requiresConfirmation && pendingIntent && (
-        <Card className="mt-4 border-amber-200 bg-amber-50/50">
+        <Card className="mx-auto mt-4 max-w-4xl border-amber-200 bg-amber-50/50">
           <CardBody>
-            <p className="text-sm font-semibold text-[var(--text-primary)]">Low-confidence interpretation</p>
+            <p className="text-sm font-semibold text-[var(--text-primary)]">Low-confidence intent parse</p>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
               We interpreted this as {String(pendingIntent.vertical || "general_local_business")} in {String(pendingIntent.city || "—")}, {String(pendingIntent.state || "—")}.
             </p>
@@ -434,29 +597,39 @@ export default function AskPage() {
             </p>
             <div className="mt-3 flex items-center gap-2">
               <Button onClick={() => { setRequiresConfirmation(false); setPendingIntent(null); }} className="border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-secondary)]">Cancel</Button>
-              <Button onClick={() => void executeRun(true)} variant="primary">Run anyway</Button>
+              <Button onClick={() => void executeRun(true)} variant="primary">Run with this intent</Button>
             </div>
           </CardBody>
         </Card>
       )}
 
       {headline && (
-        <div className="mt-5 flex items-center justify-between gap-2">
-          <p className="text-sm text-[var(--text-secondary)]">{headline}</p>
+        <div className="mx-auto mt-6 flex max-w-5xl items-center justify-between gap-3">
+          <p className="text-sm font-medium text-[var(--text-secondary)]">{headline}</p>
           <button onClick={clearResults} className="text-sm text-[var(--text-secondary)] hover:underline">Clear results</button>
         </div>
       )}
-      {appliedCriteria.length > 0 && (
-        <p className="mt-1 text-xs text-[var(--text-muted)]">Results filtered by: {appliedCriteria.join(", ")}.</p>
-      )}
-      {unsupportedMessage && (
-        <p className="mt-1 text-xs text-[var(--text-muted)]">{unsupportedMessage}</p>
-      )}
-      {unsupportedParts.length > 0 && (
-        <p className="mt-1 text-xs text-[var(--text-muted)]">Unsupported parts: {unsupportedParts.join(", ")}.</p>
+      {(appliedCriteria.length > 0 || unsupportedMessage || unsupportedParts.length > 0) && (
+        <div className="mx-auto mt-2 max-w-5xl space-y-2">
+          {appliedCriteria.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {appliedCriteria.map((item) => (
+                <span key={item} className="rounded-full border border-black/8 bg-white px-3 py-1 text-xs text-[var(--text-secondary)]">
+                  {item}
+                </span>
+              ))}
+            </div>
+          )}
+          {unsupportedMessage && (
+            <p className="text-xs text-[var(--text-muted)]">{unsupportedMessage}</p>
+          )}
+          {unsupportedParts.length > 0 && (
+            <p className="text-xs text-[var(--text-muted)]">Unsupported parts: {unsupportedParts.join(", ")}.</p>
+          )}
+        </div>
       )}
       {!loading && results.length === 0 && noResultsSummary?.total_scanned && noResultsSummary.total_scanned > 0 && (
-        <Card className="mt-3 border-[var(--border-default)]">
+        <Card className="mx-auto mt-4 max-w-5xl border-[var(--border-default)]">
           <CardBody>
             <p className="text-sm text-[var(--text-secondary)]">
               No matches. We scanned {noResultsSummary.total_scanned} prospects; most exclusions from {noResultsSummary.criterion_that_eliminated_most || "filters"}.
@@ -473,15 +646,28 @@ export default function AskPage() {
         </Card>
       )}
       {agenticIterations.length > 0 && (
-        <details className="mt-3 rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-2">
-          <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">Search summary</summary>
-          <div className="mt-2 space-y-1 text-xs text-[var(--text-muted)]">
+        <details className="mx-auto mt-4 max-w-5xl rounded-[24px] border border-black/8 bg-white px-4 py-3">
+          <summary className="cursor-pointer list-none">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-[var(--text-primary)]">How this result was built</p>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">Territory scanned, criteria applied, shortlist returned.</p>
+              </div>
+              <span className="text-xs font-medium text-[var(--text-secondary)]">View details</span>
+            </div>
+          </summary>
+          <div className="mt-3 space-y-2 rounded-[20px] border border-black/6 bg-[#fbfaf7] px-3 py-3 text-xs text-[var(--text-muted)]">
             {agenticIterations.map((it, idx) => {
-              const t = (it.telemetry || {}) as Record<string, unknown>;
               return (
-                <p key={idx}>
-                  Iteration {Number(it.iteration || idx + 1)}: {Number(t.candidate_count || 0)} scanned {"->"} {Number(t.matched_count || 0)} matched; radius {Number(it.radius_miles || 0)} mi; cap {Number(it.candidate_cap || 0)}.
-                </p>
+                <div key={idx} className="rounded-2xl border border-black/6 bg-white px-3 py-2.5">
+                  <p className="font-medium text-[var(--text-primary)]">Pass {Number(it.iter || idx + 1)}</p>
+                  <p className="mt-1">
+                    {Number(it.postfilter_count || 0)} matches returned after scanning the local market.
+                  </p>
+                  <p className="mt-1">
+                    Search radius: {Number(it.radius || 0)} miles.
+                  </p>
+                </div>
               );
             })}
           </div>
@@ -489,52 +675,54 @@ export default function AskPage() {
       )}
 
       {results.length > 0 ? (
-        <Card className="mt-3">
-          <Table>
-            <THead>
-              <tr>
-                <TH>Business</TH>
-                <TH>City</TH>
-                <TH>Rating</TH>
-                <TH>Reviews</TH>
-                <TH>Signal</TH>
-                <TH className="text-right">Action</TH>
-              </tr>
-            </THead>
-            <tbody>
-              {results.map((r, i) => {
-                const key = `${r.place_id || ""}-${r.business_name || ""}`;
-                return (
-                  <TR key={`${r.diagnostic_id || i}-${r.business_name || ""}`}>
-                    <TD className="font-medium text-[var(--text-primary)]">{r.business_name || "—"}</TD>
-                    <TD>{r.city || "—"}{r.state ? `, ${r.state}` : ""}</TD>
-                    <TD>{r.rating ?? "—"}</TD>
-                    <TD>{r.user_ratings_total ?? "—"}</TD>
-                    <TD>{r.primary_leverage || r.opportunity_profile || "—"}</TD>
-                    <TD className="text-right">
-                      <button
+        <div className="mx-auto mt-4 max-w-5xl space-y-3">
+          {results.map((r, i) => {
+            const key = `${r.place_id || ""}-${r.business_name || ""}`;
+            return (
+              <Card key={`${r.diagnostic_id || i}-${r.business_name || ""}`} className="overflow-hidden border border-black/8 bg-white shadow-[0_12px_30px_rgba(23,20,17,0.04)]">
+                <CardBody className="p-4 sm:p-5">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-lg font-semibold text-[var(--text-primary)]">{r.business_name || "—"}</h3>
+                        {(r.rating != null || r.user_ratings_total != null) && (
+                          <span className="rounded-full border border-black/8 bg-[#fbfaf7] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
+                            {r.rating ?? "—"} stars · {r.user_ratings_total ?? "—"} reviews
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-sm text-[var(--text-muted)]">
+                        {r.city || "—"}{r.state ? `, ${r.state}` : ""}
+                      </p>
+                      <div className="mt-3 rounded-2xl border border-black/6 bg-[#f8f5ee] px-4 py-3 text-sm leading-relaxed text-[var(--text-secondary)]">
+                        {r.ai_explanation || r.primary_leverage || r.opportunity_profile || "No explanation returned."}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2 sm:flex-col sm:items-end">
+                      <Button
                         onClick={() => void onViewBrief(r)}
-                        className="app-link mr-3 font-medium disabled:opacity-60"
+                        variant="primary"
                         disabled={ensuringKey === key}
+                        className="h-10 rounded-full bg-black px-4 text-white hover:bg-[#4f79c7]"
                       >
-                        {ensuringKey === key ? "Building brief..." : "View brief"}
-                      </button>
-                      <button
+                        {ensuringKey === key ? "Building..." : "Open brief"}
+                      </Button>
+                      <Button
                         onClick={() => void onAddToList(r)}
-                        className="text-[var(--text-secondary)] hover:underline disabled:opacity-60"
                         disabled={ensuringKey === key}
+                        className="h-10 rounded-full px-4"
                       >
                         Add to list
-                      </button>
-                    </TD>
-                  </TR>
-                );
-              })}
-            </tbody>
-          </Table>
-        </Card>
+                      </Button>
+                    </div>
+                  </div>
+                </CardBody>
+              </Card>
+            );
+          })}
+        </div>
       ) : (
-        !loading && !error && <div className="mt-4"><EmptyState title="No results yet" description="Run a query above to find prospects matching your criteria." /></div>
+        !loading && !error && <div className="mx-auto mt-6 max-w-4xl"><EmptyState title="No results yet" description="Run an Ask query above to find prospects that match your criteria." /></div>
       )}
 
       {listModalOpen && (
@@ -550,6 +738,248 @@ export default function AskPage() {
           onConfirm={onConfirmAddToList}
         />
       )}
+    </div>
+  );
+}
+
+function buildBriefProgressState(
+  progress: Record<string, unknown> | null | undefined,
+  polls: number,
+  row: Pick<AskProspect, "business_name" | "city" | "state">,
+): BriefBuildProgressState {
+  const payload = (progress || {}) as Record<string, unknown>;
+  const inner = (payload.progress || {}) as Record<string, unknown>;
+
+  return {
+    phase: String(payload.phase || "building_brief"),
+    businessName: row.business_name || "",
+    city: row.city || "",
+    state: row.state || "",
+    polls,
+    pagesChecked: Number(inner.pages_crawled || inner.pages_checked || 0) || undefined,
+    signalsFound: Number(inner.signals_found || inner.signals || inner.findings || 0) || undefined,
+  };
+}
+
+function AgentProgressPanel({
+  progress,
+  events,
+}: {
+  progress: AskProgressState;
+  events: AskProgressEvent[];
+}) {
+  const phaseLabel = formatPhaseLabel(progress.phase);
+  const phaseKey = progress.phase.toLowerCase();
+  const activePhaseEvents = getPhaseSubevents(progress.phase);
+  const steps = [
+    {
+      label: "Discovering candidates",
+      description: progress.candidates > 0 ? "Pulling the first matching practices into the working set." : "Searching the territory for candidate practices.",
+      done: !phaseKey.includes("candidate_fetch") && progress.candidates > 0,
+      active: phaseKey.includes("candidate_fetch") || progress.candidates === 0,
+      meta: `${progress.candidates} found`,
+    },
+    {
+      label: "Scoring opportunity signals",
+      description: progress.scored > 0 ? "Checking service coverage, market position, and conversion weakness." : "Comparing each candidate against the request.",
+      done: progress.scored > 0 && !phaseKey.includes("candidate_fetch"),
+      active: phaseKey.includes("scor") || (progress.candidates > 0 && progress.scored === 0),
+      meta: `${progress.scored} scored`,
+    },
+    {
+      label: "Building shortlist",
+      description: progress.listed > 0 ? "Keeping the strongest matches and dropping weak fits." : "Assembling the final ranked shortlist.",
+      done: progress.listed > 0 && !phaseKey.includes("candidate_fetch") && !phaseKey.includes("scor"),
+      active: phaseKey.includes("list") || phaseKey.includes("iter") || (progress.scored > 0 && progress.listed === 0),
+      meta: `${progress.listed} listed`,
+    },
+  ];
+  const totalSignals = progress.candidates + progress.scored + progress.listed;
+  const [subeventIndex, setSubeventIndex] = useState(0);
+  const [dotCount, setDotCount] = useState(1);
+
+  useEffect(() => {
+    const subeventTimer = window.setInterval(() => {
+      setSubeventIndex((current) => (current + 1) % activePhaseEvents.length);
+    }, 1600);
+    const dotTimer = window.setInterval(() => {
+      setDotCount((current) => (current % 3) + 1);
+    }, 420);
+
+    return () => {
+      window.clearInterval(subeventTimer);
+      window.clearInterval(dotTimer);
+    };
+  }, [activePhaseEvents.length]);
+
+  return (
+    <div className="rounded-[32px] border border-[#1b2432]/10 bg-[linear-gradient(135deg,rgba(27,36,50,0.08)_0%,rgba(242,191,47,0.08)_45%,rgba(60,91,138,0.08)_100%)] p-4 text-left shadow-[0_24px_60px_rgba(23,20,17,0.08)] sm:p-5">
+      <div className="rounded-[26px] border border-white/70 bg-[rgba(255,255,255,0.86)] p-4 backdrop-blur-sm sm:p-5">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+          <div className="flex items-center gap-4 sm:w-[240px] sm:flex-col sm:items-start">
+            <div className="relative flex h-18 w-18 items-center justify-center rounded-full border border-[#1b2432]/12 bg-[radial-gradient(circle_at_30%_30%,rgba(242,191,47,0.28),transparent_45%),radial-gradient(circle_at_70%_70%,rgba(60,91,138,0.18),transparent_48%),#fcfbf8] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(23,20,17,0.08)]">
+              <span className="absolute inline-flex h-14 w-14 animate-ping rounded-full border border-[#1b2432]/12" />
+              <span className="absolute inline-flex h-10 w-10 animate-spin rounded-full border-2 border-[#1b2432]/18 border-t-[#1b2432]" />
+              <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-[#1b2432] shadow-[0_0_0_6px_rgba(27,36,50,0.08)]" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-[var(--text-primary)]">Neyma is working</p>
+                {progress.iteration ? (
+                  <span className="rounded-full border border-black/6 bg-white px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
+                    Iteration {progress.iteration}{progress.maxIterations ? `/${progress.maxIterations}` : ""}
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">{phaseLabel}</p>
+              <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                {activePhaseEvents[subeventIndex]}
+                <span className="inline-block w-4 text-left text-[var(--text-secondary)]">{'.'.repeat(dotCount)}</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <ProgressMetric label="Found" value={progress.candidates} tint="green" />
+              <ProgressMetric label="Scored" value={progress.scored} tint="blue" />
+              <ProgressMetric label="Listed" value={progress.listed} tint="gold" />
+            </div>
+
+            <div className="mt-3 rounded-[24px] border border-black/6 bg-[#fbfaf7] p-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">Action trace</p>
+                <p className="text-xs text-[var(--text-muted)]">{totalSignals} workflow updates</p>
+              </div>
+              {events.length > 0 && (
+                <div className="mt-3 space-y-2 rounded-[20px] border border-black/6 bg-white px-3 py-3">
+                  {events.map((event, index) => (
+                    <div key={event.id} className="flex items-start gap-3">
+                      <span className={`mt-0.5 inline-flex h-2.5 w-2.5 shrink-0 rounded-full ${index === 0 ? "animate-pulse bg-[#1b2432]" : "bg-black/15"}`} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-[var(--text-primary)]">{event.label}</p>
+                        <p className="text-xs leading-5 text-[var(--text-muted)]">{event.detail}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="mt-3 space-y-2">
+                {steps.map((step) => (
+                  <div key={step.label} className="flex items-start gap-3 rounded-2xl border border-black/6 bg-white px-3 py-3">
+                    <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-black/8 bg-[#fcfbf8]">
+                      {step.done ? (
+                        <span className="inline-flex h-2.5 w-2.5 rounded-full bg-[#1b2432]" />
+                      ) : step.active ? (
+                        <span className="inline-flex h-2.5 w-2.5 animate-pulse rounded-full bg-[#1f57c3]" />
+                      ) : (
+                        <span className="inline-flex h-2.5 w-2.5 rounded-full bg-black/15" />
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-[var(--text-primary)]">{step.label}</p>
+                        <span className="text-xs text-[var(--text-muted)]">{step.meta}</span>
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">{step.description}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function buildProgressEventDetail(progress: AskProgressState) {
+  const label = formatPhaseLabel(progress.phase);
+  if (label === "Discovering candidates") {
+    return progress.candidates > 0
+      ? `${progress.candidates} practices pulled into the working set.`
+      : "Starting a fresh territory pass.";
+  }
+  if (label === "Scoring opportunity signals") {
+    return progress.scored > 0
+      ? `${progress.scored} candidates checked against service depth and market weakness.`
+      : "Comparing candidates against the prompt.";
+  }
+  if (label === "Building shortlist") {
+    return progress.listed > 0
+      ? `${progress.listed} strongest matches kept for the shortlist.`
+      : "Sorting the best matches into rank order.";
+  }
+  if (label === "Refining the next pass") {
+    return `Iteration ${progress.iteration || 1}${progress.maxIterations ? ` of ${progress.maxIterations}` : ""} is adjusting the search window.`;
+  }
+
+  return "Advancing the request through the workflow.";
+}
+
+function getPhaseSubevents(phase: string) {
+  const label = formatPhaseLabel(phase);
+  if (label === "Discovering candidates") {
+    return [
+      "Checking the local market for matching practices",
+      "Resolving businesses into the candidate set",
+      "Expanding the first pass across nearby listings",
+    ];
+  }
+  if (label === "Scoring opportunity signals") {
+    return [
+      "Reviewing service coverage and site depth",
+      "Comparing market position against nearby competitors",
+      "Checking for conversion weakness and leverage",
+    ];
+  }
+  if (label === "Building shortlist") {
+    return [
+      "Dropping weak fits from the ranked set",
+      "Keeping the highest-leverage prospects",
+      "Preparing the final shortlist for review",
+    ];
+  }
+  if (label === "Refining the next pass") {
+    return [
+      "Adjusting the search window for a better pass",
+      "Rebalancing the candidate pool",
+      "Running another shortlist refinement",
+    ];
+  }
+
+  return [
+    "Preparing the next step",
+    "Moving the request through the workflow",
+    "Keeping the run active while results settle",
+  ];
+}
+
+function ProgressMetric({
+  label,
+  value,
+  tint,
+}: {
+  label: string;
+  value: number;
+  tint: "green" | "blue" | "gold";
+}) {
+  const palette = {
+    green: "bg-[#1b2432]/8 text-[#1b2432]",
+    blue: "bg-[#3c5b8a]/10 text-[#3c5b8a]",
+    gold: "bg-[#f2bf2f]/16 text-[#8a6500]",
+  }[tint];
+
+  return (
+    <div className="rounded-[22px] border border-black/6 bg-white px-3 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</p>
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <p className="text-2xl font-semibold text-[var(--text-primary)]">{value}</p>
+        <span className={`inline-flex h-8 min-w-8 items-center justify-center rounded-full px-2 text-xs font-medium ${palette}`}>
+          {label}
+        </span>
+      </div>
     </div>
   );
 }

@@ -3,6 +3,8 @@ export type DiagnosticRequest = {
   city: string;
   state: string;
   website?: string;
+  deep_audit?: boolean;
+  source_diagnostic_id?: number;
 };
 
 export type InterventionPlanItem = {
@@ -14,11 +16,79 @@ export type InterventionPlanItem = {
 export interface ServiceIntelligence {
   detected_services: string[];
   missing_services: string[];
+  crawl_confidence?: "low" | "medium" | "high" | string;
+  pages_crawled?: number;
+  js_detected?: boolean;
+  crawl_method?: string;
+  deep_scan?: boolean;
+  service_page_count?: number;
+  playwright_fetch_summary?: {
+    playwright_pages?: number;
+    requests_pages?: number;
+    playwright_fallback_to_requests?: number;
+  };
+  crawl_warning?: string;
+  suppress_service_gap?: boolean;
+  suppress_conversion_absence_claims?: boolean;
+  suppress_revenue_modeling?: boolean;
   schema_detected?: boolean;
   high_value_services?: Array<Record<string, unknown>>;
   high_value_summary?: Record<string, unknown>;
   high_value_service_leverage?: "high" | "moderate" | "low" | string;
   service_page_analysis_v2?: Record<string, unknown>;
+  cta_elements?: Array<{ type: "Book" | "Schedule" | "Contact" | "Call" | string; count: number; pages: string[]; clickable_count?: number }>;
+  cta_clickable_by_type?: Record<string, number>;
+  cta_clickable_count?: number;
+  geo_intent_pages?: Array<{
+    url: string;
+    title: string;
+    signals: Array<"city" | "near-me" | "schema" | "meta" | string>;
+    hasCTA: boolean;
+  }>;
+  missing_geo_pages?: Array<{
+    slug: string;
+    title: string;
+    priority: "high" | "medium" | "low" | string;
+    reason: string;
+  }>;
+  signal_verification?: {
+    services?: Array<{
+      service?: string;
+      display_name?: string;
+      deterministic_verdict?: "missing" | "present" | "not_evaluated" | string;
+      deterministic_confidence?: "low" | "medium" | "high" | string;
+      final_verdict?: "missing" | "present" | "not_evaluated" | string;
+      final_confidence?: "low" | "medium" | "high" | string;
+      reason?: string;
+      url?: string | null;
+      ai_validation?: {
+        enabled?: boolean;
+        verdict?: "likely_missing" | "likely_present" | "unclear" | string | null;
+        confidence?: "low" | "medium" | "high" | string | null;
+        reason?: string | null;
+        model?: string | null;
+      };
+    }>;
+    summary?: {
+      total?: number;
+      missing?: number;
+      present?: number;
+      not_evaluated?: number;
+      ai_checked?: number;
+      disagreements?: number;
+      crawl_confidence?: string | null;
+    };
+  };
+}
+
+export interface CompetitorEntry {
+  name: string;
+  reviews: number;
+  rating: number | null;
+  distance: string;
+  placeId: string;
+  note: string;
+  isYou: boolean;
 }
 
 export interface RevenueBreakdown {
@@ -240,6 +310,9 @@ export type DiagnosticResponse = {
   conversion_infrastructure?: ConversionInfrastructure;
   risk_flags?: string[];
   evidence?: EvidenceItem[];
+  competitors?: CompetitorEntry[];
+  local_avg_rating?: number | null;
+  local_avg_rating_points?: number | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -339,6 +412,8 @@ export type ProspectRow = {
   phone?: string | null;
   email?: string | null;
   key_signal?: string | null;
+  ai_explanation?: string | null;
+  ai_rerank?: Record<string, unknown> | null;
   rating?: number | null;
   user_ratings_total?: number | null;
   full_brief_ready?: boolean;
@@ -413,17 +488,19 @@ export type AskIntent = {
   unsupported_parts?: string[];
   missing_required?: string[];
   intent_confidence?: "high" | "medium" | "low";
-  accuracy_mode?: "fast" | "verified";
   requires_deep?: boolean;
   requires_lightweight?: boolean;
 };
 
 export type AskStartResponse = {
   job_id: string | null;
-  status: string; // pending | requires_confirmation
-  intent: AskIntent;
-  message: string;
-  accuracy_mode?: "fast" | "verified";
+  status?: string;
+  intent?: AskIntent;
+  normalized_intent?: AskIntent;
+  message?: string;
+  confidence?: "high" | "medium" | "low";
+  question?: string;
+  unsupported_parts?: string[];
   requires_confirmation?: boolean;
 };
 

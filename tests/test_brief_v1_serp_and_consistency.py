@@ -84,3 +84,50 @@ def test_pdf_lines_show_serp_excluded_and_strategic_gap_comparison():
     assert "Keywords/SERP: excluded from V1" in joined
     assert "review position is above that competitor." in joined
     assert "SERP Presence (Full Detail)" not in joined
+
+
+def test_brief_view_model_suppression_flags_remove_contradictory_absence_claims():
+    lead = {
+        "name": "Suppressed Dental",
+        "signals": {
+            "signal_review_count": 60,
+            "signal_rating": 4.6,
+            "signal_has_website": True,
+            "signal_runs_paid_ads": True,
+            "signal_has_automated_scheduling": False,
+            "signal_has_contact_form": False,
+        },
+        "objective_layer": {
+            "service_intelligence": {
+                "suppress_service_gap": True,
+                "suppress_conversion_absence_claims": True,
+                "missing_high_value_pages": ["Implants"],
+            }
+        },
+        "objective_intelligence": {
+            "root_constraint": {
+                "label": "Capture Constrained",
+                "evidence": [
+                    "No contact form for web leads",
+                    "Phone-only intake; no online booking",
+                    "Missing dedicated implants page",
+                ],
+            },
+            "cost_leakage_signals": [
+                "No contact form for web leads",
+                "Some high-value services are missing dedicated pages (Implants)",
+            ],
+        },
+    }
+
+    vm = build_revenue_brief_view_model(lead)
+    evidence = " | ".join(vm.get("evidence_bullets") or []).lower()
+    risks = " | ".join(vm.get("risk_flags") or []).lower()
+
+    assert "no contact form" not in evidence
+    assert "phone-only" not in evidence
+    assert "missing dedicated" not in evidence
+    assert "no contact form" not in risks
+    assert "missing dedicated" not in risks
+    assert "conversion infrastructure not fully evaluated" in evidence
+    assert "service visibility not fully evaluated" in evidence

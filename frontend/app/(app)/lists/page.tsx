@@ -45,10 +45,10 @@ export default function ListsPage() {
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Lists</h1>
-          <p className="text-sm text-[var(--text-muted)]">Save prospects, track outcomes, and revisit priority accounts.</p>
+          <p className="text-sm text-[var(--text-muted)]">Save shortlisted prospects, track outcomes, and revisit priority accounts.</p>
         </div>
         <div className="flex gap-2">
-          <Link href="/territory/new"><Button>Run territory</Button></Link>
+          <Link href="/territory/new"><Button>Run territory scan</Button></Link>
           <Button variant="primary" onClick={() => setOpen(true)}>New list</Button>
         </div>
       </div>
@@ -58,12 +58,12 @@ export default function ListsPage() {
       ) : items.length === 0 ? (
         <EmptyState
           title="No lists yet"
-          description="Create a list to organize prospects from territory or ask results."
+          description="Create a list to organize prospects from territory scans or Ask results."
           action={<Button variant="primary" onClick={() => setOpen(true)}>Create list</Button>}
         />
       ) : (
         <Card>
-          <CardHeader title="Prospect Lists" />
+          <CardHeader title="Saved Prospect Lists" />
           <Table>
             <THead><tr><TH>Name</TH><TH>Members</TH><TH>Created</TH><TH className="text-right">Open</TH></tr></THead>
             <tbody>
@@ -82,7 +82,7 @@ export default function ListsPage() {
 
       <Modal
         open={open}
-        title="Create List"
+        title="Create Prospect List"
         onClose={() => setOpen(false)}
         footer={
           <div className="flex justify-end gap-2">

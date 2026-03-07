@@ -212,6 +212,7 @@ def ensure_full_brief(prospect_id: int, request: Request):
             "city": city,
             "state": state,
             "website": prospect.get("website"),
+            "deep_audit": True,
         },
     )
     set_territory_prospect_ensure_job(prospect_id, job_id)
@@ -353,6 +354,7 @@ def start_territory_deep_scan(
             "scan_id": scan_id,
             "max_prospects": body.max_prospects,
             "concurrency": body.concurrency,
+            "deep_audit": True,
         },
     )
     return {
@@ -380,6 +382,7 @@ def start_list_deep_briefs(
             "list_id": list_id,
             "max_prospects": body.max_prospects,
             "concurrency": body.concurrency,
+            "deep_audit": True,
         },
     )
     return {
@@ -420,12 +423,44 @@ def _tier1_row_to_payload(row: Dict[str, Any]) -> Dict[str, Any]:
             below_review_avg = float(reviews) < float(avg_reviews)
         except (TypeError, ValueError):
             below_review_avg = False
-    if rating is not None and avg_rating is not None:
+    ai_expl = str(snapshot.get("ai_explanation") or "").strip() or None
+    if ai_expl:
+        key_signal = ai_expl
+    elif rating is not None and avg_rating is not None:
         key_signal = f"Rating {float(rating):.1f} vs local avg {float(avg_rating):.1f}"
     elif not row.get("has_website"):
         key_signal = "No website"
     else:
         key_signal = "Infrastructure gap"
+    lead_quality = None
+    lead_quality_raw = snapshot.get("lead_quality") if isinstance(snapshot.get("lead_quality"), dict) else None
+    if not lead_quality_raw and (row.get("lead_quality_class") or row.get("lead_quality_score") is not None):
+        lead_quality_raw = {
+            "class": row.get("lead_quality_class"),
+            "score": row.get("lead_quality_score"),
+            "data_confidence": row.get("lead_data_confidence"),
+            "model_version": row.get("lead_model_version"),
+            "feature_version": row.get("lead_feature_version"),
+            "feature_scope": "tier1",
+            "reasons": row.get("lead_quality_reasons") or [],
+        }
+    if isinstance(lead_quality_raw, dict):
+        lead_quality = {
+            "class": lead_quality_raw.get("class"),
+            "score": lead_quality_raw.get("score"),
+            "data_confidence": lead_quality_raw.get("data_confidence"),
+            "model_version": lead_quality_raw.get("model_version"),
+            "feature_version": lead_quality_raw.get("feature_version"),
+            "feature_scope": lead_quality_raw.get("feature_scope") or "tier1",
+            "reasons": [
+                {
+                    "code": reason.get("code"),
+                    "label": reason.get("label"),
+                }
+                for reason in (lead_quality_raw.get("reasons") or [])
+                if isinstance(reason, dict) and reason.get("code") and reason.get("label")
+            ][:2],
+        }
     return {
         "prospect_id": row["id"],
         "diagnostic_id": row.get("diagnostic_id"),
@@ -457,6 +492,9 @@ def _tier1_row_to_payload(row: Dict[str, Any]) -> Dict[str, Any]:
             "has_viewport": bool(row.get("has_viewport")),
             "has_schema": bool(row.get("has_schema")),
         },
+        "lead_quality": lead_quality,
+        "ai_explanation": ai_expl,
+        "ai_rerank": snapshot.get("ai_rerank"),
     }
 
 

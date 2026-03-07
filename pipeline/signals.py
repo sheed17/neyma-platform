@@ -543,6 +543,31 @@ def _fetch_website_html(url: str, headers: Dict) -> Tuple[Optional[str], int, bo
         return None, 0, url.startswith('https'), url
 
 
+def _is_low_quality_html(html: str | None) -> bool:
+    """
+    Conservative quality gate for initial HTML extraction.
+
+    Returns True when content is missing or likely an unrendered JS shell.
+    """
+    if html is None:
+        return True
+
+    html_lower = html.lower()
+    if len(html) < 500:
+        return True
+    if "<body" not in html_lower:
+        return True
+
+    js_shell_markers = [
+        "enable javascript",
+        "__next_data__",
+        "app-root",
+        "<noscript>",
+        "window.__initial_state__",
+    ]
+    return any(marker in html_lower for marker in js_shell_markers)
+
+
 def _extract_emails(html: str) -> List[str]:
     """
     Extract email addresses from HTML content.
@@ -1028,8 +1053,9 @@ def analyze_website(url: str) -> Dict:
     - null  = Unknown / not determinable (page inaccessible, JS-rendered, etc.)
     
     Design:
-    - 1 GET request (+ 1 retry on SSL failure via HTTP)
-    - No headless browser, no JS execution
+    - Primary HTTP GET (+ 1 retry on SSL failure via HTTP)
+    - One guarded headless retry only when extraction quality is low
+      or critical signals are all inconclusive
     - Unknown ≠ False (epistemically honest)
     - SSL errors don't block analysis - we try HTTP fallback
     
@@ -1072,6 +1098,9 @@ def analyze_website(url: str) -> Dict:
         "form_single_or_multi_step": "unknown",
         "has_address_in_html": None,
         "linkedin_company_url": None,
+        "extraction_method": "http",
+        "extraction_retry_count": 0,
+        "extraction_notes": None,
     }
     
     headers = {
@@ -1089,12 +1118,11 @@ def analyze_website(url: str) -> Dict:
     signals["page_load_time_ms"] = load_time_ms if load_time_ms > 0 else None
     signals["has_ssl"] = has_ssl  # This is determined from the connection
     signals["website_url"] = final_url
-    
+
+    # Primary analysis (if HTML is present).
+    content_signals = None
     if html:
-        # Successfully retrieved HTML - we can make confident assessments
         signals["website_accessible"] = True
-        
-        # Analyze HTML content - returns tri-state values
         content_signals = _analyze_html_content(html)
         signals["mobile_friendly"] = content_signals["mobile_friendly"]
         signals["has_contact_form"] = content_signals["has_contact_form"]
@@ -1103,7 +1131,6 @@ def analyze_website(url: str) -> Dict:
         signals["has_automated_scheduling"] = content_signals["has_automated_scheduling"]
         signals["booking_conversion_path"] = content_signals.get("booking_conversion_path")
         signals["has_trust_badges"] = content_signals["has_trust_badges"]
-        # New signal families
         signals["runs_paid_ads"] = content_signals["runs_paid_ads"]
         signals["paid_ads_channels"] = content_signals["paid_ads_channels"]
         signals["hiring_active"] = content_signals["hiring_active"]
@@ -1119,19 +1146,62 @@ def analyze_website(url: str) -> Dict:
         signals["form_single_or_multi_step"] = content_signals["form_single_or_multi_step"]
         signals["has_address_in_html"] = content_signals["has_address_in_html"]
         signals["linkedin_company_url"] = content_signals["linkedin_company_url"]
-
-        # Headless browser enhancement: render JS and upgrade null/false signals
-        try:
-            from pipeline.headless_browser import enhance_signals as _headless_enhance
-            signals = _headless_enhance(url, signals)
-        except Exception as exc:
-            logger.debug("Headless enhancement skipped: %s", exc)
     else:
-        # Could not retrieve HTML - site is not accessible
-        # We KNOW it's not accessible (confident false)
-        # But we DON'T KNOW about content signals (null = unknown)
-        # AGENCY-SAFE: All content signals remain null
+        # Primary fetch failed; content signals remain unknown (None defaults).
         signals["website_accessible"] = False
+
+    # Recovery ladder: headless retry only when extraction quality is weak.
+    critical_fields = [
+        "has_contact_form",
+        "has_automated_scheduling",
+        "runs_paid_ads",
+        "hiring_active",
+    ]
+    low_quality_html = _is_low_quality_html(html)
+    critical_all_none = all(signals.get(field) is None for field in critical_fields)
+    should_try_headless = low_quality_html or critical_all_none
+
+    if should_try_headless:
+        try:
+            from pipeline.headless_browser import render_page
+
+            rendered_html, rendered_load_ms = render_page(final_url)
+            if rendered_html and not _is_low_quality_html(rendered_html):
+                rendered_signals = _analyze_html_content(rendered_html)
+                signals["website_accessible"] = True
+                signals["mobile_friendly"] = rendered_signals["mobile_friendly"]
+                signals["has_contact_form"] = rendered_signals["has_contact_form"]
+                signals["has_email"] = rendered_signals["has_email"]
+                signals["email_address"] = rendered_signals["email_address"]
+                signals["has_automated_scheduling"] = rendered_signals["has_automated_scheduling"]
+                signals["booking_conversion_path"] = rendered_signals.get("booking_conversion_path")
+                signals["has_trust_badges"] = rendered_signals["has_trust_badges"]
+                signals["runs_paid_ads"] = rendered_signals["runs_paid_ads"]
+                signals["paid_ads_channels"] = rendered_signals["paid_ads_channels"]
+                signals["hiring_active"] = rendered_signals["hiring_active"]
+                signals["hiring_roles"] = rendered_signals["hiring_roles"]
+                signals["hiring_signal_source"] = rendered_signals.get("hiring_signal_source")
+                signals["has_schema_microdata"] = rendered_signals["has_schema_microdata"]
+                signals["schema_types"] = rendered_signals["schema_types"]
+                signals["has_social_links"] = rendered_signals["has_social_links"]
+                signals["social_platforms"] = rendered_signals["social_platforms"]
+                signals["has_phone_in_html"] = rendered_signals["has_phone_in_html"]
+                signals["phone_clickable"] = rendered_signals["phone_clickable"]
+                signals["cta_count"] = rendered_signals["cta_count"]
+                signals["form_single_or_multi_step"] = rendered_signals["form_single_or_multi_step"]
+                signals["has_address_in_html"] = rendered_signals["has_address_in_html"]
+                signals["linkedin_company_url"] = rendered_signals["linkedin_company_url"]
+
+                if signals["page_load_time_ms"] is None and rendered_load_ms > 0:
+                    signals["page_load_time_ms"] = rendered_load_ms
+                signals["extraction_method"] = "headless"
+                signals["extraction_retry_count"] = 1
+                signals["extraction_notes"] = "Recovered via headless render"
+            else:
+                signals["extraction_notes"] = "Headless fallback failed"
+        except Exception as exc:
+            logger.debug("Headless fallback skipped for %s: %s", final_url, exc)
+            signals["extraction_notes"] = "Headless fallback failed"
     
     return signals
 

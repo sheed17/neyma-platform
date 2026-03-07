@@ -54,6 +54,33 @@ def build_revenue_intelligence(
 
     obj = objective_layer or {}
     svc = obj.get("service_intelligence") or {}
+    crawl_confidence = str(svc.get("crawl_confidence") or "").strip().lower()
+    if crawl_confidence == "low" or bool(svc.get("suppress_revenue_modeling")):
+        return {
+            "revenue_band_estimate": None,
+            "organic_revenue_gap_estimate": None,
+            "revenue_confidence_score": 0,
+            "revenue_indicative_only": True,
+            "revenue_reliability_grade": "C",
+            "paid_spend_range_estimate": "Not Evaluated (Low Crawl Confidence)",
+            "traffic_index": None,
+            "traffic_estimate_tier": None,
+            "traffic_estimate_monthly": None,
+            "paid_clicks_estimate_monthly": None,
+            "traffic_confidence_score": 0,
+            "traffic_efficiency_score": None,
+            "traffic_efficiency_interpretation": "Not Evaluated (Low Crawl Confidence)",
+            "traffic_assumptions": None,
+            "paid_clicks_assumptions": None,
+            "traffic_debug_components": None,
+            "cost_leakage_signals": ["Not Evaluated (Low Crawl Confidence)"],
+            "suppressed_due_to_low_crawl_confidence": True,
+            "model_versions": {
+                "revenue_model": "v2",
+                "traffic_model": "v3",
+            },
+        }
+
     high_ticket = svc.get("high_ticket_procedures_detected") or []
     missing_pages = svc.get("missing_high_value_pages") or []
 

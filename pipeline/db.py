@@ -8,6 +8,7 @@ import os
 import sqlite3
 import json
 import uuid
+import hashlib
 import logging
 from collections import Counter
 from typing import Dict, List, Optional, Any
@@ -139,6 +140,36 @@ def init_db() -> None:
                 FOREIGN KEY (lead_id) REFERENCES leads(id)
             );
 
+            CREATE TABLE IF NOT EXISTS lead_intel_v1 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                vertical TEXT,
+                primary_constraint TEXT,
+                primary_leverage TEXT,
+                contact_priority TEXT,
+                outreach_angle TEXT,
+                confidence REAL,
+                risks_json TEXT,
+                evidence_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (lead_id) REFERENCES leads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lead_intel_v1_lead ON lead_intel_v1(lead_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS lead_docs_v1 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                doc_type TEXT NOT NULL,
+                content_text TEXT NOT NULL,
+                metadata_json TEXT,
+                embedding_version TEXT,
+                embedding_type TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (lead_id) REFERENCES leads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lead_docs_v1_lead ON lead_docs_v1(lead_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_lead_docs_v1_type ON lead_docs_v1(doc_type, created_at DESC);
+
             CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL DEFAULT 1,
@@ -159,6 +190,11 @@ def init_db() -> None:
                 business_name TEXT NOT NULL,
                 city TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT '',
+                lead_quality_score REAL,
+                lead_quality_class TEXT,
+                lead_model_version TEXT,
+                lead_feature_version TEXT,
+                lead_quality_json TEXT,
                 brief_json TEXT,
                 response_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -219,6 +255,12 @@ def init_db() -> None:
                 rank_key REAL DEFAULT 0,
                 rank INTEGER,
                 review_position_summary TEXT,
+                lead_quality_score REAL,
+                lead_quality_class TEXT,
+                lead_quality_reasons_json TEXT,
+                lead_model_version TEXT,
+                lead_feature_version TEXT,
+                lead_data_confidence REAL,
                 tier1_snapshot_json TEXT,
                 diagnostic_id INTEGER,
                 full_brief_ready INTEGER DEFAULT 0,
@@ -249,6 +291,25 @@ def init_db() -> None:
                 result_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (place_id, criterion_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS qa_signal_checks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                place_id TEXT,
+                website TEXT,
+                criterion_key TEXT NOT NULL,
+                deterministic_match INTEGER NOT NULL DEFAULT 0,
+                evidence_json TEXT,
+                ai_verdict TEXT,
+                ai_confidence TEXT,
+                ai_reason TEXT,
+                ai_model TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS prospect_lists (
@@ -296,6 +357,73 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (diagnostic_id) REFERENCES diagnostics(id)
             );
+
+            CREATE TABLE IF NOT EXISTS ml_feature_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                place_id TEXT NOT NULL,
+                feature_scope TEXT NOT NULL,
+                feature_version TEXT NOT NULL,
+                feature_json TEXT NOT NULL,
+                feature_hash TEXT NOT NULL,
+                data_confidence REAL,
+                signal_completeness_ratio REAL,
+                created_at TEXT NOT NULL,
+                UNIQUE(entity_type, entity_id, feature_version)
+            );
+
+            CREATE TABLE IF NOT EXISTS ml_predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                place_id TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                feature_version TEXT NOT NULL,
+                label_version TEXT NOT NULL,
+                calibration_version TEXT,
+                score REAL NOT NULL,
+                score_0_100 REAL NOT NULL,
+                predicted_class TEXT NOT NULL,
+                prob_bad REAL,
+                prob_decent REAL,
+                prob_good REAL,
+                prob_high_value REAL,
+                data_confidence REAL,
+                reasons_json TEXT,
+                caveats_json TEXT,
+                components_json TEXT,
+                top_features_json TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(entity_type, entity_id, model_name, model_version)
+            );
+
+            CREATE TABLE IF NOT EXISTS ml_dataset_registry (
+                dataset_version TEXT PRIMARY KEY,
+                task_name TEXT NOT NULL,
+                feature_scope TEXT NOT NULL,
+                feature_version TEXT NOT NULL,
+                label_version TEXT NOT NULL,
+                row_count INTEGER NOT NULL,
+                source_cutoff_ts TEXT,
+                manifest_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ml_training_runs (
+                run_id TEXT PRIMARY KEY,
+                task_name TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                dataset_version TEXT NOT NULL,
+                feature_version TEXT NOT NULL,
+                label_version TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                artifact_path TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS brief_share_tokens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 diagnostic_id INTEGER NOT NULL,
@@ -307,6 +435,10 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_outcomes_diagnostic ON diagnostic_outcomes(diagnostic_id);
             CREATE INDEX IF NOT EXISTS idx_predictions_place ON diagnostic_predictions(place_id);
+            CREATE INDEX IF NOT EXISTS idx_ml_feature_snapshots_entity ON ml_feature_snapshots(entity_type, entity_id);
+            CREATE INDEX IF NOT EXISTS idx_ml_feature_snapshots_place ON ml_feature_snapshots(place_id, feature_scope, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ml_predictions_entity ON ml_predictions(entity_type, entity_id);
+            CREATE INDEX IF NOT EXISTS idx_ml_predictions_place ON ml_predictions(place_id, model_name, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_brief_share_diag ON brief_share_tokens(diagnostic_id);
             CREATE INDEX IF NOT EXISTS idx_brief_share_token ON brief_share_tokens(token);
 
@@ -321,6 +453,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_territory_tier1_cache_updated ON territory_tier1_cache(updated_at);
             CREATE INDEX IF NOT EXISTS idx_ask_places_cache_updated ON ask_places_cache(updated_at);
             CREATE INDEX IF NOT EXISTS idx_ask_lightweight_cache_updated ON ask_lightweight_cache(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_qa_signal_checks_created ON qa_signal_checks(created_at);
+            CREATE INDEX IF NOT EXISTS idx_qa_signal_checks_source ON qa_signal_checks(source_type, source_id);
+            CREATE INDEX IF NOT EXISTS idx_qa_signal_checks_status ON qa_signal_checks(status);
             CREATE INDEX IF NOT EXISTS idx_list_members_list ON prospect_list_members(list_id);
         """)
         conn.commit()
@@ -336,6 +471,24 @@ def init_db() -> None:
             "ALTER TABLE leads ADD COLUMN sales_intervention_intelligence_json TEXT",
             "ALTER TABLE leads ADD COLUMN objective_decision_layer_json TEXT",
             "ALTER TABLE diagnostics ADD COLUMN state TEXT",
+            "ALTER TABLE diagnostics ADD COLUMN lead_quality_score REAL",
+            "ALTER TABLE diagnostics ADD COLUMN lead_quality_class TEXT",
+            "ALTER TABLE diagnostics ADD COLUMN lead_model_version TEXT",
+            "ALTER TABLE diagnostics ADD COLUMN lead_feature_version TEXT",
+            "ALTER TABLE diagnostics ADD COLUMN lead_quality_json TEXT",
+            "ALTER TABLE territory_prospects ADD COLUMN lead_quality_score REAL",
+            "ALTER TABLE territory_prospects ADD COLUMN lead_quality_class TEXT",
+            "ALTER TABLE territory_prospects ADD COLUMN lead_quality_reasons_json TEXT",
+            "ALTER TABLE territory_prospects ADD COLUMN lead_model_version TEXT",
+            "ALTER TABLE territory_prospects ADD COLUMN lead_feature_version TEXT",
+            "ALTER TABLE territory_prospects ADD COLUMN lead_data_confidence REAL",
+            # lead_outcomes migration (event-style fields for hybrid RAG)
+            "ALTER TABLE lead_outcomes ADD COLUMN id INTEGER",
+            "ALTER TABLE lead_outcomes ADD COLUMN list_id INTEGER",
+            "ALTER TABLE lead_outcomes ADD COLUMN scan_id TEXT",
+            "ALTER TABLE lead_outcomes ADD COLUMN outcome_status TEXT",
+            "ALTER TABLE lead_outcomes ADD COLUMN outcome_note TEXT",
+            "ALTER TABLE lead_outcomes ADD COLUMN timestamp TEXT",
         ]:
             try:
                 conn.execute(sql)
@@ -618,6 +771,298 @@ def get_lead_embedding_v2(
         conn.close()
 
 
+def insert_lead_doc_v1(
+    lead_id: int,
+    doc_type: str,
+    content_text: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    embedding: Optional[List[float]] = None,
+    embedding_version: str = "v1_doc",
+) -> Optional[int]:
+    """
+    Store a typed retrieval document for a lead.
+
+    Embeddings are persisted in lead_embeddings_v2 (no duplicate blob storage).
+    Returns doc id on success, None on failure.
+    """
+    if not lead_id or not doc_type or not (content_text or "").strip():
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    embedding_type = None
+    if embedding:
+        embedding_type = f"doc_{doc_type.strip().lower()}"
+        try:
+            insert_lead_embedding_v2(
+                lead_id=lead_id,
+                embedding=embedding,
+                text=content_text,
+                embedding_version=embedding_version,
+                embedding_type=embedding_type,
+            )
+        except Exception:
+            # Safe-fail; keep doc row even if embedding insert fails.
+            embedding_type = None
+
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            """INSERT INTO lead_docs_v1
+               (lead_id, doc_type, content_text, metadata_json, embedding_version, embedding_type, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                lead_id,
+                doc_type,
+                content_text[:8000],
+                json.dumps(metadata or {}, default=str),
+                embedding_version if embedding_type else None,
+                embedding_type,
+                now,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_lead_docs_v1(
+    lead_id: int,
+    doc_types: Optional[List[str]] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """List typed docs for a lead, newest first."""
+    conn = _get_conn()
+    try:
+        params: List[Any] = [lead_id]
+        where = "WHERE lead_id = ?"
+        if doc_types:
+            placeholders = ",".join("?" for _ in doc_types)
+            where += f" AND doc_type IN ({placeholders})"
+            params.extend(doc_types)
+        params.append(max(1, int(limit)))
+        rows = conn.execute(
+            f"""SELECT id, lead_id, doc_type, content_text, metadata_json, embedding_version, embedding_type, created_at
+                FROM lead_docs_v1
+                {where}
+                ORDER BY created_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            out.append(
+                {
+                    "id": row["id"],
+                    "lead_id": row["lead_id"],
+                    "doc_type": row["doc_type"],
+                    "content_text": row["content_text"] or "",
+                    "metadata_json": metadata,
+                    "embedding_version": row["embedding_version"],
+                    "embedding_type": row["embedding_type"],
+                    "created_at": row["created_at"],
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
+def list_docs_with_embeddings_v1(
+    doc_types: Optional[List[str]] = None,
+    exclude_lead_id: Optional[int] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """List retrieval docs with optional embedding payload from lead_embeddings_v2."""
+    conn = _get_conn()
+    try:
+        params: List[Any] = []
+        where_clauses: List[str] = []
+        if doc_types:
+            placeholders = ",".join("?" for _ in doc_types)
+            where_clauses.append(f"d.doc_type IN ({placeholders})")
+            params.extend(doc_types)
+        if exclude_lead_id is not None:
+            where_clauses.append("d.lead_id != ?")
+            params.append(exclude_lead_id)
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        params.append(max(1, int(limit)))
+        rows = conn.execute(
+            f"""SELECT d.id, d.lead_id, d.doc_type, d.content_text, d.metadata_json,
+                       d.embedding_version, d.embedding_type, d.created_at,
+                       e.embedding_json
+                FROM lead_docs_v1 d
+                LEFT JOIN lead_embeddings_v2 e
+                  ON e.lead_id = d.lead_id
+                 AND e.embedding_version = d.embedding_version
+                 AND e.embedding_type = d.embedding_type
+                {where_sql}
+                ORDER BY d.created_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            try:
+                emb = json.loads(row["embedding_json"]) if row["embedding_json"] else None
+            except (TypeError, json.JSONDecodeError):
+                emb = None
+            out.append(
+                {
+                    "id": row["id"],
+                    "lead_id": row["lead_id"],
+                    "doc_type": row["doc_type"],
+                    "content_text": row["content_text"] or "",
+                    "metadata_json": metadata,
+                    "embedding_version": row["embedding_version"],
+                    "embedding_type": row["embedding_type"],
+                    "created_at": row["created_at"],
+                    "embedding": emb,
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
+def insert_lead_intel_v1(
+    lead_id: int,
+    vertical: str,
+    primary_constraint: Optional[str],
+    primary_leverage: Optional[str],
+    contact_priority: Optional[str],
+    outreach_angle: Optional[str],
+    confidence: Optional[float],
+    risks: Optional[List[str]] = None,
+    evidence: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Persist LLM intelligence row with explicit evidence references."""
+    if not lead_id:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    conf = None
+    if isinstance(confidence, (int, float)):
+        conf = round(max(0.0, min(1.0, float(confidence))), 2)
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            """INSERT INTO lead_intel_v1
+               (lead_id, vertical, primary_constraint, primary_leverage, contact_priority,
+                outreach_angle, confidence, risks_json, evidence_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                lead_id,
+                vertical,
+                primary_constraint,
+                primary_leverage,
+                contact_priority,
+                outreach_angle,
+                conf,
+                json.dumps(risks or [], default=str),
+                json.dumps(evidence or [], default=str),
+                now,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_latest_lead_intel_v1(lead_id: int) -> Optional[Dict[str, Any]]:
+    """Return latest lead_intel_v1 row for a lead."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            """SELECT id, lead_id, vertical, primary_constraint, primary_leverage, contact_priority,
+                      outreach_angle, confidence, risks_json, evidence_json, created_at
+               FROM lead_intel_v1
+               WHERE lead_id = ?
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            (lead_id,),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            risks = json.loads(row["risks_json"]) if row["risks_json"] else []
+        except (TypeError, json.JSONDecodeError):
+            risks = []
+        try:
+            evidence = json.loads(row["evidence_json"]) if row["evidence_json"] else []
+        except (TypeError, json.JSONDecodeError):
+            evidence = []
+        return {
+            "id": row["id"],
+            "lead_id": row["lead_id"],
+            "vertical": row["vertical"],
+            "primary_constraint": row["primary_constraint"],
+            "primary_leverage": row["primary_leverage"],
+            "contact_priority": row["contact_priority"],
+            "outreach_angle": row["outreach_angle"],
+            "confidence": row["confidence"],
+            "risks": risks,
+            "evidence": evidence,
+            "created_at": row["created_at"],
+        }
+    finally:
+        conn.close()
+
+
+def list_latest_lead_intel_v1_for_leads(lead_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Return latest intel rows for lead_ids keyed by lead_id."""
+    if not lead_ids:
+        return {}
+    placeholders = ",".join("?" for _ in lead_ids)
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            f"""SELECT li.*
+                FROM lead_intel_v1 li
+                JOIN (
+                    SELECT lead_id, MAX(created_at) AS max_created
+                    FROM lead_intel_v1
+                    WHERE lead_id IN ({placeholders})
+                    GROUP BY lead_id
+                ) latest
+                  ON latest.lead_id = li.lead_id AND latest.max_created = li.created_at""",
+            lead_ids,
+        ).fetchall()
+        out: Dict[int, Dict[str, Any]] = {}
+        for row in rows:
+            try:
+                risks = json.loads(row["risks_json"]) if row["risks_json"] else []
+            except (TypeError, json.JSONDecodeError):
+                risks = []
+            try:
+                evidence = json.loads(row["evidence_json"]) if row["evidence_json"] else []
+            except (TypeError, json.JSONDecodeError):
+                evidence = []
+            out[int(row["lead_id"])] = {
+                "id": row["id"],
+                "lead_id": row["lead_id"],
+                "vertical": row["vertical"],
+                "primary_constraint": row["primary_constraint"],
+                "primary_leverage": row["primary_leverage"],
+                "contact_priority": row["contact_priority"],
+                "outreach_angle": row["outreach_angle"],
+                "confidence": row["confidence"],
+                "risks": risks,
+                "evidence": evidence,
+                "created_at": row["created_at"],
+            }
+        return out
+    finally:
+        conn.close()
+
+
 def upsert_lead_outcome(
     lead_id: int,
     vertical: Optional[str] = None,
@@ -632,6 +1077,7 @@ def upsert_lead_outcome(
 ) -> None:
     """Insert outcome row or update existing. Only provided fields are updated."""
     now = datetime.now(timezone.utc).isoformat()
+    normalized_status = status or outcome_status_from_legacy(contacted, proposal_sent, closed, status)
     conn = _get_conn()
     try:
         existing = conn.execute(
@@ -667,6 +1113,13 @@ def upsert_lead_outcome(
             if notes is not None:
                 updates.append("notes = ?")
                 params.append(notes)
+            updates.append("outcome_status = ?")
+            params.append(normalized_status)
+            if notes is not None:
+                updates.append("outcome_note = ?")
+                params.append(notes)
+            updates.append("timestamp = ?")
+            params.append(now)
             params.append(lead_id)
             conn.execute(
                 f"UPDATE lead_outcomes SET {', '.join(updates)} WHERE lead_id = ?",
@@ -679,14 +1132,49 @@ def upsert_lead_outcome(
             conn.execute(
                 """INSERT INTO lead_outcomes
                    (lead_id, vertical, agency_type, contacted, proposal_sent, closed,
-                    close_value_usd, service_sold, notes, status, updated_at, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    close_value_usd, service_sold, notes, status, outcome_status, outcome_note, timestamp, updated_at, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (lead_id, vertical, agency_type, _c, _p, _cl, close_value_usd,
-                 service_sold, notes, status or "new", now, now),
+                 service_sold, notes, status or "new", normalized_status, notes, now, now, now),
             )
         conn.commit()
     finally:
         conn.close()
+
+
+def outcome_status_from_legacy(
+    contacted: Optional[bool],
+    proposal_sent: Optional[bool],
+    closed: Optional[bool],
+    status: Optional[str],
+) -> str:
+    """Map legacy booleans to normalized outcome_status for hybrid RAG grouping."""
+    if status:
+        s = str(status).strip().lower()
+        if s in {
+            "contacted",
+            "replied",
+            "booked",
+            "closed_won",
+            "closed_lost",
+            "no_fit",
+            "qualified",
+            "won",
+            "lost",
+            "new",
+        }:
+            if s == "won":
+                return "closed_won"
+            if s == "lost":
+                return "closed_lost"
+            return s
+    if closed is True:
+        return "closed_won"
+    if proposal_sent is True:
+        return "booked"
+    if contacted is True:
+        return "contacted"
+    return "new"
 
 
 def get_lead_outcome(lead_id: int) -> Optional[Dict]:
@@ -695,13 +1183,78 @@ def get_lead_outcome(lead_id: int) -> Optional[Dict]:
     try:
         row = conn.execute(
             """SELECT lead_id, vertical, agency_type, contacted, proposal_sent, closed,
-                      close_value_usd, service_sold, notes, status, updated_at, created_at
+                      close_value_usd, service_sold, notes, status,
+                      list_id, scan_id, outcome_status, outcome_note, timestamp,
+                      updated_at, created_at
                FROM lead_outcomes WHERE lead_id = ?""",
             (lead_id,),
         ).fetchone()
         if not row:
             return None
         return dict(row)
+    finally:
+        conn.close()
+
+
+def list_signal_profile_docs(limit: int = 1000, vertical: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Return signal_profile docs with metadata for cohort filtering.
+    """
+    conn = _get_conn()
+    try:
+        params: List[Any] = ["signal_profile"]
+        extra = ""
+        if vertical:
+            extra = " AND l.vertical = ?"
+            params.append(vertical)
+        params.append(max(1, int(limit)))
+        rows = conn.execute(
+            f"""SELECT d.id, d.lead_id, d.doc_type, d.content_text, d.metadata_json, d.created_at,
+                       l.vertical
+                FROM lead_docs_v1 d
+                LEFT JOIN lead_intel_v1 l ON l.lead_id = d.lead_id
+                WHERE d.doc_type = ? {extra}
+                ORDER BY d.created_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            out.append(
+                {
+                    "id": row["id"],
+                    "lead_id": row["lead_id"],
+                    "doc_type": row["doc_type"],
+                    "content_text": row["content_text"] or "",
+                    "metadata_json": metadata,
+                    "created_at": row["created_at"],
+                    "vertical": row["vertical"],
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
+def get_outcomes_for_lead_ids(lead_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Return outcomes keyed by lead_id for a set of leads."""
+    if not lead_ids:
+        return {}
+    placeholders = ",".join("?" for _ in lead_ids)
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            f"""SELECT lead_id, contacted, proposal_sent, closed, status, notes, close_value_usd, service_sold,
+                       list_id, scan_id, outcome_status, outcome_note, timestamp
+                FROM lead_outcomes
+                WHERE lead_id IN ({placeholders})""",
+            lead_ids,
+        ).fetchall()
+        return {int(r["lead_id"]): dict(r) for r in rows}
     finally:
         conn.close()
 
@@ -1268,14 +1821,21 @@ def save_diagnostic(user_id: int, job_id: Optional[str], place_id: Optional[str]
     """Save a completed diagnostic; return diagnostic_id."""
     init_db()
     now = datetime.now(timezone.utc).isoformat()
+    lead_quality = response.get("lead_quality") if isinstance(response, dict) else None
     conn = _get_conn()
     try:
         cur = conn.execute(
             """INSERT INTO diagnostics (user_id, job_id, place_id, business_name, city,
-               state, brief_json, response_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               state, lead_quality_score, lead_quality_class, lead_model_version, lead_feature_version,
+               lead_quality_json, brief_json, response_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 user_id, job_id, place_id, business_name, city, state,
+                float(lead_quality.get("score")) if isinstance(lead_quality, dict) and lead_quality.get("score") is not None else None,
+                lead_quality.get("class") if isinstance(lead_quality, dict) else None,
+                lead_quality.get("model_version") if isinstance(lead_quality, dict) else None,
+                lead_quality.get("feature_version") if isinstance(lead_quality, dict) else None,
+                json.dumps(lead_quality, default=str) if isinstance(lead_quality, dict) else None,
                 json.dumps(brief, default=str) if brief else None,
                 json.dumps(response, default=str), now,
             ),
@@ -1299,6 +1859,13 @@ def list_diagnostics(user_id: int, limit: int = 50, offset: int = 0) -> List[Dic
             d = dict(row)
             if d.get("response_json"):
                 d["response"] = json.loads(d["response_json"])
+            if d.get("lead_quality_json"):
+                try:
+                    lead_quality = json.loads(d["lead_quality_json"])
+                except (TypeError, json.JSONDecodeError):
+                    lead_quality = None
+                if lead_quality and isinstance(d.get("response"), dict) and "lead_quality" not in d["response"]:
+                    d["response"]["lead_quality"] = lead_quality
             if d.get("brief_json"):
                 d["brief"] = json.loads(d["brief_json"])
             out.append(d)
@@ -1320,6 +1887,13 @@ def get_diagnostic(diagnostic_id: int, user_id: int) -> Optional[Dict]:
         d = dict(row)
         if d.get("response_json"):
             d["response"] = json.loads(d["response_json"])
+        if d.get("lead_quality_json"):
+            try:
+                lead_quality = json.loads(d["lead_quality_json"])
+            except (TypeError, json.JSONDecodeError):
+                lead_quality = None
+            if lead_quality and isinstance(d.get("response"), dict) and "lead_quality" not in d["response"]:
+                d["response"]["lead_quality"] = lead_quality
         if d.get("brief_json"):
             d["brief"] = json.loads(d["brief_json"])
         return d
@@ -1340,6 +1914,13 @@ def get_diagnostic_any_user(diagnostic_id: int) -> Optional[Dict]:
         d = dict(row)
         if d.get("response_json"):
             d["response"] = json.loads(d["response_json"])
+        if d.get("lead_quality_json"):
+            try:
+                lead_quality = json.loads(d["lead_quality_json"])
+            except (TypeError, json.JSONDecodeError):
+                lead_quality = None
+            if lead_quality and isinstance(d.get("response"), dict) and "lead_quality" not in d["response"]:
+                d["response"]["lead_quality"] = lead_quality
         if d.get("brief_json"):
             d["brief"] = json.loads(d["brief_json"])
         return d
@@ -1609,8 +2190,10 @@ def save_territory_prospects(scan_id: str, user_id: int, prospects: List[Dict[st
                    (scan_id, user_id, place_id, business_name, city, state, website,
                     rating, user_ratings_total, has_website, ssl, has_contact_form,
                     has_phone, has_viewport, has_schema, rank_key, rank,
-                    review_position_summary, tier1_snapshot_json, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    review_position_summary, lead_quality_score, lead_quality_class,
+                    lead_quality_reasons_json, lead_model_version, lead_feature_version,
+                    lead_data_confidence, tier1_snapshot_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(scan_id, place_id) DO UPDATE SET
                       business_name = excluded.business_name,
                       city = excluded.city,
@@ -1627,6 +2210,12 @@ def save_territory_prospects(scan_id: str, user_id: int, prospects: List[Dict[st
                       rank_key = excluded.rank_key,
                       rank = excluded.rank,
                       review_position_summary = excluded.review_position_summary,
+                      lead_quality_score = excluded.lead_quality_score,
+                      lead_quality_class = excluded.lead_quality_class,
+                      lead_quality_reasons_json = excluded.lead_quality_reasons_json,
+                      lead_model_version = excluded.lead_model_version,
+                      lead_feature_version = excluded.lead_feature_version,
+                      lead_data_confidence = excluded.lead_data_confidence,
                       tier1_snapshot_json = excluded.tier1_snapshot_json,
                       updated_at = excluded.updated_at""",
                 (
@@ -1648,6 +2237,12 @@ def save_territory_prospects(scan_id: str, user_id: int, prospects: List[Dict[st
                     float(p.get("rank_key") or 0),
                     p.get("rank"),
                     p.get("review_position_summary"),
+                    float((p.get("lead_quality") or {}).get("score")) if isinstance(p.get("lead_quality"), dict) and (p.get("lead_quality") or {}).get("score") is not None else None,
+                    (p.get("lead_quality") or {}).get("class") if isinstance(p.get("lead_quality"), dict) else None,
+                    json.dumps((p.get("lead_quality") or {}).get("reasons") or [], default=str) if isinstance(p.get("lead_quality"), dict) else None,
+                    (p.get("lead_quality") or {}).get("model_version") if isinstance(p.get("lead_quality"), dict) else None,
+                    (p.get("lead_quality") or {}).get("feature_version") if isinstance(p.get("lead_quality"), dict) else None,
+                    float((p.get("lead_quality") or {}).get("data_confidence") or 0.0) if isinstance(p.get("lead_quality"), dict) else None,
                     json.dumps(p, default=str),
                     now,
                     now,
@@ -1674,6 +2269,11 @@ def list_territory_prospects(scan_id: str, user_id: int) -> List[Dict[str, Any]]
             d = dict(row)
             if d.get("tier1_snapshot_json"):
                 d["tier1_snapshot"] = json.loads(d["tier1_snapshot_json"])
+            if d.get("lead_quality_reasons_json"):
+                try:
+                    d["lead_quality_reasons"] = json.loads(d["lead_quality_reasons_json"])
+                except (TypeError, json.JSONDecodeError):
+                    d["lead_quality_reasons"] = []
             out.append(d)
         return out
     finally:
@@ -1693,6 +2293,11 @@ def get_territory_prospect(prospect_id: int, user_id: int) -> Optional[Dict[str,
         d = dict(row)
         if d.get("tier1_snapshot_json"):
             d["tier1_snapshot"] = json.loads(d["tier1_snapshot_json"])
+        if d.get("lead_quality_reasons_json"):
+            try:
+                d["lead_quality_reasons"] = json.loads(d["lead_quality_reasons_json"])
+            except (TypeError, json.JSONDecodeError):
+                d["lead_quality_reasons"] = []
         return d
     finally:
         conn.close()
@@ -1726,6 +2331,170 @@ def link_territory_prospect_diagnostic(
                SET diagnostic_id = ?, full_brief_ready = ?, ensure_job_id = NULL, updated_at = ?
                WHERE id = ?""",
             (diagnostic_id, 1 if full_brief_ready else 0, now, prospect_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_ml_feature_snapshot(
+    *,
+    entity_type: str,
+    entity_id: int,
+    place_id: str,
+    feature_scope: str,
+    feature_version: str,
+    feature_payload: Dict[str, Any],
+    data_confidence: Optional[float] = None,
+    signal_completeness_ratio: Optional[float] = None,
+) -> int:
+    """Persist one feature snapshot for ML scoring."""
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    payload_json = json.dumps(feature_payload, default=str, sort_keys=True)
+    feature_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            """INSERT INTO ml_feature_snapshots
+               (entity_type, entity_id, place_id, feature_scope, feature_version,
+                feature_json, feature_hash, data_confidence, signal_completeness_ratio, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(entity_type, entity_id, feature_version) DO UPDATE SET
+                  place_id = excluded.place_id,
+                  feature_scope = excluded.feature_scope,
+                  feature_json = excluded.feature_json,
+                  feature_hash = excluded.feature_hash,
+                  data_confidence = excluded.data_confidence,
+                  signal_completeness_ratio = excluded.signal_completeness_ratio,
+                  created_at = excluded.created_at""",
+            (
+                entity_type,
+                entity_id,
+                place_id,
+                feature_scope,
+                feature_version,
+                payload_json,
+                feature_hash,
+                data_confidence,
+                signal_completeness_ratio,
+                now,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def save_ml_prediction(
+    *,
+    entity_type: str,
+    entity_id: int,
+    place_id: str,
+    model_name: str,
+    model_version: str,
+    feature_version: str,
+    label_version: str,
+    score: float,
+    score_0_100: float,
+    predicted_class: str,
+    prob_high_value: Optional[float] = None,
+    prob_bad: Optional[float] = None,
+    prob_decent: Optional[float] = None,
+    prob_good: Optional[float] = None,
+    data_confidence: Optional[float] = None,
+    reasons: Optional[List[Dict[str, Any]]] = None,
+    caveats: Optional[List[Dict[str, Any]]] = None,
+    components: Optional[Dict[str, Any]] = None,
+    top_features: Optional[Dict[str, Any]] = None,
+    calibration_version: Optional[str] = None,
+) -> int:
+    """Persist one ML prediction row."""
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            """INSERT INTO ml_predictions
+               (entity_type, entity_id, place_id, model_name, model_version, feature_version,
+                label_version, calibration_version, score, score_0_100, predicted_class,
+                prob_bad, prob_decent, prob_good, prob_high_value, data_confidence,
+                reasons_json, caveats_json, components_json, top_features_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(entity_type, entity_id, model_name, model_version) DO UPDATE SET
+                  place_id = excluded.place_id,
+                  feature_version = excluded.feature_version,
+                  label_version = excluded.label_version,
+                  calibration_version = excluded.calibration_version,
+                  score = excluded.score,
+                  score_0_100 = excluded.score_0_100,
+                  predicted_class = excluded.predicted_class,
+                  prob_bad = excluded.prob_bad,
+                  prob_decent = excluded.prob_decent,
+                  prob_good = excluded.prob_good,
+                  prob_high_value = excluded.prob_high_value,
+                  data_confidence = excluded.data_confidence,
+                  reasons_json = excluded.reasons_json,
+                  caveats_json = excluded.caveats_json,
+                  components_json = excluded.components_json,
+                  top_features_json = excluded.top_features_json,
+                  created_at = excluded.created_at""",
+            (
+                entity_type,
+                entity_id,
+                place_id,
+                model_name,
+                model_version,
+                feature_version,
+                label_version,
+                calibration_version,
+                score,
+                score_0_100,
+                predicted_class,
+                prob_bad,
+                prob_decent,
+                prob_good,
+                prob_high_value,
+                data_confidence,
+                json.dumps(reasons or [], default=str),
+                json.dumps(caveats or [], default=str),
+                json.dumps(components or {}, default=str),
+                json.dumps(top_features or {}, default=str),
+                now,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_diagnostic_ml_fields(
+    diagnostic_id: int,
+    *,
+    lead_quality_score: Optional[float],
+    lead_quality_class: Optional[str],
+    lead_model_version: Optional[str],
+    lead_feature_version: Optional[str],
+    lead_quality_payload: Optional[Dict[str, Any]],
+) -> None:
+    """Cache latest ML output on diagnostics for hot-path reads."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """UPDATE diagnostics
+               SET lead_quality_score = ?, lead_quality_class = ?, lead_model_version = ?,
+                   lead_feature_version = ?, lead_quality_json = ?
+               WHERE id = ?""",
+            (
+                lead_quality_score,
+                lead_quality_class,
+                lead_model_version,
+                lead_feature_version,
+                json.dumps(lead_quality_payload, default=str) if lead_quality_payload else None,
+                diagnostic_id,
+            ),
         )
         conn.commit()
     finally:
@@ -1910,6 +2679,159 @@ def upsert_ask_lightweight_cache(place_id: str, criterion_key: str, result: Dict
             (place_id, criterion_key, json.dumps(result, default=str), now),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_qa_signal_checks(rows: List[Dict[str, Any]]) -> List[int]:
+    """Insert QA signal checks and return created ids."""
+    if not rows:
+        return []
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _get_conn()
+    try:
+        out: List[int] = []
+        for row in rows:
+            cur = conn.execute(
+                """INSERT INTO qa_signal_checks
+                   (source_type, source_id, place_id, website, criterion_key, deterministic_match,
+                    evidence_json, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(row.get("source_type") or "ask"),
+                    str(row.get("source_id") or ""),
+                    row.get("place_id"),
+                    row.get("website"),
+                    str(row.get("criterion_key") or ""),
+                    1 if row.get("deterministic_match") else 0,
+                    json.dumps(row.get("evidence") or {}, default=str),
+                    "pending",
+                    now,
+                    now,
+                ),
+            )
+            out.append(int(cur.lastrowid))
+        conn.commit()
+        return out
+    finally:
+        conn.close()
+
+
+def get_qa_signal_checks_by_ids(check_ids: List[int]) -> List[Dict[str, Any]]:
+    """Fetch QA signal checks by ids."""
+    ids = [int(x) for x in (check_ids or []) if int(x) > 0]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM qa_signal_checks WHERE id IN ({placeholders}) ORDER BY id ASC",
+            ids,
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            if d.get("evidence_json"):
+                d["evidence"] = json.loads(d["evidence_json"])
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
+
+def update_qa_signal_check_result(
+    check_id: int,
+    *,
+    status: str,
+    ai_verdict: Optional[str] = None,
+    ai_confidence: Optional[str] = None,
+    ai_reason: Optional[str] = None,
+    ai_model: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Update one QA check result row."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """UPDATE qa_signal_checks
+               SET status = ?, ai_verdict = ?, ai_confidence = ?, ai_reason = ?, ai_model = ?, error = ?, updated_at = ?
+               WHERE id = ?""",
+            (status, ai_verdict, ai_confidence, ai_reason, ai_model, error, now, int(check_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_qa_signal_checks(limit: int = 200, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List latest QA signal checks."""
+    clamped = max(1, min(int(limit), 1000))
+    conn = _get_conn()
+    try:
+        if source_type:
+            rows = conn.execute(
+                "SELECT * FROM qa_signal_checks WHERE source_type = ? ORDER BY created_at DESC LIMIT ?",
+                (source_type, clamped),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM qa_signal_checks ORDER BY created_at DESC LIMIT ?",
+                (clamped,),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            if d.get("evidence_json"):
+                d["evidence"] = json.loads(d["evidence_json"])
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
+
+def summarize_qa_signal_checks(days: int = 30) -> Dict[str, Any]:
+    """Return aggregate QA metrics for recent checks."""
+    clamped_days = max(1, min(int(days), 365))
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT source_type, deterministic_match, ai_verdict, status
+               FROM qa_signal_checks
+               WHERE created_at >= datetime('now', ?)""",
+            (f"-{clamped_days} days",),
+        ).fetchall()
+        total = 0
+        completed = 0
+        disagreements = 0
+        by_source: Dict[str, Dict[str, int]] = {}
+        for row in rows:
+            total += 1
+            source = str(row["source_type"] or "unknown")
+            bucket = by_source.setdefault(source, {"total": 0, "completed": 0, "disagreements": 0})
+            bucket["total"] += 1
+            if str(row["status"] or "") != "completed":
+                continue
+            completed += 1
+            bucket["completed"] += 1
+            dmatch = bool(int(row["deterministic_match"] or 0))
+            verdict = str(row["ai_verdict"] or "").strip().lower()
+            ai_match = verdict == "likely_match"
+            ai_not = verdict == "likely_not_match"
+            disagree = (dmatch and ai_not) or ((not dmatch) and ai_match)
+            if disagree:
+                disagreements += 1
+                bucket["disagreements"] += 1
+        disagreement_rate = (float(disagreements) / float(completed)) if completed else 0.0
+        return {
+            "window_days": clamped_days,
+            "total_checks": total,
+            "completed_checks": completed,
+            "disagreements": disagreements,
+            "disagreement_rate": round(disagreement_rate, 4),
+            "by_source": by_source,
+        }
     finally:
         conn.close()
 

@@ -17,6 +17,8 @@ import Button from "@/app/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
 import Badge from "@/app/components/ui/Badge";
 import { Table, THead, TH, TR, TD } from "@/app/components/ui/Table";
+import ListPickerModal from "@/app/components/ListPickerModal";
+import BriefBuildProgress, { type BriefBuildProgressState } from "@/app/components/BriefBuildProgress";
 
 export default function TerritoryResultsPage() {
   const params = useParams();
@@ -29,6 +31,14 @@ export default function TerritoryResultsPage() {
   const [sortBy, setSortBy] = useState<"rank" | "name" | "reviews">("rank");
   const [actionProspectId, setActionProspectId] = useState<number | null>(null);
   const [actionLabel, setActionLabel] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [successHref, setSuccessHref] = useState<string | null>(null);
+  const [successCta, setSuccessCta] = useState<string | null>(null);
+  const [listModalOpen, setListModalOpen] = useState(false);
+  const [listBusy, setListBusy] = useState(false);
+  const [listTargetDiagnosticId, setListTargetDiagnosticId] = useState<number | null>(null);
+  const [listTargetBusinessName, setListTargetBusinessName] = useState("");
+  const [briefProgress, setBriefProgress] = useState<BriefBuildProgressState | null>(null);
   const cacheKey = `territory_scan_${scanId}`;
 
   useEffect(() => {
@@ -97,7 +107,6 @@ export default function TerritoryResultsPage() {
     if (total > 0) return { label: `Scanning... ${processed}/${total}`, percent: Math.round((processed / total) * 100) };
     return { label: "Finding candidates...", percent: 0 };
   }, [data?.summary]);
-
   const prospects = useMemo(() => {
     const rows = [...(data?.prospects || [])];
     if (sortBy === "name") rows.sort((a, b) => a.business_name.localeCompare(b.business_name));
@@ -105,6 +114,18 @@ export default function TerritoryResultsPage() {
     else rows.sort((a, b) => (a.rank || 9999) - (b.rank || 9999));
     return rows;
   }, [data?.prospects, sortBy]);
+
+  const territoryProgress = useMemo(
+    () =>
+      buildTerritoryProgressState({
+        city: data?.city || "",
+        state: data?.state || "",
+        status: data?.status || (loading ? "running" : "idle"),
+        summary: (data?.summary || {}) as Record<string, unknown>,
+        currentCount: prospects.length,
+      }),
+    [data?.city, data?.state, data?.status, data?.summary, loading, prospects.length],
+  );
 
   const scanTimestamp = data?.completed_at || data?.created_at || null;
   const scanAgeDays = useMemo(() => {
@@ -125,10 +146,21 @@ export default function TerritoryResultsPage() {
     const ensured = await ensureTerritoryProspectBrief(row.prospect_id);
     if (ensured.status === "ready" && ensured.diagnostic_id) return ensured.diagnostic_id;
     if (!ensured.job_id) throw new Error("No job id returned");
+    setBriefProgress({
+      phase: "preparing_brief",
+      businessName: row.business_name || "",
+      city: row.city || "",
+      state: row.state || "",
+      polls: 0,
+    });
     for (let i = 0; i < 240; i++) {
       const st = await getJobStatus(ensured.job_id);
-      if (st.status === "completed" && st.diagnostic_id) return st.diagnostic_id;
+      if (st.status === "completed" && st.diagnostic_id) {
+        setBriefProgress(null);
+        return st.diagnostic_id;
+      }
       if (st.status === "failed") throw new Error(st.error || "Failed to build brief");
+      setBriefProgress(buildBriefProgressState(st.progress, i + 1, row));
       await new Promise((r) => setTimeout(r, 2000));
     }
     throw new Error("Brief build timed out");
@@ -136,6 +168,9 @@ export default function TerritoryResultsPage() {
 
   async function handleViewBrief(row: ProspectRow) {
     try {
+      setSuccessMessage(null);
+      setSuccessHref(null);
+      setSuccessCta(null);
       setActionProspectId(row.prospect_id || -1);
       setActionLabel("Building your brief...");
       const id = row.diagnostic_id && row.full_brief_ready ? row.diagnostic_id : await ensureBrief(row);
@@ -145,26 +180,27 @@ export default function TerritoryResultsPage() {
     } finally {
       setActionProspectId(null);
       setActionLabel(null);
+      setBriefProgress(null);
     }
   }
 
   async function handleAddToList(row: ProspectRow) {
     try {
+      setSuccessMessage(null);
+      setSuccessHref(null);
+      setSuccessCta(null);
       setActionProspectId(row.prospect_id || -1);
       setActionLabel("Preparing full brief...");
       const diagId = row.diagnostic_id && row.full_brief_ready ? row.diagnostic_id : await ensureBrief(row);
-      const selected = window.prompt(`Add to list by number:\n${lists.map((l, i) => `${i + 1}. ${l.name}`).join("\n")}\nOr type a new list name.`);
-      if (!selected) return;
-      const n = Number(selected);
-      const listId = !Number.isNaN(n) && n >= 1 && n <= lists.length ? lists[n - 1].id : (await createProspectList(selected.trim())).id;
-      await addProspectsToList(listId, [diagId]);
-      setLists((await getProspectLists()).items);
-      alert("Added to list");
+      setListTargetDiagnosticId(diagId);
+      setListTargetBusinessName(row.business_name || "");
+      setListModalOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add to list");
     } finally {
       setActionProspectId(null);
       setActionLabel(null);
+      setBriefProgress(null);
     }
   }
 
@@ -172,6 +208,32 @@ export default function TerritoryResultsPage() {
     if (!row.diagnostic_id) return;
     await markProspectOutcome({ diagnostic_id: row.diagnostic_id, status });
     setData(await getTerritoryScanResults(scanId));
+  }
+
+  async function handleConfirmAddToList(payload: { listId?: number; newListName?: string }) {
+    if (!listTargetDiagnosticId) throw new Error("No prospect selected");
+    setListBusy(true);
+    try {
+      let targetListId = payload.listId;
+      let createdNew = false;
+      if (!targetListId) {
+        if (!payload.newListName) throw new Error("List name is required");
+        const created = await createProspectList(payload.newListName);
+        targetListId = created.id;
+        createdNew = true;
+      }
+      await addProspectsToList(targetListId, [listTargetDiagnosticId]);
+      const updated = await getProspectLists().catch(() => ({ items: [] }));
+      setLists(updated.items);
+      setSuccessMessage(`Added ${listTargetBusinessName || "prospect"} to ${createdNew ? "new list" : "list"}.`);
+      setSuccessHref(`/lists/${targetListId}`);
+      setSuccessCta("Open list");
+      setListModalOpen(false);
+      setListTargetDiagnosticId(null);
+      setListTargetBusinessName("");
+    } finally {
+      setListBusy(false);
+    }
   }
 
   function exportCsv() {
@@ -187,14 +249,20 @@ export default function TerritoryResultsPage() {
     URL.revokeObjectURL(url);
   }
 
-  if (loading) return <div className="mx-auto max-w-6xl py-10 text-sm text-[var(--text-muted)]">Loading scan...</div>;
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-7xl py-6">
+        <TerritoryScanProgressPanel progress={territoryProgress} />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-7xl">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs text-[var(--text-muted)]">Territory</p>
-          <h1 className="text-2xl font-semibold tracking-tight">Territory: {data?.city || "Market"}{data?.state ? `, ${data.state}` : ""}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Market Scan: {data?.city || "Market"}{data?.state ? `, ${data.state}` : ""}</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">{prospects.length} prospects · {data?.status === "running" ? progress.label : "Scan complete"}</p>
           {scanTimestamp && (
             <p className="mt-1 text-xs text-[var(--text-muted)]">
@@ -204,6 +272,7 @@ export default function TerritoryResultsPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/territory/new"><Button>New scan</Button></Link>
+          <Link href="/ask"><Button>Ask Neyma</Button></Link>
           <Link href="/lists"><Button>Lists</Button></Link>
           <Button variant="primary" onClick={exportCsv}>Export CSV</Button>
         </div>
@@ -222,10 +291,20 @@ export default function TerritoryResultsPage() {
 
       {error && <Card className="mb-4 border-rose-200 bg-rose-50"><CardBody className="text-sm text-rose-800">{error}</CardBody></Card>}
       {actionLabel && <Card className="mb-4 border-sky-200 bg-sky-50"><CardBody className="text-sm text-sky-800">{actionLabel}</CardBody></Card>}
+      {data?.status === "running" && <TerritoryScanProgressPanel progress={territoryProgress} className="mb-4" />}
+      {briefProgress && <BriefBuildProgress progress={briefProgress} className="mb-4" />}
+      {successMessage && (
+        <Card className="mb-4 border-emerald-200 bg-emerald-50">
+          <CardBody className="flex flex-wrap items-center gap-2 text-sm text-emerald-800">
+            <span>{successMessage}</span>
+            {successHref && successCta ? <Link href={successHref} className="app-link font-medium">{successCta}</Link> : null}
+          </CardBody>
+        </Card>
+      )}
 
       <Card>
         <CardHeader
-          title="Ranked Prospects"
+          title="Ranked Market Prospects"
           subtitle={`Showing top ${Number(data?.summary?.accepted || prospects.length)} of ${Number(data?.summary?.scored_candidates || 0)} scored prospects.`}
           action={
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value as "rank" | "name" | "reviews")} className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-default)] px-2 text-xs">
@@ -238,7 +317,7 @@ export default function TerritoryResultsPage() {
         <Table>
           <THead>
             <tr>
-              <TH>Rank</TH><TH>Business</TH><TH>City</TH><TH>Rating</TH><TH>Reviews</TH><TH>Contact</TH><TH>Website</TH><TH>Email</TH><TH>Key Signal</TH><TH>Status</TH><TH className="text-right">Actions</TH>
+              <TH>Rank</TH><TH>Business</TH><TH>City</TH><TH>Rating</TH><TH>Reviews</TH><TH>Contact</TH><TH>Website</TH><TH>Key Signal</TH><TH>Status</TH><TH className="text-right">Actions</TH>
             </tr>
           </THead>
           <tbody>
@@ -253,11 +332,16 @@ export default function TerritoryResultsPage() {
                   <TD>{row.user_ratings_total ?? "-"}</TD>
                   <TD>{row.phone ? <a href={`tel:${row.phone}`} className="app-link">{row.phone}</a> : "—"}</TD>
                   <TD>{row.website ? <a href={row.website} target="_blank" rel="noreferrer" className="app-link break-all">{row.website}</a> : "—"}</TD>
-                  <TD>{row.email ? <a href={`mailto:${row.email}`} className="app-link">{row.email}</a> : "—"}</TD>
                   <TD>{row.key_signal ? <Badge>{row.key_signal}</Badge> : "—"}</TD>
                   <TD><Badge tone={row.outcome_status?.status === "closed_won" ? "success" : row.outcome_status?.status === "closed_lost" ? "danger" : "muted"}>{outcomeLabel(row.outcome_status?.status)}</Badge></TD>
                   <TD className="text-right">
-                    <button onClick={() => void handleViewBrief(row)} disabled={busy} className="app-link mr-2 font-medium disabled:opacity-60">{busy ? "Building..." : "View brief"}</button>
+                    <button
+                      onClick={() => void handleViewBrief(row)}
+                      disabled={busy}
+                      className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-black px-4 text-sm font-medium text-white transition hover:bg-[#4f79c7] disabled:opacity-60"
+                    >
+                      {busy ? "Building..." : "Open brief"}
+                    </button>
                     <button onClick={() => void handleAddToList(row)} disabled={busy} className="text-[var(--text-secondary)] hover:underline disabled:opacity-60">Add to list</button>
                     <button onClick={() => void handleOutcome(row, "contacted")} disabled={!row.diagnostic_id} className="ml-2 text-[var(--text-secondary)] hover:underline disabled:opacity-50">Contacted</button>
                   </TD>
@@ -267,6 +351,226 @@ export default function TerritoryResultsPage() {
           </tbody>
         </Table>
       </Card>
+
+      {listModalOpen && (
+        <ListPickerModal
+          open={listModalOpen}
+          title="Add prospect to list"
+          lists={lists}
+          busy={listBusy}
+          onClose={() => {
+            if (listBusy) return;
+            setListModalOpen(false);
+          }}
+          onConfirm={handleConfirmAddToList}
+        />
+      )}
+    </div>
+  );
+}
+
+function buildBriefProgressState(
+  progress: Record<string, unknown> | null | undefined,
+  polls: number,
+  row: Pick<ProspectRow, "business_name" | "city" | "state">,
+): BriefBuildProgressState {
+  const payload = (progress || {}) as Record<string, unknown>;
+  const inner = (payload.progress || {}) as Record<string, unknown>;
+
+  return {
+    phase: String(payload.phase || "building_brief"),
+    businessName: row.business_name || "",
+    city: row.city || "",
+    state: row.state || "",
+    polls,
+    pagesChecked: Number(inner.pages_crawled || inner.pages_checked || 0) || undefined,
+    signalsFound: Number(inner.signals_found || inner.signals || inner.findings || 0) || undefined,
+  };
+}
+
+type TerritoryScanProgressState = {
+  city: string;
+  state: string;
+  phase: string;
+  label: string;
+  percent: number;
+  queryDone: number;
+  queryTotal: number;
+  processed: number;
+  total: number;
+  accepted: number;
+};
+
+function buildTerritoryProgressState({
+  city,
+  state,
+  status,
+  summary,
+  currentCount,
+}: {
+  city: string;
+  state: string;
+  status: string;
+  summary: Record<string, unknown>;
+  currentCount: number;
+}): TerritoryScanProgressState {
+  const phase = String(summary.phase || (status === "running" ? "candidate_fetch" : "completed"));
+  const queryDone = Number(summary.candidate_queries_done || 0);
+  const queryTotal = Number(summary.candidate_queries_total || 0);
+  const processed = Number(summary.processed || 0);
+  const total = Number(summary.scored_candidates || summary.total_candidates || 0);
+  const accepted = Number(summary.accepted || currentCount || 0);
+  const label =
+    phase === "candidate_fetch" && queryTotal > 0
+      ? `Discovering candidates across ${queryDone}/${queryTotal} areas`
+      : total > 0
+        ? `Ranking ${processed}/${total} candidates`
+        : status === "completed"
+          ? "Scan complete"
+          : "Preparing scan";
+  const percent =
+    phase === "candidate_fetch" && queryTotal > 0
+      ? Math.round((queryDone / queryTotal) * 100)
+      : total > 0
+        ? Math.round((processed / total) * 100)
+        : status === "completed"
+          ? 100
+          : 8;
+
+  return { city, state, phase, label, percent, queryDone, queryTotal, processed, total, accepted };
+}
+
+function TerritoryScanProgressPanel({
+  progress,
+  className = "",
+}: {
+  progress: TerritoryScanProgressState;
+  className?: string;
+}) {
+  const [subeventIndex, setSubeventIndex] = useState(0);
+  const [dotCount, setDotCount] = useState(1);
+  const phase = progress.phase.toLowerCase();
+  const subevents = phase.includes("candidate")
+    ? [
+        "Checking the local map for relevant practices",
+        "Expanding the search across nearby listings",
+        "Pulling the first candidate set into the scan",
+      ]
+    : [
+        "Comparing reviews and local position",
+        "Checking website basics and contact readiness",
+        "Sorting the strongest prospects into the shortlist",
+      ];
+  const steps = [
+    {
+      label: "Discover candidates",
+      meta: progress.queryTotal > 0 ? `${progress.queryDone}/${progress.queryTotal} areas` : "starting",
+      description: "Search the market before any ranking starts.",
+      done: !phase.includes("candidate") && (progress.total > 0 || progress.accepted > 0),
+      active: phase.includes("candidate") || (progress.queryDone === 0 && progress.accepted === 0),
+    },
+    {
+      label: "Rank the market",
+      meta: progress.total > 0 ? `${progress.processed}/${progress.total} ranked` : "queued",
+      description: "Review local position, review gaps, and site readiness.",
+      done: progress.processed > 0 && !phase.includes("candidate") && progress.accepted > 0,
+      active: !phase.includes("candidate") && (progress.processed < progress.total || progress.total === 0),
+    },
+    {
+      label: "Build shortlist",
+      meta: `${progress.accepted} listed`,
+      description: "Keep the strongest practices and drop weak fits.",
+      done: false,
+      active: progress.accepted > 0 && progress.processed >= Math.max(progress.total, 1),
+    },
+  ];
+
+  useEffect(() => {
+    const subeventTimer = window.setInterval(() => {
+      setSubeventIndex((current) => (current + 1) % subevents.length);
+    }, 1700);
+    const dotTimer = window.setInterval(() => {
+      setDotCount((current) => (current % 3) + 1);
+    }, 420);
+    return () => {
+      window.clearInterval(subeventTimer);
+      window.clearInterval(dotTimer);
+    };
+  }, [subevents.length]);
+
+  return (
+    <div className={`rounded-[32px] border border-[#4f79c7]/10 bg-[linear-gradient(135deg,rgba(79,121,199,0.08)_0%,rgba(242,191,47,0.08)_58%,rgba(0,0,0,0.03)_100%)] p-4 shadow-[0_24px_60px_rgba(23,20,17,0.08)] sm:p-5 ${className}`}>
+      <div className="rounded-[26px] border border-white/70 bg-[rgba(255,255,255,0.88)] p-4 backdrop-blur-sm sm:p-5">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+          <div className="flex items-center gap-4 sm:w-[260px] sm:flex-col sm:items-start">
+            <div className="relative flex h-18 w-18 items-center justify-center rounded-full border border-black/10 bg-[radial-gradient(circle_at_30%_30%,rgba(79,121,199,0.18),transparent_45%),radial-gradient(circle_at_70%_70%,rgba(242,191,47,0.18),transparent_48%),#fcfbf8] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(23,20,17,0.08)]">
+              <span className="absolute inline-flex h-14 w-14 animate-ping rounded-full border border-black/10" />
+              <span className="absolute inline-flex h-10 w-10 animate-spin rounded-full border-2 border-black/15 border-t-[#4f79c7]" />
+              <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-black shadow-[0_0_0_6px_rgba(0,0,0,0.06)]" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-[var(--text-primary)]">Running territory scan</p>
+                <span className="rounded-full border border-black/6 bg-white px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
+                  {progress.percent}%
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                {progress.city || "Selected market"}{progress.state ? `, ${progress.state}` : ""}
+              </p>
+              <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                {subevents[subeventIndex]}
+                <span className="inline-block w-4 text-left text-[var(--text-secondary)]">{ ".".repeat(dotCount) }</span>
+              </p>
+              <p className="mt-2 text-xs font-medium text-[var(--text-secondary)]">{progress.label}</p>
+            </div>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <ProgressChip label="Areas" value={progress.queryTotal > 0 ? `${progress.queryDone}/${progress.queryTotal}` : "—"} />
+              <ProgressChip label="Ranked" value={progress.total > 0 ? `${progress.processed}/${progress.total}` : "—"} />
+              <ProgressChip label="Shortlist" value={String(progress.accepted)} />
+            </div>
+
+            <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-black/6">
+              <div className="h-full rounded-full bg-[linear-gradient(90deg,#171411_0%,#4f79c7_52%,#f2bf2f_100%)] transition-[width] duration-500" style={{ width: `${Math.max(10, progress.percent)}%` }} />
+            </div>
+
+            <div className="mt-3 space-y-2 rounded-[24px] border border-black/6 bg-[#fbfaf7] p-3.5">
+              {steps.map((step) => (
+                <div key={step.label} className="flex items-start gap-3 rounded-2xl border border-black/6 bg-white px-3 py-3">
+                  <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-black/8 bg-[#fcfbf8]">
+                    {step.done ? (
+                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-black" />
+                    ) : step.active ? (
+                      <span className="inline-flex h-2.5 w-2.5 animate-pulse rounded-full bg-[#4f79c7]" />
+                    ) : (
+                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-black/15" />
+                    )}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-[var(--text-primary)]">{step.label}</p>
+                      <span className="text-xs text-[var(--text-muted)]">{step.meta}</span>
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">{step.description}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProgressChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[22px] border border-black/6 bg-white px-3 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">{value}</p>
     </div>
   );
 }

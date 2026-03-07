@@ -37,7 +37,7 @@ export default function SettingsPage() {
         <CardBody className="flex items-center justify-between">
           <div>
             <p className="font-medium text-[var(--text-primary)]">Free Plan</p>
-            <p className="text-sm text-[var(--text-muted)]">Unlimited diagnostics during beta</p>
+            <p className="text-sm text-[var(--text-muted)]">Unlimited briefs during beta</p>
           </div>
           <Badge tone="success">Active</Badge>
         </CardBody>

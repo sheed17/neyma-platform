@@ -133,3 +133,26 @@ def test_mid_practice():
     assert "cost_leakage_signals" in summary
     assert "primary_revenue_driver" in summary
     assert "paid_spend_range_estimate" in summary
+
+
+def test_canonical_summary_suppresses_absence_claims_under_low_confidence():
+    lead = {
+        "signal_has_website": True,
+        "signal_review_count": 30,
+        "signal_rating": 4.5,
+        "signal_runs_paid_ads": True,
+        "signal_has_automated_scheduling": False,
+        "user_ratings_total": 30,
+    }
+    obj = _objective_layer(bottleneck="visibility_limited", has_services=True, competitive=True)
+    obj["service_intelligence"]["missing_high_value_pages"] = ["Implants"]
+    obj["service_intelligence"]["suppress_service_gap"] = True
+    obj["service_intelligence"]["suppress_conversion_absence_claims"] = True
+    rev = build_revenue_intelligence(lead, {}, obj)
+    summary = build_canonical_summary_60s(lead, {}, obj, rev)
+
+    digital = " | ".join(summary["supporting_evidence"]["digital_signals"]).lower()
+    assert "missing dedicated" not in digital
+    assert "no online booking" not in digital
+    assert "conversion infrastructure not fully evaluated" in digital
+    assert "service visibility not fully evaluated" in digital

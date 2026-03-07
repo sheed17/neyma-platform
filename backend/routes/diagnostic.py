@@ -29,6 +29,8 @@ def post_diagnostic(body: DiagnosticRequest, request: Request):
                 "city": body.city.strip(),
                 "state": body.state.strip(),
                 "website": body.website.strip() if body.website else None,
+                "deep_audit": bool(body.deep_audit),
+                "source_diagnostic_id": int(body.source_diagnostic_id) if body.source_diagnostic_id else None,
             },
         )
     except Exception as e:

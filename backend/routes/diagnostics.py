@@ -19,6 +19,7 @@ from backend.models.schemas import (
     RevenueBreakdown,
     ConversionInfrastructure,
     EvidenceItem,
+    LeadQualityPrediction,
 )
 from pipeline.db import (
     count_diagnostics,
@@ -92,6 +93,8 @@ def _response_from_saved(resp: dict) -> DiagnosticResponse:
         for e in resp.get("evidence", [])
         if isinstance(e, dict)
     ]
+    lead_quality_raw = resp.get("lead_quality")
+    lead_quality = LeadQualityPrediction(**lead_quality_raw) if isinstance(lead_quality_raw, dict) else None
 
     return DiagnosticResponse(
         lead_id=resp.get("lead_id", 0),
@@ -113,6 +116,7 @@ def _response_from_saved(resp: dict) -> DiagnosticResponse:
         conversion_infrastructure=ci,
         risk_flags=resp.get("risk_flags", []),
         evidence=evidence,
+        lead_quality=lead_quality,
     )
 
 

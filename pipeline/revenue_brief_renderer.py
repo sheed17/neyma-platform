@@ -4,7 +4,7 @@ Revenue Intelligence Brief — UI rendering.
 Primary sources: objective_intelligence, revenue_intelligence, competitive_snapshot, signals.
 summary_60s / objective_decision_layer / canonical_summary_v1 used only as fallback.
 No LLM. No new calculations (only normalization + formatting).
-No model version labels. Wording focused on SEO for dental practices (local visibility, service pages, schema, GBP, review velocity).
+No model version labels. Wording focused on SEO for dental practices (local visibility, service pages, GBP, review velocity).
 """
 
 from typing import Dict, Any, List, Optional, Tuple
@@ -148,11 +148,19 @@ def _service_key_equivalent(a: str, b: str) -> bool:
     return a in ortho and b in ortho
 
 
+def _yes_no_unknown(v: Any) -> str:
+    if v is None:
+        return "Not Evaluated (Low Crawl Confidence)"
+    return "Yes" if bool(v) else "No"
+
+
 def _refine_risk_flags(
     flags: List[str],
     detected_canonical: List[str],
     missing_canonical: List[str],
     paid_active: bool,
+    suppress_service_gap: bool = False,
+    suppress_conversion_absence_claims: bool = False,
 ) -> List[str]:
     if not flags:
         return []
@@ -164,28 +172,47 @@ def _refine_risk_flags(
         if not f:
             continue
         lower = f.lower()
+        if suppress_conversion_absence_claims and (
+            "no contact form" in lower
+            or "phone-only" in lower
+            or "phone only" in lower
+            or "no booking" in lower
+            or "no online booking" in lower
+        ):
+            continue
+        if suppress_service_gap and (
+            "missing dedicated" in lower
+            or "missing service" in lower
+            or "missing page" in lower
+            or "high-value service pages missing" in lower
+        ):
+            continue
         if "high-ticket services offered but no dedicated landing pages" in lower:
+            if suppress_service_gap:
+                continue
             if all_missing:
-                out.append("High-ticket services offered but no dedicated landing pages")
+                out.append("High-ticket services offered but no dedicated landing pages found in scan")
             elif missing_canonical:
                 out.append(
-                    f"Some high-value services are missing dedicated pages ({missing_txt})"
+                    f"No dedicated pages found for some high-value services ({missing_txt})"
                     if missing_txt
-                    else "Some high-value services are missing dedicated pages"
+                    else "No dedicated pages found for some high-value services in scan"
                 )
             continue
         if "paid ads running but high-value service pages missing" in lower:
+            if suppress_service_gap:
+                continue
             if paid_active and missing_canonical:
                 out.append(
-                    f"Paid ads running while some high-value service pages are missing ({missing_txt})"
+                    f"Paid ads running but no dedicated pages found for some services ({missing_txt})"
                     if missing_txt
-                    else "Paid ads running while high-value service pages are missing"
+                    else "Paid ads running but no dedicated service pages found in scan"
                 )
             elif missing_canonical:
                 out.append(
-                    f"Some high-value services are missing dedicated pages ({missing_txt})"
+                    f"No dedicated pages found for some high-value services ({missing_txt})"
                     if missing_txt
-                    else "Some high-value services are missing dedicated pages"
+                    else "No dedicated pages found for some high-value services in scan"
                 )
             continue
         out.append(f)
@@ -211,13 +238,13 @@ def compute_opportunity_profile(lead: Dict[str, Any]) -> Dict[str, Any]:
         else:
             signals = {k: v for k, v in lead.items() if k.startswith("signal_") or k in ("user_ratings_total", "rating")}
         service = oi.get("service_intel") or lead.get("service_intelligence") or {}
+        suppress_service = bool(service.get("suppress_service_gap"))
+        crawl_conf = str(service.get("crawl_confidence") or "").strip().lower()
+        if not suppress_service and crawl_conf == "low":
+            suppress_service = True
 
-        missing_pages = service.get("missing_high_value_pages")
+        missing_pages = service.get("missing_high_value_pages") if not suppress_service else []
         missing_high_value = bool(missing_pages and (isinstance(missing_pages, list) and len(missing_pages) > 0))
-
-        schema_detected = service.get("schema_detected")
-        if schema_detected is None:
-            schema_detected = signals.get("signal_has_schema_microdata")
 
         market_density = (cs.get("market_density_score") or "").strip() or (oi.get("competitive_profile") or {}).get("market_density") or ""
         high_density = (market_density == "High")
@@ -274,19 +301,12 @@ def compute_opportunity_profile(lead: Dict[str, Any]) -> Dict[str, Any]:
             avg_internal_links = float(avg_internal_links_val) if avg_internal_links_val is not None else None
         except (TypeError, ValueError):
             avg_internal_links = None
-        avg_inbound_body_val = v2_trust.get("avg_inbound_unique_pages_body_only")
-        try:
-            avg_inbound_body = float(avg_inbound_body_val) if avg_inbound_body_val is not None else None
-        except (TypeError, ValueError):
-            avg_inbound_body = None
-
         faq_status = str(v2_trust.get("faq_status") or "").strip().lower()
         faq_missing = faq_status == "not_detected"
         structured_trust_weak = bool(
             (coverage_ratio is not None and coverage_ratio < 0.6)
             or faq_missing
             or (avg_internal_links is not None and avg_internal_links < 3.0)
-            or (avg_inbound_body is not None and avg_inbound_body < 1.0)
         )
 
         # Leverage classification inputs:
@@ -308,7 +328,7 @@ def compute_opportunity_profile(lead: Dict[str, Any]) -> Dict[str, Any]:
 
         fragments = []
         if missing_high_value:
-            fragments.append("high-ticket service offered but missing dedicated landing page")
+            fragments.append("no dedicated landing page found for a high-ticket service in our scan")
         if structured_trust_weak:
             fragments.append("structured trust signals are weak")
         if review_deficit:
@@ -425,7 +445,6 @@ def compute_organic_visibility(lead: Dict[str, Any]) -> Dict[str, str]:
         )
         missing_pages = svc.get("missing_high_value_pages") or []
         has_all_service_pages = has_service_pages and len(missing_pages) == 0
-        has_schema = signals.get("signal_has_schema_microdata") is True
         runs_ads = signals.get("signal_runs_paid_ads") is True
         pages_crawled = svc.get("pages_crawled") or 0
 
@@ -452,10 +471,7 @@ def compute_organic_visibility(lead: Dict[str, Any]) -> Dict[str, str]:
             reasons_high.append("dedicated service pages for high-ticket procedures")
         elif has_service_pages:
             positive += 1
-            reasons_mod.append("some high-ticket services detected but missing dedicated pages")
-
-        if has_schema:
-            reasons_mod.append("schema markup detected")
+            reasons_mod.append("some high-ticket services detected but no dedicated pages found in scan")
 
         if pages_crawled >= 50:
             positive += 1
@@ -563,6 +579,9 @@ def _get_objective_intelligence(lead: Dict[str, Any]) -> Dict[str, Any]:
 def _get_objective_layer(lead: Dict[str, Any]) -> Dict[str, Any]:
     """objective_decision_layer or models (fallback when objective_intelligence missing)."""
     obj = lead.get("objective_decision_layer")
+    if obj and isinstance(obj, dict):
+        return obj
+    obj = lead.get("objective_layer")
     if obj and isinstance(obj, dict):
         return obj
     return lead.get("models") or {}
@@ -694,6 +713,31 @@ def _flatten_supporting_evidence(s60: Optional[Dict[str, Any]], max_items: int =
                     if len(out) >= max_items:
                         return out[:max_items]
     return out[:max_items]
+
+
+def _suppressed_evidence_line(
+    line: str,
+    suppress_service_gap: bool,
+    suppress_conversion_absence_claims: bool,
+) -> bool:
+    text = (line or "").strip().lower()
+    if not text:
+        return True
+    if suppress_conversion_absence_claims and (
+        "no contact form" in text
+        or "phone-only" in text
+        or "phone only" in text
+        or "no booking" in text
+        or "no online booking" in text
+    ):
+        return True
+    if suppress_service_gap and (
+        "missing dedicated" in text
+        or "missing service" in text
+        or "missing page" in text
+    ):
+        return True
+    return False
 
 
 def _dedupe_evidence(bullets: List[str], max_items: int = 10) -> List[str]:
@@ -968,6 +1012,8 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
 
     # ---------- 4) High-Ticket Capture Gaps (canonical normalization) ----------
     svc = obj.get("service_intelligence") or {}
+    suppress_service_gap = bool(svc.get("suppress_service_gap"))
+    suppress_conversion_absence_claims = bool(svc.get("suppress_conversion_absence_claims") or suppress_service_gap)
     high_ticket_raw = svc.get("high_ticket_procedures_detected")
     missing_raw = svc.get("missing_high_value_pages")
     detected_canonical, missing_canonical = _normalize_to_canonical_services(
@@ -976,11 +1022,8 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
     )
     if detected_canonical:
         vm["high_ticket_gaps"]["high_ticket_services_detected"] = detected_canonical
-    if missing_canonical:
+    if missing_canonical and not suppress_service_gap:
         vm["high_ticket_gaps"]["missing_landing_pages"] = missing_canonical
-    schema = signals.get("signal_has_schema_microdata")
-    if schema is not None:
-        vm["high_ticket_gaps"]["schema"] = "Detected" if schema is True else "Not detected"
     if svc.get("service_level_upside") and isinstance(svc["service_level_upside"], list):
         vm["high_ticket_gaps"]["service_level_upside"] = svc["service_level_upside"]
     else:
@@ -1011,7 +1054,7 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
         }
         if not any(_service_key_equivalent(gap_key, k) for k in (missing_keys | detected_keys)):
             preferred_from_gap = None
-    if (missing_list or preferred_from_gap) and rev:
+    if not suppress_service_gap and (missing_list or preferred_from_gap) and rev:
         # Primary modeled service should come from missing-page priority (Implants > ...),
         # not from the competitor gap label when multiple gaps exist.
         primary = _primary_service_from_missing(missing_list) or preferred_from_gap
@@ -1073,21 +1116,32 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
             )
 
     # ---------- 5) Conversion Infrastructure ----------
-    vm["conversion_infrastructure"]["online_booking"] = (
-        signals.get("signal_has_automated_scheduling") is True
-        or (signals.get("signal_booking_conversion_path") or "").startswith("Online booking")
-    )
-    vm["conversion_infrastructure"]["contact_form"] = signals.get("signal_has_contact_form") is True
-    vm["conversion_infrastructure"]["phone_prominent"] = signals.get("signal_has_phone") is True
-    vm["conversion_infrastructure"]["mobile_optimized"] = signals.get("signal_mobile_friendly") is True
-    page_load = signals.get("signal_page_load_time_ms")
-    if page_load is not None:
-        vm["conversion_infrastructure"]["page_load_ms"] = page_load
+    crawl_conf = str(svc.get("crawl_confidence") or "").strip().lower()
+    low_crawl = crawl_conf == "low"
+    if low_crawl:
+        vm["conversion_infrastructure"]["online_booking"] = None
+        vm["conversion_infrastructure"]["contact_form"] = None
+        vm["conversion_infrastructure"]["phone_prominent"] = signals.get("signal_has_phone") is True
+        vm["conversion_infrastructure"]["mobile_optimized"] = signals.get("signal_mobile_friendly") is True
+        vm["conversion_infrastructure"]["page_load_ms"] = signals.get("signal_page_load_time_ms")
+    else:
+        vm["conversion_infrastructure"]["online_booking"] = (
+            signals.get("signal_has_automated_scheduling") is True
+            or (signals.get("signal_booking_conversion_path") or "").startswith("Online booking")
+        )
+        vm["conversion_infrastructure"]["contact_form"] = signals.get("signal_has_contact_form") is True
+        vm["conversion_infrastructure"]["phone_prominent"] = signals.get("signal_has_phone") is True
+        vm["conversion_infrastructure"]["mobile_optimized"] = signals.get("signal_mobile_friendly") is True
+        page_load = signals.get("signal_page_load_time_ms")
+        if page_load is not None:
+            vm["conversion_infrastructure"]["page_load_ms"] = page_load
     vm["conversion_structure"] = {
         "phone_clickable": signals.get("signal_phone_clickable"),
         "cta_count": signals.get("signal_cta_count"),
         "form_single_or_multi_step": signals.get("signal_form_single_or_multi_step"),
     }
+    if low_crawl:
+        vm["conversion_structure"]["evaluation_note"] = "Not Evaluated (Low Crawl Confidence)"
 
     review_intel = lead.get("review_intelligence") or signals.get("signal_review_intelligence")
     if isinstance(review_intel, dict):
@@ -1126,6 +1180,8 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
         detected_canonical,
         missing_canonical,
         paid_active=bool(runs_google or runs_meta),
+        suppress_service_gap=suppress_service_gap,
+        suppress_conversion_absence_claims=suppress_conversion_absence_claims,
     )
 
     # ---------- 7) Intervention Plan (prefer objective_intelligence.intervention_plan; max 3 steps) ----------
@@ -1159,7 +1215,8 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
         tactical_parts = []
         if missing_canonical:
             tactical_parts.append("missing pages: " + ", ".join(missing_canonical))
-        tactical_parts.append("Schema: " + ("Detected" if schema is True else "Not detected"))
+        if not tactical_parts:
+            tactical_parts.append("Assess service page coverage and conversion capture.")
         vm["intervention_fallback"] = {
             "strategic_frame": f"Increase revenue via {primary_lev}.",
             "tactical_levers": " ".join(tactical_parts) if tactical_parts else "—",
@@ -1186,17 +1243,15 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
             evidence_list.append(f"Rating strength vs market: {rating_strength} ({rt} vs local avg {float(comp.get('avg_rating')):.1f})")
         except (TypeError, ValueError):
             pass
-    schema_txt = "Detected" if schema is True else "Not detected"
-    evidence_list.append(f"Schema: {schema_txt}")
     pages_crawled = svc.get("pages_crawled")
     if pages_crawled is not None:
         evidence_list.append(f"Pages crawled: {pages_crawled} (sitemap + nav).")
     service_page_count = svc.get("service_page_count")
     if service_page_count is not None:
         evidence_list.append(f"Service pages: {service_page_count} (path/keyword match to service buckets).")
-    schema_pages = svc.get("service_pages_with_faq_or_schema")
-    if schema_pages is not None and service_page_count is not None:
-        evidence_list.append(f"Schema/FAQ coverage: {schema_pages} of {service_page_count} service pages.")
+    faq_count = svc.get("service_pages_with_faq_or_schema")
+    if faq_count is not None and service_page_count is not None and faq_count > 0:
+        evidence_list.append(f"FAQ sections: {faq_count} of {service_page_count} service pages.")
     phone_clickable = signals.get("signal_phone_clickable")
     if phone_clickable is not None:
         evidence_list.append(f"Phone clickable on homepage (tel:): {'Yes' if phone_clickable else 'No'}.")
@@ -1221,6 +1276,8 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
             e_lower = e_clean.lower()
             if canonical_review_line and e_lower.startswith("review count vs market:"):
                 continue
+            if _suppressed_evidence_line(e_clean, suppress_service_gap, suppress_conversion_absence_claims):
+                continue
             evidence_list.append(e_clean)
     if not evidence_from_oi:
         rbc = (obj.get("root_bottleneck_classification") or {}) if obj else {}
@@ -1231,9 +1288,17 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
                 e_lower = e_clean.lower()
                 if canonical_review_line and e_lower.startswith("review count vs market:"):
                     continue
+                if _suppressed_evidence_line(e_clean, suppress_service_gap, suppress_conversion_absence_claims):
+                    continue
                 evidence_list.append(e_clean)
     for e in _flatten_supporting_evidence(s60, max_items=5):
+        if _suppressed_evidence_line(e, suppress_service_gap, suppress_conversion_absence_claims):
+            continue
         evidence_list.append(e)
+    if suppress_conversion_absence_claims:
+        evidence_list.append("Conversion infrastructure not fully evaluated (limited crawl depth).")
+    if suppress_service_gap:
+        evidence_list.append("Service visibility not fully evaluated (limited crawl depth).")
     vm["evidence_bullets"] = _dedupe_evidence(evidence_list, max_items=20)
 
     return vm
@@ -1335,8 +1400,6 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
             parts.append(f"<p><strong>Lead reviews:</strong> {_h(g_lead_reviews)}</p>")
         if g_dist is not None:
             parts.append(f"<p><strong>Distance:</strong> {_h(g_dist)} mi</p>")
-        if gap_block.get("schema_missing"):
-            parts.append(f"<p><strong>Schema:</strong> Missing</p>")
         sections.append(
             "<section class=\"brief-section brief-service-gap\">\n  <h2>Competitive Service Gap</h2>\n  "
             + "\n  ".join(parts)
@@ -1361,15 +1424,15 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
                 f"<p><strong>Service pages:</strong> Target {_h(t_pages)} pages with service-like paths "
                 f"(e.g. /implants, /cosmetic).</p>"
             )
-        t_schema = cd.get("target_pages_with_faq_schema")
-        c_schema = cd.get("competitor_avg_pages_with_schema")
-        if c_schema is not None:
+        t_faq = cd.get("target_pages_with_faq_schema")
+        c_faq = cd.get("competitor_avg_pages_with_schema")
+        if c_faq is not None and t_faq:
             parts.append(
-                f"<p><strong>FAQ/schema coverage:</strong> {_h(t_schema)} of {_h(t_pages)} service pages "
-                f"vs competitor avg {float(c_schema):.1f} pages</p>"
+                f"<p><strong>FAQ coverage:</strong> {_h(t_faq)} of {_h(t_pages)} service pages "
+                f"vs competitor avg {float(c_faq):.1f} pages</p>"
             )
-        elif t_schema is not None:
-            parts.append(f"<p><strong>FAQ/schema coverage:</strong> {_h(t_schema)} of {_h(t_pages)} service pages</p>")
+        elif t_faq is not None and t_faq > 0:
+            parts.append(f"<p><strong>FAQ coverage:</strong> {_h(t_faq)} of {_h(t_pages)} service pages</p>")
         t_words = cd.get("target_avg_word_count_service_pages")
         t_min_words = cd.get("target_min_word_count_service_pages")
         t_max_words = cd.get("target_max_word_count_service_pages")
@@ -1471,7 +1534,7 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
                 + "\n</section>"
             )
 
-    # 4) Local SEO & High-Value Service Pages (schema, GBP, service pages; revenue only in Executive Diagnosis)
+    # 4) Local SEO & High-Value Service Pages (GBP, service pages; revenue only in Executive Diagnosis)
     ht = vm.get("high_ticket_gaps") or {}
     if ht:
         parts = []
@@ -1481,8 +1544,6 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
         if ht.get("missing_landing_pages"):
             items = " ".join(f"<li>{_h(x)}</li>" for x in ht["missing_landing_pages"])
             parts.append(f"<p><strong>Missing service/landing pages:</strong></p><ul>{items}</ul>")
-        if "schema" in ht:
-            parts.append(f"<p><strong>Schema:</strong> {_h(ht['schema'])}</p>")
         if ht.get("service_level_upside"):
             items = " ".join(
                 f"<li>{_h(x.get('service', x) if isinstance(x, dict) else x)}: {_h(x.get('upside', ''))}</li>"
@@ -1557,10 +1618,10 @@ def render_revenue_brief_html(lead: Dict[str, Any], title: str = "Revenue Intell
     ci = vm.get("conversion_infrastructure") or {}
     if ci:
         parts = [
-            f"<p><strong>Online Booking:</strong> {'Yes' if ci.get('online_booking') else 'No'}</p>",
-            f"<p><strong>Contact Form:</strong> {'Yes' if ci.get('contact_form') else 'No'}</p>",
-            f"<p><strong>Phone Prominent:</strong> {'Yes' if ci.get('phone_prominent') else 'No'}</p>",
-            f"<p><strong>Mobile Optimized:</strong> {'Yes' if ci.get('mobile_optimized') else 'No'}</p>",
+            f"<p><strong>Online Booking:</strong> {_yes_no_unknown(ci.get('online_booking'))}</p>",
+            f"<p><strong>Contact Form:</strong> {_yes_no_unknown(ci.get('contact_form'))}</p>",
+            f"<p><strong>Phone Prominent:</strong> {_yes_no_unknown(ci.get('phone_prominent'))}</p>",
+            f"<p><strong>Mobile Optimized:</strong> {_yes_no_unknown(ci.get('mobile_optimized'))}</p>",
         ]
         if ci.get("page_load_ms") is not None:
             parts.append(f"<p><strong>Page Load:</strong> {_h(ci['page_load_ms'])} ms</p>")

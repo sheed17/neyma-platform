@@ -9,6 +9,7 @@ Used for revenue leverage and intervention quality.
 import re
 import logging
 import json
+import html as html_lib
 from typing import Dict, Any, List, Optional, Set
 from urllib.parse import urljoin, urlparse
 
@@ -21,15 +22,78 @@ from pipeline.high_value_services_config import (
     STRONG_COVERAGE_RATIO_FOR_LOW_LEVERAGE,
     STRONG_SERP_RATIO_FOR_LOW_LEVERAGE,
 )
+from pipeline.practice_classifier import classify_practice_type
+from pipeline.service_taxonomy import get_expected_services
+from pipeline.crawl_manager import CrawlManager
 from pipeline.service_page_qualification_agent_v2 import qualify_service_page_candidate_v2
-from pipeline.internal_link_support import (
-    CrawlConfig as InternalLinkCrawlConfig,
-    build_internal_link_graph,
-    compute_inbound_internal_link_support,
-    wiring_status,
-)
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_REVENUE_WEIGHTS: Dict[str, int] = {
+    "implants": 5,
+    "invisalign": 4,
+    "orthodontics": 4,
+    "veneers": 4,
+    "cosmetic_dentistry": 3,
+    "all_on_4": 5,
+    "full_mouth_reconstruction": 5,
+    "emergency_dentistry": 3,
+    "crowns": 3,
+    "root_canal": 3,
+    "pediatric_dentistry": 2,
+    "teeth_whitening": 2,
+    "braces": 4,
+    "clear_aligners": 4,
+    "retainers": 3,
+    "early_orthodontic_treatment": 3,
+    "surgical_orthodontics": 4,
+    "dental_implants": 5,
+    "wisdom_teeth_removal": 4,
+    "bone_grafting": 4,
+    "full_arch_implants": 5,
+    "sedation_dentistry": 3,
+    "children_dentistry": 2,
+    "fluoride_treatment": 2,
+    "sealants": 2,
+    "space_maintainers": 2,
+    "pediatric_cleanings": 2,
+    "gum_disease_treatment": 4,
+    "scaling_and_root_planing": 3,
+    "laser_gum_therapy": 3,
+}
+
+_SERVICE_ALIASES_BY_NAME: Dict[str, List[str]] = {
+    "implants": ["implants", "dental implants", "implant"],
+    "invisalign": ["invisalign", "clear aligners", "aligners"],
+    "orthodontics": ["orthodontics", "orthodontic", "braces"],
+    "veneers": ["veneers", "veneer"],
+    "cosmetic dentistry": ["cosmetic dentistry", "cosmetic", "smile makeover"],
+    "all-on-4": ["all-on-4", "all on 4", "all on four"],
+    "full mouth reconstruction": ["full mouth reconstruction", "full-mouth reconstruction", "full mouth rehab"],
+    "emergency dentistry": ["emergency dentistry", "emergency dentist", "urgent dental"],
+    "crowns": ["crowns", "crown", "dental crowns"],
+    "root canal": ["root canal", "root canals", "endodontics"],
+    "pediatric dentistry": ["pediatric dentistry", "kids dentist", "children dentist"],
+    "teeth whitening": ["teeth whitening", "whitening"],
+    "braces": ["braces", "orthodontic braces"],
+    "clear aligners": ["clear aligners", "clear aligner", "aligners"],
+    "retainers": ["retainers", "retainer"],
+    "early orthodontic treatment": ["early orthodontic treatment", "phase 1 orthodontics", "interceptive orthodontics"],
+    "surgical orthodontics": ["surgical orthodontics", "orthognathic surgery"],
+    "dental implants": ["dental implants", "implants", "implant"],
+    "wisdom teeth removal": ["wisdom teeth removal", "wisdom teeth extraction", "third molar extraction"],
+    "bone grafting": ["bone grafting", "bone graft"],
+    "full arch implants": ["full arch implants", "full-arch implants", "all-on-x"],
+    "sedation dentistry": ["sedation dentistry", "iv sedation", "oral sedation"],
+    "children dentistry": ["children dentistry", "kids dentistry", "pediatric dentistry"],
+    "fluoride treatment": ["fluoride treatment", "fluoride"],
+    "sealants": ["sealants", "dental sealants"],
+    "space maintainers": ["space maintainers", "space maintainer"],
+    "pediatric cleanings": ["pediatric cleanings", "kids cleaning", "children cleaning"],
+    "gum disease treatment": ["gum disease treatment", "periodontal treatment", "periodontics"],
+    "scaling and root planing": ["scaling and root planing", "deep cleaning"],
+    "laser gum therapy": ["laser gum therapy", "laser periodontal therapy"],
+}
 
 # ---------------------------------------------------------------------------
 # Canonical service buckets — single source of truth for aliasing
@@ -86,6 +150,85 @@ GENERAL_KEYWORDS = [
 CONTENT_DEDICATION_THRESHOLD = 3
 # Minimum page text length (chars) to be considered substantial
 SUBSTANTIAL_PAGE_LENGTH = 300
+
+
+class ServiceStatus:
+    DEDICATED_PAGE = "dedicated"
+    STRONG_UMBRELLA = "mention_only"
+    WEAK_PRESENCE = "mention_only"
+    MISSING = "missing"
+    NOT_EVALUATED = "unknown"
+
+    CANONICAL = {"dedicated", "mention_only", "missing", "unknown"}
+
+
+EXCLUDED_PATTERNS = [
+    "/feed",
+    "/category/",
+    "/tag/",
+    "/author/",
+    "/blog/",
+    "/blog",
+    "/article/",
+    "/news/",
+    "/archive/",
+    "/insights/",
+    "wp-json",
+    "?",
+    ".xml",
+]
+
+VERTICAL_EXPECTED_PAGES: Dict[str, List[Dict[str, str]]] = {
+    "dental": [
+        {"slug": "invisalign", "title": "Invisalign", "priority": "high"},
+        {"slug": "implants", "title": "Dental Implants", "priority": "high"},
+        {"slug": "all-on-4", "title": "All-on-4", "priority": "high"},
+        {"slug": "veneers", "title": "Veneers", "priority": "medium"},
+        {"slug": "whitening", "title": "Teeth Whitening", "priority": "medium"},
+        {"slug": "emergency", "title": "Emergency Dental", "priority": "high"},
+        {"slug": "pediatric", "title": "Pediatric Dentistry", "priority": "medium"},
+        {"slug": "orthodontics", "title": "Orthodontics", "priority": "medium"},
+        {"slug": "cleanings", "title": "Teeth Cleanings", "priority": "low"},
+        {"slug": "crowns", "title": "Crowns & Bridges", "priority": "low"},
+    ]
+}
+
+CTA_PATTERN_BY_TYPE: Dict[str, List[str]] = {
+    "Book": [
+        r"\bbook\b",
+        r"\bbook now\b",
+        r"\bbook appointment\b",
+    ],
+    "Schedule": [
+        r"\bschedule\b",
+        r"\brequest appointment\b",
+        r"\bappointment\b",
+    ],
+    "Contact": [
+        r"\bcontact\b",
+        r"\bget started\b",
+        r"\bsubmit\b",
+    ],
+    "Call": [
+        r"\bcall\b",
+        r"\bcall now\b",
+        r"tel:",
+    ],
+}
+
+CTA_HREF_HINTS_BY_TYPE: Dict[str, List[str]] = {
+    "Book": ["book", "book-now", "booknow"],
+    "Schedule": ["schedule", "appointment", "request-appointment"],
+    "Contact": ["contact", "get-started", "contact-us"],
+    "Call": ["tel:", "call", "phone"],
+}
+
+SERVICE_STATUS_WEIGHTS: Dict[str, float] = {
+    "dedicated": 1.0,
+    "mention_only": 0.0,
+    "missing": 0.0,
+    "unknown": 0.0,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -407,25 +550,31 @@ def _extract_internal_links(html: str, base_url: str) -> List[str]:
     return out
 
 
+def _strip_nav_header_footer(html: str) -> str:
+    out = html or ""
+    out = re.sub(r"<nav[\s>][\s\S]*?</nav>", " ", out, flags=re.I)
+    out = re.sub(r"<header[\s>][\s\S]*?</header>", " ", out, flags=re.I)
+    out = re.sub(r"<footer[\s>][\s\S]*?</footer>", " ", out, flags=re.I)
+    return out
+
+
 def _extract_conversion_metrics(html: str, page_text: str, base_url: str) -> Dict[str, Any]:
-    lower = (html or "").lower()
-    cta_patterns = [
-        r"\bbook\b",
-        r"\bschedule\b",
-        r"\brequest appointment\b",
-        r"\bcontact\b",
-        r"\bcall now\b",
-        r"\bget started\b",
-        r"\bsubmit\b",
-    ]
+    main_html = _strip_nav_header_footer(html)
+    lower = main_html.lower()
+    cta_type_counts: Dict[str, int] = {}
     cta_count = 0
-    for pat in cta_patterns:
-        cta_count += len(re.findall(pat, lower))
+    for cta_type, patterns in CTA_PATTERN_BY_TYPE.items():
+        type_hits = 0
+        for pat in patterns:
+            type_hits += len(re.findall(pat, lower))
+        cta_type_counts[cta_type] = int(type_hits)
+        cta_count += int(type_hits)
     booking_link = bool(re.search(r'href\s*=\s*["\'][^"\']*(book|schedule|appointment|calendly|zocdoc)[^"\']*["\']', lower))
     financing_mentioned = bool(re.search(r"\b(financing|payment plan|monthly payment|carecredit|affirm)\b", page_text))
     faq_section = bool(re.search(r"\bfaq\b|frequently asked questions", lower))
     before_after = bool(re.search(r"before\s*(and|&)\s*after|smile gallery", lower))
     internal_links = len(_extract_internal_links(html, base_url))
+    clickable_cta_metrics = _extract_clickable_cta_metrics(main_html)
     return {
         "cta_count": int(cta_count),
         "booking_link": bool(booking_link),
@@ -433,7 +582,111 @@ def _extract_conversion_metrics(html: str, page_text: str, base_url: str) -> Dic
         "faq_section": bool(faq_section),
         "before_after_section": bool(before_after),
         "internal_links": int(internal_links),
+        "cta_type_counts": cta_type_counts,
+        "clickable_cta_by_type": dict(clickable_cta_metrics.get("clickable_cta_by_type") or {}),
+        "clickable_cta_count": int(clickable_cta_metrics.get("clickable_cta_count") or 0),
     }
+
+
+def _extract_attr_value(tag_html: str, attr_name: str) -> str:
+    m = re.search(
+        rf'{re.escape(attr_name)}\s*=\s*["\']([^"\']*)["\']',
+        tag_html or "",
+        re.I,
+    )
+    return html_lib.unescape(str(m.group(1) or "")).strip() if m else ""
+
+
+def _strip_element_text(raw_html: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", raw_html or "", flags=re.I)
+    text = html_lib.unescape(text)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _classify_clickable_cta_type(text: str, href: str) -> Optional[str]:
+    normalized_text = str(text or "").lower()
+    normalized_href = str(href or "").strip().lower()
+    if normalized_href.startswith("tel:"):
+        return "Call"
+    for cta_type in ("Book", "Schedule", "Contact", "Call"):
+        for pat in CTA_PATTERN_BY_TYPE.get(cta_type, []):
+            if re.search(pat, normalized_text, re.I):
+                return cta_type
+        for hint in CTA_HREF_HINTS_BY_TYPE.get(cta_type, []):
+            if hint and hint in normalized_href:
+                return cta_type
+    return None
+
+
+def _extract_clickable_cta_metrics(html: str) -> Dict[str, Any]:
+    counts: Dict[str, int] = {cta_type: 0 for cta_type in CTA_PATTERN_BY_TYPE.keys()}
+
+    # Counts each matched clickable element occurrence (no cross-page dedupe).
+    for m in re.finditer(r"<a\b([^>]*)>([\s\S]*?)</a>", html or "", re.I):
+        attrs = str(m.group(1) or "")
+        href = _extract_attr_value(attrs, "href")
+        text = _strip_element_text(m.group(2) or "")
+        cta_type = _classify_clickable_cta_type(text, href)
+        if cta_type:
+            counts[cta_type] += 1
+
+    for m in re.finditer(r"<button\b([^>]*)>([\s\S]*?)</button>", html or "", re.I):
+        attrs = str(m.group(1) or "")
+        text = _strip_element_text(m.group(2) or "")
+        href = _extract_attr_value(attrs, "href")
+        cta_type = _classify_clickable_cta_type(text, href)
+        if cta_type:
+            counts[cta_type] += 1
+
+    for m in re.finditer(
+        r"<([a-z0-9]+)\b([^>]*)role\s*=\s*[\"']button[\"'][^>]*>([\s\S]*?)</\1>",
+        html or "",
+        re.I,
+    ):
+        tag_name = str(m.group(1) or "").lower()
+        if tag_name == "button":
+            continue
+        attrs = str(m.group(2) or "")
+        href = _extract_attr_value(attrs, "href")
+        text = _strip_element_text(m.group(3) or "")
+        cta_type = _classify_clickable_cta_type(text, href)
+        if cta_type:
+            counts[cta_type] += 1
+
+    for m in re.finditer(r"<input\b([^>]*)>", html or "", re.I):
+        attrs = str(m.group(1) or "")
+        input_type = _extract_attr_value(attrs, "type").lower()
+        if input_type not in {"submit", "button"}:
+            continue
+        value_text = _extract_attr_value(attrs, "value")
+        cta_type = _classify_clickable_cta_type(value_text, "")
+        if cta_type:
+            counts[cta_type] += 1
+
+    return {
+        "clickable_cta_by_type": counts,
+        "clickable_cta_count": int(sum(counts.values())),
+    }
+
+
+def _sitewide_contact_form_detected(pages: List[Dict[str, Any]]) -> bool:
+    tokens = (
+        "<form",
+        "gravityforms",
+        "wpforms",
+        "jotform",
+        "calendly",
+        "smilesnap",
+        "orthofi",
+        "appointment",
+    )
+    for page in pages:
+        html = str(page.get("html") or "").lower()
+        if not html:
+            continue
+        if any(tok in html for tok in tokens):
+            return True
+    return False
 
 
 def _is_homepage_url(url: str) -> bool:
@@ -499,6 +752,216 @@ def _is_geo_or_location_page(url: str, headings: str, city_tokens: Set[str]) -> 
     if city_tokens and any(tok in headings for tok in city_tokens):
         return True
     return False
+
+
+def _extract_meta_text(html: str) -> str:
+    parts: List[str] = []
+    for m in re.finditer(
+        r"<meta[^>]+name\s*=\s*[\"'](?:description|keywords)[\"'][^>]+content\s*=\s*[\"']([^\"']+)[\"'][^>]*>",
+        html or "",
+        re.I,
+    ):
+        parts.append(str(m.group(1) or ""))
+    return " ".join(parts).lower()
+
+
+def _has_geo_schema_signal(html: str) -> bool:
+    lower = (html or "").lower()
+    for m in re.finditer(
+        r"<script[^>]*type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+        html or "",
+        re.I | re.S,
+    ):
+        raw = (m.group(1) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+        nodes: List[Dict[str, Any]] = []
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("@graph"), list):
+                nodes.extend([n for n in parsed.get("@graph") if isinstance(n, dict)])
+            nodes.append(parsed)
+        elif isinstance(parsed, list):
+            nodes.extend([n for n in parsed if isinstance(n, dict)])
+        for node in nodes:
+            types = node.get("@type")
+            type_vals: List[str] = []
+            if isinstance(types, str):
+                type_vals = [types.lower()]
+            elif isinstance(types, list):
+                type_vals = [str(t).lower() for t in types]
+            is_local = any(t in ("localbusiness", "dentist", "medicalbusiness") for t in type_vals)
+            if not is_local:
+                continue
+            if node.get("areaServed") is not None or node.get("areaserved") is not None or node.get("geo") is not None:
+                return True
+    return (
+        any(x in lower for x in ("schema.org/localbusiness", "schema.org/dentist", "schema.org/medicalbusiness"))
+        and any(x in lower for x in ("areaserved", "\"geo\"", " itemprop=\"geo\""))
+    )
+
+
+def _geo_signals_for_page(
+    *,
+    url: str,
+    html: str,
+    headings: str,
+    page_text: str,
+    city: Optional[str],
+) -> List[str]:
+    signals: List[str] = []
+    lower_url = str(url or "").lower()
+    lower_headings = str(headings or "").lower()
+    lower_body = str(page_text or "").lower()
+    lower_meta = _extract_meta_text(html)
+    city_name = str(city or "").strip().lower()
+
+    h1_text = _extract_h1_text(html)
+    title_text = _extract_title(html)
+
+    if city_name:
+        if (
+            city_name in lower_url
+            or city_name in title_text
+            or city_name in h1_text
+        ):
+            signals.append("city")
+
+    near_phrases = ["near me", "near you"]
+    near_match = any(p in lower_url or p in title_text or p in h1_text or p in lower_body for p in near_phrases)
+    if city_name and any(f"{prefix} {city_name}" in (lower_url + " " + title_text + " " + h1_text + " " + lower_body) for prefix in ("in", "serving")):
+        near_match = True
+    if near_match:
+        signals.append("near-me")
+
+    if _has_geo_schema_signal(html):
+        signals.append("schema")
+
+    if city_name and (city_name in lower_meta):
+        signals.append("meta")
+    elif any(p in lower_meta for p in near_phrases):
+        signals.append("meta")
+
+    return signals
+
+
+_EXPECTED_PAGE_ALIASES: Dict[str, List[str]] = {
+    "invisalign": ["invisalign", "clear aligner", "clear aligners", "aligner", "aligners"],
+    "implants": ["implant", "implants", "dental implant", "dental implants"],
+    "all-on-4": ["all-on-4", "all on 4", "all-on-four", "all on four", "full arch implant", "full-arch implant"],
+    "veneers": ["veneer", "veneers", "porcelain veneer", "porcelain veneers"],
+    "whitening": ["whitening", "teeth whitening", "tooth whitening"],
+    "emergency": ["emergency", "emergency dental", "emergency dentist", "urgent dental"],
+    "pediatric": ["pediatric", "pediatric dentistry", "children dentistry", "kids dentist", "kids dentistry"],
+    "orthodontics": ["orthodontic", "orthodontics", "braces", "clear aligner", "clear aligners", "invisalign"],
+    "cleanings": ["cleaning", "cleanings", "teeth cleaning", "dental cleaning", "prophylaxis"],
+    "crowns": ["crown", "crowns", "dental crown", "dental crowns", "bridge", "bridges"],
+}
+
+
+def _alias_tokens(alias: str) -> List[str]:
+    return [t for t in re.findall(r"[a-z0-9]+", str(alias or "").lower()) if t]
+
+
+def _path_matches_alias(path_or_url: str, aliases: List[str]) -> bool:
+    path = urlparse(path_or_url).path.lower()
+    path_tokens = set(re.findall(r"[a-z0-9]+", path.replace("_", "-")))
+    for alias in aliases:
+        tokens = _alias_tokens(alias)
+        if not tokens:
+            continue
+        if len(tokens) == 1:
+            if tokens[0] in path_tokens:
+                return True
+            continue
+        if all(tok in path_tokens for tok in tokens):
+            return True
+    return False
+
+
+def _expected_aliases_for_slug(slug: str, title: str) -> List[str]:
+    base = list(_EXPECTED_PAGE_ALIASES.get(slug) or [])
+    if title:
+        base.append(title.lower())
+    slug_words = slug.replace("-", " ").replace("_", " ").strip().lower()
+    if slug_words:
+        base.append(slug_words)
+    # Stable order + dedupe
+    seen: Set[str] = set()
+    out: List[str] = []
+    for a in base:
+        cleaned = re.sub(r"\s+", " ", str(a or "").strip().lower())
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
+
+
+def _text_contains_alias(text: str, aliases: List[str]) -> bool:
+    lower = str(text or "").lower()
+    for alias in aliases:
+        if not alias:
+            continue
+        if re.search(rf"\b{re.escape(alias)}\b", lower):
+            return True
+    return False
+
+
+def _detect_missing_service_pages(
+    crawled_urls: List[str],
+    vertical: str,
+    pages: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, str]]:
+    vertical_key = str(vertical or "").strip().lower()
+    if vertical_key == "dentist":
+        vertical_key = "dental"
+    expected = VERTICAL_EXPECTED_PAGES.get(vertical_key) or []
+    lower_urls = [str(u or "").strip().lower() for u in (crawled_urls or []) if str(u or "").strip()]
+    page_rows = list(pages or [])
+    out: List[Dict[str, str]] = []
+    for page in expected:
+        slug = str(page.get("slug") or "").strip().lower()
+        if not slug:
+            continue
+        title = str(page.get("title") or slug)
+        aliases = _expected_aliases_for_slug(slug, title)
+
+        found = any(_path_matches_alias(u, aliases) for u in lower_urls)
+        if not found:
+            for p in page_rows:
+                p_url = str(p.get("url") or "")
+                p_h1 = str(p.get("h1") or "")
+                p_headings = str(p.get("headings") or "")
+                p_text = str(p.get("text") or "")
+                p_wc = int(p.get("word_count") or 0)
+                # Accept URL/path match OR clear heading/title evidence.
+                if _path_matches_alias(p_url, aliases):
+                    found = True
+                    break
+                if _text_contains_alias(p_h1, aliases) or _text_contains_alias(p_headings, aliases):
+                    found = True
+                    break
+                # Fallback for generic treatment pages: require substantial content mention.
+                if p_wc >= SUBSTANTIAL_PAGE_LENGTH and _text_contains_alias(p_text, aliases):
+                    found = True
+                    break
+        if found:
+            continue
+        out.append(
+            {
+                "slug": slug,
+                "title": title,
+                "priority": str(page.get("priority") or "low"),
+                "reason": (
+                    f"No crawled URL or strong on-page signal matched service '{slug}' "
+                    "— page may not exist, be weakly represented, or be inaccessible in crawl."
+                ),
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -579,12 +1042,139 @@ def _service_catalog(vertical: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _slugify_service_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
+    return slug or "service"
+
+
+def _taxonomy_service_catalog(expected_services: List[str]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for display_name in expected_services or []:
+        display = str(display_name or "").strip()
+        if not display:
+            continue
+        slug = _slugify_service_name(display)
+        aliases = list(_SERVICE_ALIASES_BY_NAME.get(display.lower()) or [display.lower(), display.lower().replace("-", " ")])
+        if slug.replace("_", " ") not in aliases:
+            aliases.append(slug.replace("_", " "))
+        out.append(
+            {
+                "slug": slug,
+                "display_name": display,
+                "revenue_weight": int(_DEFAULT_REVENUE_WEIGHTS.get(slug, 3)),
+                "min_word_threshold": int(DEPTH_STRONG_MIN_WORDS),
+                "min_internal_links": int(INTERNAL_LINKS_MIN_STRONG),
+                "aliases": sorted(set(aliases), key=len, reverse=True),
+            }
+        )
+    return out
+
+
 def _depth_score(word_count: int) -> str:
     if word_count >= DEPTH_STRONG_MIN_WORDS:
         return "strong"
     if word_count >= DEPTH_MODERATE_MIN_WORDS:
         return "moderate"
     return "weak"
+
+
+def _tiered_service_status(
+    *,
+    url_match: bool,
+    h1_match: bool,
+    keyword_count: int,
+    word_count: int,
+    cta_count: int,
+) -> str:
+    # Dedicated requires strong semantic/URL alignment and substantial content.
+    if word_count >= SUBSTANTIAL_PAGE_LENGTH and (url_match or h1_match):
+        return ServiceStatus.DEDICATED_PAGE
+    # Any keyword/nav/call-to-action presence is mention-only, never dedicated.
+    if keyword_count > 0 or cta_count > 0 or h1_match or url_match:
+        return ServiceStatus.STRONG_UMBRELLA
+    return ServiceStatus.MISSING
+
+
+def _canonical_service_status(raw_status: str) -> str:
+    s = str(raw_status or "").strip().lower()
+    if s in {ServiceStatus.DEDICATED_PAGE, "dedicated_page", "strong"}:
+        return ServiceStatus.DEDICATED_PAGE
+    if s in {
+        ServiceStatus.STRONG_UMBRELLA,
+        ServiceStatus.WEAK_PRESENCE,
+        "strong_umbrella",
+        "weak_presence",
+        "weak",
+        "weak_stub_page",
+        "umbrella_only",
+        "content_match",
+        "evidence_match",
+        "moderate",
+    }:
+        return ServiceStatus.STRONG_UMBRELLA
+    if s in {ServiceStatus.NOT_EVALUATED, "not_evaluated"}:
+        return ServiceStatus.NOT_EVALUATED
+    return ServiceStatus.MISSING
+
+
+def _qualification_from_service_status(service_status: str) -> str:
+    return _canonical_service_status(service_status)
+
+
+def _is_excluded_candidate_url(url_or_path: str) -> bool:
+    lower = str(url_or_path or "").lower()
+    return any(p in lower for p in EXCLUDED_PATTERNS)
+
+
+def _compute_service_confidence(
+    *,
+    matched_url: bool,
+    title_match: bool,
+    h1_match: bool,
+    keyword_frequency: int,
+    word_count: int,
+) -> float:
+    score = 0.0
+    if matched_url:
+        score += 0.3
+    if title_match:
+        score += 0.2
+    if h1_match:
+        score += 0.2
+    if keyword_frequency >= 5:
+        score += 0.2
+    if word_count > 400:
+        score += 0.1
+    return round(min(1.0, score), 2)
+
+
+def _confidence_level(score: float) -> str:
+    if score >= 0.75:
+        return "high"
+    if score >= 0.5:
+        return "medium"
+    return "low"
+
+
+def classify_page_strength(word_count: int, confidence_score: float) -> str:
+    if float(confidence_score or 0.0) < 0.3:
+        return "Not Evaluated"
+    if int(word_count or 0) < 300:
+        return "Thin"
+    if int(word_count or 0) < 800:
+        return "Moderate"
+    return "Strong"
+
+
+def _weighted_coverage_score(rows: List[Dict[str, Any]]) -> float:
+    if not rows:
+        return 0.0
+    total = len(rows)
+    weighted = 0.0
+    for r in rows:
+        status = str(r.get("service_status") or "").strip().lower()
+        weighted += float(SERVICE_STATUS_WEIGHTS.get(status, 0.0))
+    return round(weighted / float(total), 3)
 
 
 def _classify_optimization_tier(
@@ -619,48 +1209,15 @@ def _classify_optimization_tier(
 
 
 _STATUS_RANK = {
-    "strong": 4,
-    "moderate": 3,
-    "weak": 2,
-    "weak_stub_page": 1,
+    ServiceStatus.DEDICATED_PAGE: 4,
+    ServiceStatus.STRONG_UMBRELLA: 3,
     "missing": 0,
+    ServiceStatus.NOT_EVALUATED: 1,
 }
 
 
 def _status_rank(status: str) -> int:
     return int(_STATUS_RANK.get(str(status or "").strip().lower(), 0))
-
-
-def _strict_service_qualification_status(
-    *,
-    rule1_match: bool,
-    homepage_allowed: bool,
-    word_count: int,
-    keyword_density: float,
-    h1_match: bool,
-    structure_signal_any: bool,
-    internal_links_to_page: int,
-) -> str:
-    min_word_count = int(SERVICE_PAGE_CONFIG["min_word_count"])
-    stub_word_count_max = int(SERVICE_PAGE_CONFIG["stub_word_count_max"])
-    min_density = float(SERVICE_PAGE_CONFIG["min_keyword_density"])
-    min_internal_links = int(SERVICE_PAGE_CONFIG["min_internal_links"])
-
-    if not rule1_match:
-        return "missing"
-    if not homepage_allowed:
-        return "missing"
-
-    if word_count < stub_word_count_max or not h1_match or not structure_signal_any:
-        return "weak_stub_page"
-
-    if word_count < min_word_count or keyword_density < min_density:
-        return "weak"
-
-    if internal_links_to_page < min_internal_links:
-        return "moderate"
-
-    return "strong"
 
 
 def _safe_int(val: Any) -> int:
@@ -750,6 +1307,9 @@ def build_service_intelligence(
     city: Optional[str] = None,
     state: Optional[str] = None,
     vertical: str = "dentist",
+    place_data: Optional[Dict[str, Any]] = None,
+    use_playwright: bool = False,
+    playwright_mode: str = "full",
 ) -> Dict[str, Any]:
     """
     Build service_intelligence block with canonical bucket resolution.
@@ -759,6 +1319,14 @@ def build_service_intelligence(
     are merely mentioned, and flags truly missing opportunities.
     """
     out: Dict[str, Any] = {
+        "practice_type": "general_dentist",
+        "practice_classification_confidence": 0.3,
+        "practice_classification_signals": {},
+        "expected_services": [],
+        "expected_service_count": 0,
+        "crawl_confidence": "low",
+        "js_detected": False,
+        "suppress_service_gap": True,
         "high_ticket_procedures_detected": [],
         "general_services_detected": [],
         "missing_high_value_pages": [],
@@ -787,132 +1355,259 @@ def build_service_intelligence(
             "serp_visibility_ratio": 0.0,
         },
         "high_value_service_leverage": "low",
+        "crawl_method": "requests",
+        "deep_scan": False,
+        "cta_elements": [],
+        "cta_clickable_by_type": {},
+        "cta_clickable_count": 0,
+        "geo_intent_pages": [],
+        "missing_geo_pages": [],
     }
     if not (website_url or "").strip():
         return out
 
     base_url = website_url if website_url.startswith(("http://", "https://")) else "https://" + website_url
-    html = website_html or _fetch_html(base_url)
+    fetch_fn = _fetch_html
+    homepage_html = website_html
+    playwright_fetcher = None
+    playwright_fetch_summary: Optional[Dict[str, int]] = None
+    playwright_mode_norm = str(playwright_mode or "full").strip().lower()
+    if playwright_mode_norm not in {"full", "landing_only"}:
+        playwright_mode_norm = "full"
+    if use_playwright:
+        try:
+            from pipeline.playwright_fetch import PlaywrightFetcher
+
+            playwright_fetcher = PlaywrightFetcher()
+            homepage_html = None
+            out["crawl_method"] = "playwright" if playwright_mode_norm == "full" else "hybrid_playwright_landing_only"
+            out["deep_scan"] = True
+
+            def _playwright_with_fallback(url: str) -> Optional[str]:
+                rendered = playwright_fetcher.fetch(url)
+                if rendered:
+                    return rendered
+                logger.warning(
+                    "Playwright returned no HTML for %s; falling back to requests.",
+                    str(url)[:120],
+                )
+                return _fetch_html(url)
+
+            if playwright_mode_norm == "landing_only":
+                js_page_cap = 8
+                js_page_count = 0
+                js_fallback_count = 0
+                requests_page_count = 0
+                playwright_fetch_summary = {
+                    "playwright_pages": 0,
+                    "requests_pages": 0,
+                    "playwright_fallback_to_requests": 0,
+                }
+
+                def _is_landing_candidate_url(url: str) -> bool:
+                    norm = str(url or "").strip()
+                    if not norm:
+                        return False
+                    if not norm.startswith(("http://", "https://")):
+                        norm = "https://" + norm
+                    parsed = urlparse(norm)
+                    path = (parsed.path or "/").lower()
+                    # Always render homepage via JS path in deep scan mode.
+                    if path in {"", "/"}:
+                        return True
+                    if _is_service_like_path(norm) or _is_pricing_like_path(norm):
+                        return True
+                    landing_tokens = (
+                        "service", "services", "treatment", "treatments", "procedure", "procedures",
+                        "implant", "invisalign", "veneer", "cosmetic", "emergency", "crown",
+                        "orthodont", "braces", "aligner", "sedation", "whitening", "sleep-apnea",
+                    )
+                    return any(tok in path for tok in landing_tokens)
+
+                def _hybrid_fetch(url: str) -> Optional[str]:
+                    nonlocal js_page_count, requests_page_count, js_fallback_count
+                    if _is_landing_candidate_url(url) and js_page_count < js_page_cap:
+                        js_page_count += 1
+                        rendered = playwright_fetcher.fetch(url)
+                        if rendered:
+                            if playwright_fetch_summary is not None:
+                                playwright_fetch_summary["playwright_pages"] = js_page_count
+                            return rendered
+                        js_fallback_count += 1
+                        logger.warning(
+                            "Playwright landing-page fetch failed for %s; using requests fallback.",
+                            str(url)[:120],
+                        )
+                    requests_page_count += 1
+                    if playwright_fetch_summary is not None:
+                        playwright_fetch_summary["playwright_pages"] = js_page_count
+                        playwright_fetch_summary["requests_pages"] = requests_page_count
+                        playwright_fetch_summary["playwright_fallback_to_requests"] = js_fallback_count
+                    return _fetch_html(url)
+
+                fetch_fn = _hybrid_fetch
+            else:
+                fetch_fn = _playwright_with_fallback
+        except Exception as exc:
+            logger.warning(
+                "Playwright unavailable for %s, falling back to requests crawl: %s",
+                base_url[:120],
+                exc,
+            )
+            out["crawl_method"] = "requests_fallback_playwright_unavailable"
+            out["crawl_warning"] = "Playwright unavailable; used requests fallback."
+
+    html = homepage_html or fetch_fn(base_url)
     if not html:
+        if playwright_fetcher is not None:
+            try:
+                playwright_fetcher.close()
+            except Exception as exc:
+                logger.warning("Failed to close Playwright fetcher for %s: %s", base_url[:120], exc)
         return out
 
-    # -- Phase 1: Collect all known URLs --------------------------------
-    all_urls: Set[str] = set()
-    homepage_links = _extract_links(html, base_url)
-    all_urls.update(homepage_links)
+    website_content = _strip_html(html)
+    practice_type = "general_dentist"
+    expected_services: List[str] = []
+    if (vertical or "").strip().lower() == "dentist":
+        classification = classify_practice_type(place_data or {}, website_content)
+        if isinstance(classification, dict):
+            practice_type = str(classification.get("practice_type") or "general_dentist")
+            out["practice_classification_confidence"] = float(classification.get("confidence") or 0.3)
+            out["practice_classification_signals"] = dict(classification.get("signals") or {})
+        else:
+            # Backward-compat safety if any legacy caller/mocked test returns string.
+            practice_type = str(classification or "general_dentist")
+        expected_services = get_expected_services(practice_type)
+    out["practice_type"] = practice_type
+    out["expected_services"] = list(expected_services)
+    out["expected_service_count"] = int(len(expected_services))
 
-    sitemap_urls = _fetch_sitemap_urls(base_url)
-    all_urls.update(sitemap_urls)
-    logger.debug("Sitemap yielded %d URLs", len(sitemap_urls))
+    crawl_manager = CrawlManager(base_url, fetch_fn=fetch_fn)
+    try:
+        crawl_result = crawl_manager.crawl(practice_type=practice_type, homepage_html=homepage_html)
+    finally:
+        if playwright_fetcher is not None:
+            try:
+                playwright_fetcher.close()
+            except Exception as exc:
+                logger.warning("Failed to close Playwright fetcher for %s: %s", base_url[:120], exc)
+    sitemap_urls = list(crawl_result.get("sitemap_urls") or [])
+    out["crawl_confidence"] = str(crawl_result.get("confidence") or "low").lower()
+    out["js_detected"] = bool(crawl_result.get("js_detected"))
+    out["suppress_service_gap"] = out["crawl_confidence"] == "low"
+    if playwright_fetch_summary is not None:
+        out["playwright_fetch_summary"] = dict(playwright_fetch_summary)
 
-    # -- Phase 2: Identify service-like URLs to crawl -------------------
-    service_urls = [u for u in all_urls if _is_service_like_path(u) and (not _is_asset_like_url(u)) and u != base_url]
-    service_urls_deduped: List[str] = []
-    seen_paths: Set[str] = set()
-    for u in service_urls:
-        p = urlparse(u).path.lower().rstrip("/")
-        if p not in seen_paths:
-            seen_paths.add(p)
-            service_urls_deduped.append(u)
-
-    # -- Phase 3: Crawl pages (homepage + up to 20 service pages) -------
     pages: List[Dict[str, Any]] = []
     geo_tokens = _city_tokens(city, state)
+    crawled_pages = crawl_result.get("pages") or {}
+    if isinstance(crawled_pages, dict):
+        for url, payload in crawled_pages.items():
+            h = str((payload or {}).get("html") or "")
+            if not h:
+                continue
+            page_text = _extract_primary_content_text(h)
+            headings = _extract_headings(h)
+            schema_flags = _extract_schema_flags(h)
+            pages.append(
+                {
+                    "url": str(url),
+                    "html": h,
+                    "text": page_text,
+                    "h1": _extract_h1_text(h),
+                    "headings": headings,
+                    "path_slugs": _path_slugs(str(url)),
+                    "schema": schema_flags,
+                    "has_faq_or_schema": bool(
+                        schema_flags["has_service_schema"] or schema_flags["has_faq_schema"] or schema_flags["has_localbusiness_schema"]
+                    ),
+                    "word_count": _word_count(page_text),
+                    "is_geo": _is_geo_or_location_page(str(url), headings, geo_tokens),
+                    "conversion": _extract_conversion_metrics(h, page_text, base_url),
+                }
+            )
+    if not pages:
+        # Fallback: at least evaluate homepage when crawl discovery is sparse.
+        homepage_text = _extract_primary_content_text(html)
+        homepage_headings = _extract_headings(html)
+        homepage_schema = _extract_schema_flags(html)
+        pages.append(
+            {
+                "url": base_url,
+                "html": html,
+                "text": homepage_text,
+                "h1": _extract_h1_text(html),
+                "headings": homepage_headings,
+                "path_slugs": _path_slugs(base_url),
+                "schema": homepage_schema,
+                "has_faq_or_schema": bool(
+                    homepage_schema["has_service_schema"] or homepage_schema["has_faq_schema"] or homepage_schema["has_localbusiness_schema"]
+                ),
+                "word_count": _word_count(homepage_text),
+                "is_geo": _is_geo_or_location_page(base_url, homepage_headings, geo_tokens),
+                "conversion": _extract_conversion_metrics(html, homepage_text, base_url),
+            }
+        )
 
-    homepage_text = _extract_primary_content_text(html)
-    homepage_headings = _extract_headings(html)
-    homepage_schema = _extract_schema_flags(html)
-    homepage_conversion = _extract_conversion_metrics(html, homepage_text, base_url)
-    pages.append(
+    out["pages_crawled"] = int(len(pages))
+
+    # CTA provenance and geo-intent evidence are computed from the same page set used for service evaluation.
+    cta_pages_by_type: Dict[str, List[str]] = {k: [] for k in CTA_PATTERN_BY_TYPE.keys()}
+    cta_seen_pages_by_type: Dict[str, Set[str]] = {k: set() for k in CTA_PATTERN_BY_TYPE.keys()}
+    cta_hit_count_by_type: Dict[str, int] = {k: 0 for k in CTA_PATTERN_BY_TYPE.keys()}
+    cta_clickable_count_by_type: Dict[str, int] = {k: 0 for k in CTA_PATTERN_BY_TYPE.keys()}
+    geo_intent_pages: List[Dict[str, Any]] = []
+    for page in pages:
+        page_url = str(page.get("url") or "")
+        html_raw = str(page.get("html") or "")
+        page_text = str(page.get("text") or "")
+        headings = str(page.get("headings") or "")
+        conversion = dict(page.get("conversion") or {})
+        cta_type_counts = dict(conversion.get("cta_type_counts") or {})
+        clickable_cta_by_type = dict(conversion.get("clickable_cta_by_type") or {})
+        has_cta = False
+        for cta_type in CTA_PATTERN_BY_TYPE.keys():
+            hits = _safe_int(cta_type_counts.get(cta_type))
+            cta_hit_count_by_type[cta_type] += hits
+            cta_clickable_count_by_type[cta_type] += _safe_int(clickable_cta_by_type.get(cta_type))
+            if hits > 0:
+                has_cta = True
+                if page_url and page_url not in cta_seen_pages_by_type[cta_type]:
+                    cta_seen_pages_by_type[cta_type].add(page_url)
+                    cta_pages_by_type[cta_type].append(page_url)
+        geo_signals = _geo_signals_for_page(
+            url=page_url,
+            html=html_raw,
+            headings=headings,
+            page_text=page_text,
+            city=city,
+        )
+        if geo_signals:
+            geo_intent_pages.append(
+                {
+                    "url": page_url,
+                    "title": _extract_title(html_raw) or urlparse(page_url).path or "/",
+                    "signals": geo_signals,
+                    "hasCTA": bool(has_cta),
+                }
+            )
+
+    out["cta_elements"] = [
         {
-            "url": base_url,
-            "html": html,
-            "text": homepage_text,
-            "h1": _extract_h1_text(html),
-            "headings": homepage_headings,
-            "path_slugs": _path_slugs(base_url),
-            "schema": homepage_schema,
-            "has_faq_or_schema": bool(
-                homepage_schema["has_service_schema"] or homepage_schema["has_faq_schema"] or homepage_schema["has_localbusiness_schema"]
-            ),
-            "word_count": _word_count(homepage_text),
-            "is_geo": _is_geo_or_location_page(base_url, homepage_headings, geo_tokens),
-            "conversion": homepage_conversion,
+            "type": cta_type,
+            "count": int(cta_hit_count_by_type.get(cta_type) or 0),
+            "pages": list(cta_pages_by_type.get(cta_type) or []),
+            "clickable_count": int(cta_clickable_count_by_type.get(cta_type) or 0),
         }
-    )
-
-    level1_fetched: Set[str] = {base_url}
-    level2_candidates: List[str] = []
-
-    for url in service_urls_deduped[:20]:
-        if url in level1_fetched:
-            continue
-        h = _fetch_html(url)
-        if not h:
-            continue
-        level1_fetched.add(url)
-        page_text = _extract_primary_content_text(h)
-        headings = _extract_headings(h)
-        schema_flags = _extract_schema_flags(h)
-        pages.append(
-            {
-                "url": url,
-                "html": h,
-                "text": page_text,
-                "h1": _extract_h1_text(h),
-                "headings": headings,
-                "path_slugs": _path_slugs(url),
-                "schema": schema_flags,
-                "has_faq_or_schema": bool(
-                    schema_flags["has_service_schema"] or schema_flags["has_faq_schema"] or schema_flags["has_localbusiness_schema"]
-                ),
-                "word_count": _word_count(page_text),
-                "is_geo": _is_geo_or_location_page(url, headings, geo_tokens),
-                "conversion": _extract_conversion_metrics(h, page_text, base_url),
-            }
-        )
-
-        # Two-level crawl: extract links from this sub-page
-        sub_links = _extract_links(h, url)
-        for sl in sub_links:
-            if sl not in level1_fetched and _is_service_like_path(sl) and (not _is_asset_like_url(sl)):
-                level2_candidates.append(sl)
-
-    # Crawl level-2 pages (deeper service pages linked from index pages)
-    level2_seen: Set[str] = set()
-    for url in level2_candidates:
-        if len(pages) >= 35:
-            break
-        p = urlparse(url).path.lower().rstrip("/")
-        if p in seen_paths or url in level2_seen:
-            continue
-        level2_seen.add(url)
-        seen_paths.add(p)
-        h = _fetch_html(url)
-        if not h:
-            continue
-        page_text = _extract_primary_content_text(h)
-        headings = _extract_headings(h)
-        schema_flags = _extract_schema_flags(h)
-        pages.append(
-            {
-                "url": url,
-                "html": h,
-                "text": page_text,
-                "h1": _extract_h1_text(h),
-                "headings": headings,
-                "path_slugs": _path_slugs(url),
-                "schema": schema_flags,
-                "has_faq_or_schema": bool(
-                    schema_flags["has_service_schema"] or schema_flags["has_faq_schema"] or schema_flags["has_localbusiness_schema"]
-                ),
-                "word_count": _word_count(page_text),
-                "is_geo": _is_geo_or_location_page(url, headings, geo_tokens),
-                "conversion": _extract_conversion_metrics(h, page_text, base_url),
-            }
-        )
-
-    out["pages_crawled"] = len(pages)
+        for cta_type in CTA_PATTERN_BY_TYPE.keys()
+    ]
+    out["cta_clickable_by_type"] = {
+        cta_type: int(cta_clickable_count_by_type.get(cta_type) or 0)
+        for cta_type in CTA_PATTERN_BY_TYPE.keys()
+    }
+    out["cta_clickable_count"] = int(sum(cta_clickable_count_by_type.values()))
+    out["geo_intent_pages"] = geo_intent_pages
 
     # -- Phase 4: Detect services per page (canonical buckets) ----------
     all_dedicated_buckets: Set[str] = set()
@@ -952,9 +1647,11 @@ def build_service_intelligence(
         if any(tok in path_lower for tok in ("/blog", "/article", "/news", "/insights")):
             blog_count += 1
 
-    # -- Phase 5: Also check sitemap URLs by slug (no fetch needed) -----
-    # If a sitemap URL clearly matches a bucket via path, count it as dedicated
+    # -- Phase 5: Also check sitemap URLs by slug — only URLs we actually fetched -----
+    crawled_url_set = set(crawled_pages.keys()) if isinstance(crawled_pages, dict) else set()
     for url in sitemap_urls:
+        if url not in crawled_url_set:
+            continue
         pslugs = _path_slugs(url)
         for bucket, aliases in CANONICAL_BUCKETS.items():
             if bucket in all_dedicated_buckets:
@@ -968,9 +1665,11 @@ def build_service_intelligence(
 
     # -- Phase 6: Build output using canonical display names ------------
     all_detected = all_dedicated_buckets | all_mentioned_buckets
-    out["high_ticket_procedures_detected"] = sorted(
+    detected_display = sorted(
         [CANONICAL_DISPLAY[b] for b in all_detected if b in CANONICAL_DISPLAY]
     )
+    out["high_ticket_procedures_detected"] = detected_display
+    out["high_ticket_services_detected"] = detected_display
     out["general_services_detected"] = sorted(list(all_general))[:10]
     out["service_page_count"] = int(len(service_page_word_counts))
     out["service_pages_with_faq_or_schema"] = int(service_pages_with_schema)
@@ -978,9 +1677,15 @@ def build_service_intelligence(
         out["avg_word_count_service_pages"] = int(sum(service_page_word_counts) / len(service_page_word_counts))
         out["min_word_count_service_pages"] = int(min(service_page_word_counts))
         out["max_word_count_service_pages"] = int(max(service_page_word_counts))
-    out["city_or_near_me_page_count"] = int(len(geo_examples))
-    out["has_multi_location_page"] = any("locations" in (urlparse(u).path or "").lower() for u in geo_examples)
-    out["geo_page_examples"] = geo_examples[:3]
+    geo_urls = [str(p.get("url") or "") for p in geo_intent_pages if str(p.get("url") or "")]
+    if geo_urls:
+        out["city_or_near_me_page_count"] = int(len(geo_urls))
+        out["has_multi_location_page"] = any("locations" in (urlparse(u).path or "").lower() for u in geo_urls)
+        out["geo_page_examples"] = geo_urls[:3]
+    else:
+        out["city_or_near_me_page_count"] = int(len(geo_examples))
+        out["has_multi_location_page"] = any("locations" in (urlparse(u).path or "").lower() for u in geo_examples)
+        out["geo_page_examples"] = geo_examples[:3]
     out["blog_page_count"] = int(blog_count)
 
     # Missing = mentioned (on site or in reviews) but NO dedicated page
@@ -1001,7 +1706,10 @@ def build_service_intelligence(
     out["procedure_confidence"] = round(min(1.0, 0.3 + 0.1 * n_pages + 0.1 * n_high), 2)
 
     # -- Phase 7: Strict per-service intelligence ------------------------
-    catalog = _service_catalog(vertical)
+    if (vertical or "").strip().lower() == "dentist":
+        catalog = _taxonomy_service_catalog(expected_services)
+    else:
+        catalog = _service_catalog(vertical)
     service_keywords_by_slug: Dict[str, List[str]] = {
         str(svc["slug"]): sorted(set([str(a).lower() for a in svc.get("aliases", [])] + [str(svc["slug"]).replace("_", " ")]))
         for svc in catalog
@@ -1091,14 +1799,22 @@ def build_service_intelligence(
         for page_url, p in page_meta.items():
             text = str(p["text"] or "")
             wc = int(p["word_count"] or 0)
+            path_val = str(p.get("path") or "")
+            if _is_excluded_candidate_url(path_val) or _is_excluded_candidate_url(page_url):
+                pages_rejected.append({"url": str(p["url"]), "rejection_reason": "Excluded URL pattern."})
+                continue
             mention_count = _count_service_mentions(text, aliases)
             if mention_count > 0:
                 saw_any_mention = True
             rule1_path = _path_match_fn(str(p["path"] or ""), slug, aliases)
-            rule1_title_h1 = _title_match_fn(str(p["title"] or ""), aliases) or _h1_match_fn(list(p.get("h1_list") or []), aliases)
-            rule1_match = bool(rule1_path or rule1_title_h1)
+            title_match = _title_match_fn(str(p.get("title") or ""), aliases)
+            h1_match = _h1_match_fn(list(p.get("h1_list") or []), aliases)
+            rule1_title_h1 = title_match or h1_match
+            # Accept strong content-only pages even when URL/title are generic.
+            rule1_content = bool(mention_count >= 4 and wc >= DEPTH_MODERATE_MIN_WORDS)
+            rule1_match = bool(rule1_path or rule1_title_h1 or rule1_content)
 
-            if bool(p.get("umbrella")) and mention_count > 0:
+            if bool(p.get("umbrella")) and mention_count >= 2:
                 saw_umbrella_mention = True
                 pages_rejected.append({"url": str(p["url"]), "rejection_reason": "Umbrella page (>= threshold services mentioned)."})
                 continue
@@ -1107,7 +1823,6 @@ def build_service_intelligence(
                 continue
 
             density = _keyword_density(mention_count, wc)
-            h1_match = _h1_match_fn(list(p.get("h1_list") or []), aliases)
             h2_sections = len(p.get("h2_list") or [])
             schema = p.get("schema") or {}
             conversion = p.get("conversion") or {}
@@ -1148,32 +1863,67 @@ def build_service_intelligence(
                 }
             )
             prediction_status = str(agent_out.get("prediction_status") or "missing")
-            status = (
-                "strong"
-                if prediction_status == "strong"
-                else "weak_stub_page"
-                if prediction_status == "weak_stub_page"
-                else "missing"
+            cta_count = _safe_int(conversion.get("cta_count"))
+            service_conf = _compute_service_confidence(
+                matched_url=bool(rule1_path),
+                title_match=bool(title_match),
+                h1_match=bool(h1_match),
+                keyword_frequency=int(mention_count),
+                word_count=int(wc),
             )
+            service_conf_level = _confidence_level(service_conf)
+            tiered_status = _tiered_service_status(
+                url_match=bool(rule1_path),
+                h1_match=bool(h1_match),
+                keyword_count=int(mention_count),
+                word_count=int(wc),
+                cta_count=int(cta_count),
+            )
+            cc = str(out.get("crawl_confidence") or "").lower()
+            if cc in ("low", "unknown", ""):
+                tiered_status = ServiceStatus.NOT_EVALUATED
+            tiered_status = _canonical_service_status(tiered_status)
+            status = _qualification_from_service_status(tiered_status)
             detection_reason = str(agent_out.get("qualification_reason") or "Does not qualify as dedicated page.")
+            core_rules = dict(agent_out.get("core_rules_passed") or {})
+            booking_link = bool(conversion.get("booking_link"))
 
-            if prediction_status != "strong":
+            # Keep strict agent output as metadata only; canonical service presence is deterministic.
+            if status != ServiceStatus.MISSING and prediction_status in {"rejected_non_service", "umbrella_only", "missing"}:
+                prediction_status = tiered_status
+                if tiered_status == ServiceStatus.DEDICATED_PAGE:
+                    detection_reason = "Dedicated service page detected by URL/title/H1 and substantial content."
+                elif tiered_status == ServiceStatus.STRONG_UMBRELLA:
+                    detection_reason = "Service mention detected, but no dedicated page evidence."
+                elif tiered_status == ServiceStatus.NOT_EVALUATED:
+                    detection_reason = "Not evaluated due to low crawl confidence."
+            elif status == ServiceStatus.MISSING and booking_link and mention_count > 0 and bool(core_rules.get("blog_excluded", True)):
+                tiered_status = ServiceStatus.STRONG_UMBRELLA
+                status = _qualification_from_service_status(tiered_status)
+                prediction_status = tiered_status
+                detection_reason = "Service mention inferred from booking and keyword evidence."
+
+            if status == ServiceStatus.MISSING:
                 pages_rejected.append({"url": str(p["url"]), "rejection_reason": detection_reason})
 
             candidate = {
                 "service": slug,
                 "display_name": service_display_by_slug.get(slug, slug.replace("_", " ").title()),
                 "revenue_weight": int(svc["revenue_weight"]),
-                "page_detected": bool(status != "missing"),
-                "page_exists": bool(status != "missing"),
+                "page_detected": bool(status in {ServiceStatus.DEDICATED_PAGE, ServiceStatus.STRONG_UMBRELLA}),
+                "page_exists": bool(status in {ServiceStatus.DEDICATED_PAGE, ServiceStatus.STRONG_UMBRELLA}),
                 "qualified": bool(agent_out.get("qualified")),
-                "prediction_status": prediction_status,
+                "prediction_status": _canonical_service_status(tiered_status),
+                "service_status": _canonical_service_status(tiered_status),
+                "confidence_score": service_conf,
+                "confidence_level": service_conf_level,
+                "page_strength": classify_page_strength(int(wc), service_conf),
                 "detection_reason": detection_reason,
                 "url": str(agent_out.get("final_url_evaluated") or p["path"] or "/"),
                 "word_count": int(wc),
                 "keyword_density": round(float(density), 4),
                 "h1_match": bool(h1_match),
-                "depth_score": _depth_score(wc) if status != "missing" else "missing",
+                "depth_score": _depth_score(wc) if status != ServiceStatus.MISSING else "missing",
                 "schema": {
                     "service_schema": bool(schema.get("has_service_schema")),
                     "faq_schema": bool(schema.get("has_faq_schema")),
@@ -1194,20 +1944,13 @@ def build_service_intelligence(
                     "internal_links": int(_safe_int(conversion.get("internal_links"))),
                 },
                 "internal_links_to_page": int(internal_links_to_page),
-                "serp": {
-                    "position_top_3": None,
-                    "position_top_10": None,
-                    "average_position": None,
-                    "map_pack_presence": None,
-                    "competitors_in_top_10": None,
-                },
-                "qualification_status": status,
-                "optimization_tier": status,
-                "core_rules_passed": dict(agent_out.get("core_rules_passed") or {}),
+                "qualification_status": _canonical_service_status(status),
+                "optimization_tier": _canonical_service_status(status),
+                "core_rules_passed": core_rules,
                 "min_word_threshold": int(svc["min_word_threshold"]),
                 "min_internal_links": int(svc["min_internal_links"]),
             }
-            rank = _status_rank(status)
+            rank = _status_rank(_canonical_service_status(status))
             if rank > best_rank or (rank == best_rank and wc > best_wc):
                 best_candidate = candidate
                 best_rank = rank
@@ -1216,24 +1959,36 @@ def build_service_intelligence(
         if best_candidate is None:
             if saw_umbrella_mention:
                 reason = "Service only mentioned within umbrella page."
-                prediction_status = "umbrella_only"
+                prediction_status = ServiceStatus.STRONG_UMBRELLA
+                service_status = ServiceStatus.STRONG_UMBRELLA
+                qual_status = _qualification_from_service_status(service_status)
             elif saw_any_mention:
                 reason = "Service mentioned but no page passed strict qualification."
-                prediction_status = "rejected_non_service"
+                prediction_status = ServiceStatus.STRONG_UMBRELLA
+                service_status = ServiceStatus.STRONG_UMBRELLA
+                qual_status = _qualification_from_service_status(service_status)
             elif reasons_seen:
                 reason = reasons_seen[0]
-                prediction_status = "rejected_non_service"
+                prediction_status = ServiceStatus.STRONG_UMBRELLA
+                service_status = ServiceStatus.STRONG_UMBRELLA
+                qual_status = _qualification_from_service_status(service_status)
             else:
                 reason = "No dedicated page found in crawled HTML."
-                prediction_status = "missing"
+                prediction_status = ServiceStatus.MISSING
+                service_status = ServiceStatus.MISSING
+                qual_status = _qualification_from_service_status(service_status)
             best_candidate = {
                 "service": slug,
                 "display_name": service_display_by_slug.get(slug, slug.replace("_", " ").title()),
                 "revenue_weight": int(svc["revenue_weight"]),
-                "page_detected": False,
-                "page_exists": False,
+                "page_detected": bool(service_status in {ServiceStatus.DEDICATED_PAGE, ServiceStatus.STRONG_UMBRELLA}),
+                "page_exists": bool(service_status in {ServiceStatus.DEDICATED_PAGE, ServiceStatus.STRONG_UMBRELLA}),
                 "qualified": False,
-                "prediction_status": prediction_status,
+                "prediction_status": _canonical_service_status(prediction_status),
+                "service_status": _canonical_service_status(service_status),
+                "confidence_score": 0.0,
+                "confidence_level": "low",
+                "page_strength": classify_page_strength(0, 0.0),
                 "detection_reason": reason,
                 "url": None,
                 "word_count": 0,
@@ -1269,15 +2024,8 @@ def build_service_intelligence(
                     "structural_depth": False,
                     "keyword_presence": False,
                 },
-                "serp": {
-                    "position_top_3": None,
-                    "position_top_10": None,
-                    "average_position": None,
-                    "map_pack_presence": None,
-                    "competitors_in_top_10": None,
-                },
-                "qualification_status": "missing",
-                "optimization_tier": "missing",
+                "qualification_status": _canonical_service_status(qual_status),
+                "optimization_tier": _canonical_service_status(qual_status),
                 "min_word_threshold": int(svc["min_word_threshold"]),
                 "min_internal_links": int(svc["min_internal_links"]),
             }
@@ -1287,6 +2035,13 @@ def build_service_intelligence(
         "pages_crawled": pages_crawled_urls,
         "pages_rejected": pages_rejected,
         "umbrella_detection_triggered": bool(umbrella_triggered),
+        "crawl_confidence": out.get("crawl_confidence"),
+        "js_detected": out.get("js_detected"),
+        "crawl_method": out.get("crawl_method"),
+        "sitemap_detected": bool(crawl_result.get("sitemap_found")),
+        "crawl_log_file": "crawl_log.json",
+        "crawl_errors": list(crawl_result.get("errors") or [])[:50],
+        "playwright_fetch_summary": dict(out.get("playwright_fetch_summary") or {}),
         "config": {
             "min_word_count": min_word_count,
             "min_keyword_density": min_density,
@@ -1298,89 +2053,56 @@ def build_service_intelligence(
         },
     }
 
+    out["missing_geo_pages"] = _detect_missing_service_pages(
+        crawled_urls=pages_crawled_urls,
+        vertical=vertical,
+        pages=pages,
+    )
+
+    if str(out.get("crawl_confidence") or "").lower() in {"low", "unknown", ""}:
+        for r in service_rows:
+            r["service_status"] = ServiceStatus.NOT_EVALUATED
+            r["qualification_status"] = _qualification_from_service_status(ServiceStatus.NOT_EVALUATED)
+            r["optimization_tier"] = _qualification_from_service_status(ServiceStatus.NOT_EVALUATED)
+            r["detection_reason"] = "Not Evaluated (Low Crawl Confidence)"
     out["missing_high_value_pages"] = [
         str(r["display_name"])
         for r in service_rows
-        if str(r.get("qualification_status")) == "missing"
+        if str(r.get("service_status") or "").lower() == "missing"
     ]
 
-    # Inbound internal-link wiring support (crawl-based, deterministic)
-    try:
-        graph = build_internal_link_graph(
-            base_url,
-            config=InternalLinkCrawlConfig(
-                max_pages=max(35, len(pages)),
-                max_depth=2,
-                timeout_ms=12000,
-                mode="fast_html",
-            ),
-            pre_crawled_pages=[
-                {"url": p.get("url"), "html": p.get("html"), "depth": 0}
-                for p in pages
-                if p.get("url") and p.get("html")
-            ],
-        )
-    except Exception:
-        graph = {"pages": {}, "canonical_map": {}, "crawl_meta": {}}
-
-    for row in service_rows:
-        page_url = row.get("url")
-        if not page_url:
-            row["inbound_link_support"] = {
-                "inbound": {
-                    "unique_pages_all": 0,
-                    "unique_pages_body_only": 0,
-                    "total_links_all": 0,
-                    "contexts": {"nav": 0, "footer": 0, "header": 0, "body": 0, "sidebar": 0, "unknown": 0},
-                },
-                "orphan": {"is_orphan_all": True, "is_orphan_body_only": True},
-                "crawl_meta": dict(graph.get("crawl_meta") or {}),
-            }
-            row["inbound_unique_pages_all"] = 0
-            row["inbound_unique_pages_body_only"] = 0
-            row["inbound_total_links_all"] = 0
-            row["orphan_status"] = True
-            row["wiring_status"] = "orphan"
-            continue
-        inbound = compute_inbound_internal_link_support(str(page_url), graph)
-        inbound_block = inbound.get("inbound") or {}
-        row["inbound_link_support"] = inbound
-        row["inbound_unique_pages_all"] = int(inbound_block.get("unique_pages_all") or 0)
-        row["inbound_unique_pages_body_only"] = int(inbound_block.get("unique_pages_body_only") or 0)
-        row["inbound_total_links_all"] = int(inbound_block.get("total_links_all") or 0)
-        row["orphan_status"] = bool((inbound.get("orphan") or {}).get("is_orphan_body_only"))
-        row["wiring_status"] = wiring_status(row["inbound_unique_pages_body_only"])
-
     total = len(service_rows)
-    present_rows = [r for r in service_rows if bool(r.get("page_detected"))]
-    strong_rows = [r for r in service_rows if str(r.get("qualification_status")) == "strong"]
-    moderate_rows = [r for r in service_rows if str(r.get("qualification_status")) == "moderate"]
-    weak_rows = [r for r in service_rows if str(r.get("qualification_status")) in {"weak", "weak_stub_page"}]
+    dedicated_rows = [r for r in service_rows if str(r.get("service_status") or "").lower() == "dedicated"]
+    mention_rows = [r for r in service_rows if str(r.get("service_status") or "").lower() == "mention_only"]
+    missing_rows = [r for r in service_rows if str(r.get("service_status") or "").lower() == "missing"]
+    present_rows = dedicated_rows + mention_rows
     wc_present = [int(r["word_count"]) for r in present_rows if int(r.get("word_count") or 0) > 0]
     top10_rows = [r for r in service_rows if (r.get("serp") or {}).get("position_top_10") is True]
-    coverage_ratio = round((len(present_rows) / total), 3) if total else 0.0
-    optimized_ratio = round((len(strong_rows) / total), 3) if total else 0.0
+    coverage_score = round(len(dedicated_rows) / total, 3) if total else 0.0
+    optimized_ratio = coverage_score
     serp_ratio = round((len(top10_rows) / total), 3) if total else 0.0
 
-    leverage = "low"
-    if any(str(r.get("qualification_status")) == "missing" and int(r.get("revenue_weight") or 0) >= 4 for r in service_rows):
+    review_gap_high = bool((place_data or {}).get("review_gap_high") or (place_data or {}).get("signal_review_gap_high"))
+    if coverage_score < 0.5 and review_gap_high:
         leverage = "high"
-    elif any(str(r.get("qualification_status")) in {"weak", "weak_stub_page"} and int(r.get("revenue_weight") or 0) >= 4 for r in service_rows):
+    elif coverage_score < 0.7:
         leverage = "moderate"
-    elif coverage_ratio >= STRONG_COVERAGE_RATIO_FOR_LOW_LEVERAGE and serp_ratio >= STRONG_SERP_RATIO_FOR_LOW_LEVERAGE:
+    else:
         leverage = "low"
-    elif total > 0:
-        leverage = "moderate"
 
     out["high_value_services"] = service_rows
+    out["coverage_score"] = coverage_score
     out["high_value_summary"] = {
         "total_high_value_services": int(total),
-        "services_present": int(len(present_rows)),
-        "services_missing": int(total - len(present_rows)),
-        "services_strong": int(len(strong_rows)),
-        "services_moderate": int(len(moderate_rows)),
-        "services_weak": int(len(weak_rows)),
-        "service_coverage_ratio": coverage_ratio,
+        "services_dedicated": int(len(dedicated_rows)),
+        "services_mention_only": int(len(mention_rows)),
+        "services_missing": int(len(missing_rows)),
+        "services_present": int(len(dedicated_rows)),
+        "services_strong": int(len(dedicated_rows)),
+        "services_moderate": int(len(mention_rows)),
+        "services_weak": 0,
+        "coverage_score": coverage_score,
+        "service_coverage_ratio": coverage_score,
         "optimized_ratio": optimized_ratio,
         "average_word_count": int(sum(wc_present) / len(wc_present)) if wc_present else 0,
         "serp_visibility_ratio": serp_ratio,
@@ -1389,7 +2111,6 @@ def build_service_intelligence(
     thin_pages = [r for r in present_rows if _safe_int(r.get("word_count")) < thin_threshold]
     cta_counts = [_safe_int((r.get("conversion") or {}).get("cta_count")) for r in present_rows]
     internal_links = [_safe_int((r.get("conversion") or {}).get("internal_links")) for r in present_rows]
-    inbound_body_links = [_safe_int(r.get("inbound_unique_pages_body_only")) for r in present_rows]
     booking_pages = [r for r in present_rows if bool((r.get("conversion") or {}).get("booking_link"))]
     financing_pages = [r for r in present_rows if bool((r.get("conversion") or {}).get("financing_mentioned"))]
     faq_pages = [
@@ -1399,6 +2120,7 @@ def build_service_intelligence(
     ]
     cta_pages = [r for r in present_rows if _safe_int((r.get("conversion") or {}).get("cta_count")) > 0]
     internal_linked_pages = [r for r in present_rows if _safe_int((r.get("conversion") or {}).get("internal_links")) > 0]
+    contact_form_sitewide = _sitewide_contact_form_detected(pages)
     pages_checked = int(len(pages_crawled_urls))
     schema_pages_detected = int(service_pages_with_schema)
     faq_detected_count = int(len(faq_pages))
@@ -1406,10 +2128,10 @@ def build_service_intelligence(
     conversion_detected_count = int(len(booking_pages) + len(financing_pages) + len(cta_pages))
     out["service_page_analysis_v2"] = {
         "service_coverage": {
-            "present": int(len(present_rows)),
+            "present": int(len(dedicated_rows)),
             "total": int(total),
-            "ratio": coverage_ratio,
-            "status": _tri_state(int(len(present_rows)), int(total)),
+            "ratio": coverage_score,
+            "status": _tri_state(int(len(dedicated_rows)), int(total)),
         },
         "content_depth": {
             "average_words": int(sum(wc_present) / len(wc_present)) if wc_present else 0,
@@ -1422,6 +2144,7 @@ def build_service_intelligence(
         },
         "conversion_readiness": {
             "pages_with_booking": int(len(booking_pages)),
+            "contact_form_detected_sitewide": bool(contact_form_sitewide),
             "pages_with_financing": int(len(financing_pages)),
             "pages_with_cta": int(len(cta_pages)),
             "average_cta_count": round((sum(cta_counts) / len(cta_counts)), 2) if cta_counts else 0.0,
@@ -1439,8 +2162,6 @@ def build_service_intelligence(
             "internal_linked_service_pages": int(len(internal_linked_pages)),
             "contact_cta_service_pages": int(len(cta_pages)),
             "faq_status": _tri_state(faq_detected_count, int(len(present_rows))),
-            "avg_inbound_unique_pages_body_only": round((sum(inbound_body_links) / len(inbound_body_links)), 2) if inbound_body_links else 0.0,
-            "pages_with_wiring_support": int(len([x for x in inbound_body_links if x > 0])),
         },
         "schema_bonus": {
             "pages_with_schema": schema_pages_detected,
@@ -1453,6 +2174,13 @@ def build_service_intelligence(
             "confidence": _crawl_confidence(pages_checked),
         },
     }
+    if out.get("crawl_confidence") == "low":
+        out["service_page_analysis_v2"]["service_coverage"]["status"] = "unknown"
+        out["service_page_analysis_v2"]["service_coverage"]["note"] = "Not Evaluated (Low Crawl Confidence)"
+        out["service_page_analysis_v2"]["conversion_readiness"]["status"] = "unknown"
+        out["service_page_analysis_v2"]["conversion_readiness"]["note"] = "Not Evaluated (Low Crawl Confidence)"
+        leverage = "low"
+    out["contact_form_detected_sitewide"] = bool(contact_form_sitewide)
     out["high_value_service_leverage"] = leverage
     return out
 
@@ -1485,85 +2213,59 @@ def merge_service_serp_validation(
             serp["map_pack_presence"] = serp_update.get("map_pack_presence")
             serp["competitors_in_top_10"] = serp_update.get("competitors_in_top_10")
         row["serp"] = serp
-        has_strict_inputs = (
-            "keyword_density" in row
-            and "h1_match" in row
-            and "structural_signals" in row
-            and "internal_links_to_page" in row
+        canonical_status = _canonical_service_status(
+            row.get("service_status")
+            or row.get("qualification_status")
+            or row.get("optimization_tier")
+            or ("dedicated" if bool(row.get("page_exists")) else "missing")
         )
-        if has_strict_inputs:
-            min_word_count = int(SERVICE_PAGE_CONFIG["min_word_count"])
-            min_density = float(SERVICE_PAGE_CONFIG["min_keyword_density"])
-            min_h2_sections = int(SERVICE_PAGE_CONFIG["min_h2_sections"])
-            min_internal_links = int(SERVICE_PAGE_CONFIG["min_internal_links"])
-            wc = _safe_int(row.get("word_count"))
-            kd = float(row.get("keyword_density") or 0.0)
-            h1_match = bool(row.get("h1_match"))
-            schema_ok = bool((row.get("schema") or {}).get("service_schema") or (row.get("schema") or {}).get("faq_schema"))
-            struct = row.get("structural_signals") or {}
-            structure_ok = bool(
-                bool(struct.get("faq_present"))
-                or _safe_int(struct.get("service_h2_sections")) >= min_h2_sections
-                or bool(struct.get("financing_section"))
-                or bool(struct.get("before_after_section"))
-            )
-            links_ok = _safe_int(row.get("internal_links_to_page")) >= min_internal_links
-            strong_now = bool(
-                row.get("page_detected")
-                and wc >= min_word_count
-                and kd >= min_density
-                and h1_match
-                and schema_ok
-                and structure_ok
-                and links_ok
-                and row.get("serp", {}).get("position_top_10") is True
-            )
-            if strong_now:
-                row["qualification_status"] = "strong"
-            row["optimization_tier"] = row.get("qualification_status") or row.get("optimization_tier") or "missing"
-        else:
-            row["optimization_tier"] = _classify_optimization_tier(
-                page_exists=bool(row.get("page_exists")),
-                word_count=_safe_int(row.get("word_count")),
-                has_schema=bool((row.get("schema") or {}).get("service_schema") or (row.get("schema") or {}).get("faq_schema")),
-                internal_links=_safe_int((row.get("conversion") or {}).get("internal_links")),
-                position_top_10=row.get("serp", {}).get("position_top_10"),
-                min_word_threshold=_safe_int(row.get("min_word_threshold") or DEPTH_STRONG_MIN_WORDS),
-                min_internal_links=_safe_int(row.get("min_internal_links") or INTERNAL_LINKS_MIN_STRONG),
-            )
-            row["qualification_status"] = row.get("optimization_tier")
+        row["service_status"] = canonical_status
+        row["qualification_status"] = canonical_status
+        row["optimization_tier"] = canonical_status
+        row["page_strength"] = classify_page_strength(
+            _safe_int(row.get("word_count")),
+            float(row.get("confidence_score") or 0.0),
+        )
         updated_rows.append(row)
 
     total = len(updated_rows)
-    present_rows = [r for r in updated_rows if r.get("page_exists")]
-    strong_rows = [r for r in updated_rows if r.get("optimization_tier") == "strong"]
-    moderate_rows = [r for r in updated_rows if r.get("optimization_tier") == "moderate"]
-    weak_rows = [r for r in updated_rows if r.get("optimization_tier") == "weak"]
+    dedicated_rows = [r for r in updated_rows if str(r.get("service_status") or "").lower() == "dedicated"]
+    mention_rows = [r for r in updated_rows if str(r.get("service_status") or "").lower() == "mention_only"]
+    missing_rows = [r for r in updated_rows if str(r.get("service_status") or "").lower() == "missing"]
+    present_rows = dedicated_rows + mention_rows
     wc_present = [_safe_int(r.get("word_count")) for r in present_rows if _safe_int(r.get("word_count")) > 0]
     top10_rows = [r for r in updated_rows if (r.get("serp") or {}).get("position_top_10") is True]
 
-    coverage_ratio = round((len(present_rows) / total), 3) if total else 0.0
-    optimized_ratio = round((len(strong_rows) / total), 3) if total else 0.0
+    coverage_ratio = round(len(dedicated_rows) / total, 3) if total else 0.0
+    optimized_ratio = coverage_ratio
     serp_ratio = round((len(top10_rows) / total), 3) if total else 0.0
 
     leverage = "low"
-    if any((not bool(r.get("page_exists"))) and _safe_int(r.get("revenue_weight")) >= 4 for r in updated_rows):
+    if any(
+        str(r.get("service_status") or "").lower() in {ServiceStatus.MISSING, ServiceStatus.STRONG_UMBRELLA}
+        and _safe_int(r.get("revenue_weight")) >= 4
+        for r in updated_rows
+    ):
         leverage = "high"
-    elif any(bool(r.get("page_exists")) and r.get("optimization_tier") == "weak" and _safe_int(r.get("revenue_weight")) >= 4 for r in updated_rows):
-        leverage = "moderate"
     elif coverage_ratio >= STRONG_COVERAGE_RATIO_FOR_LOW_LEVERAGE and serp_ratio >= STRONG_SERP_RATIO_FOR_LOW_LEVERAGE:
         leverage = "low"
     elif total > 0:
         leverage = "moderate"
+    if str(service_intelligence.get("crawl_confidence") or "").lower() == "low":
+        leverage = "low"
 
     service_intelligence["high_value_services"] = updated_rows
+    service_intelligence["coverage_score"] = coverage_ratio
     service_intelligence["high_value_summary"] = {
         "total_high_value_services": int(total),
-        "services_present": int(len(present_rows)),
-        "services_missing": int(total - len(present_rows)),
-        "services_strong": int(len(strong_rows)),
-        "services_moderate": int(len(moderate_rows)),
-        "services_weak": int(len(weak_rows)),
+        "services_dedicated": int(len(dedicated_rows)),
+        "services_mention_only": int(len(mention_rows)),
+        "services_missing": int(len(missing_rows)),
+        "services_present": int(len(dedicated_rows)),
+        "services_strong": int(len(dedicated_rows)),
+        "services_moderate": int(len(mention_rows)),
+        "services_weak": 0,
+        "coverage_score": coverage_ratio,
         "service_coverage_ratio": coverage_ratio,
         "optimized_ratio": optimized_ratio,
         "average_word_count": int(sum(wc_present) / len(wc_present)) if wc_present else 0,
@@ -1573,7 +2275,6 @@ def merge_service_serp_validation(
     thin_pages = [r for r in present_rows if _safe_int(r.get("word_count")) < thin_threshold]
     cta_counts = [_safe_int((r.get("conversion") or {}).get("cta_count")) for r in present_rows]
     internal_links = [_safe_int((r.get("conversion") or {}).get("internal_links")) for r in present_rows]
-    inbound_body_links = [_safe_int(r.get("inbound_unique_pages_body_only")) for r in present_rows]
     booking_pages = [r for r in present_rows if bool((r.get("conversion") or {}).get("booking_link"))]
     financing_pages = [r for r in present_rows if bool((r.get("conversion") or {}).get("financing_mentioned"))]
     faq_pages = [
@@ -1601,10 +2302,10 @@ def merge_service_serp_validation(
     conversion_detected_count = int(len(booking_pages) + len(financing_pages) + len(cta_pages))
     service_intelligence["service_page_analysis_v2"] = {
         "service_coverage": {
-            "present": int(len(present_rows)),
+            "present": int(len(dedicated_rows)),
             "total": int(total),
             "ratio": coverage_ratio,
-            "status": _tri_state(int(len(present_rows)), int(total)),
+            "status": _tri_state(int(len(dedicated_rows)), int(total)),
         },
         "content_depth": {
             "average_words": int(sum(wc_present) / len(wc_present)) if wc_present else 0,
@@ -1617,6 +2318,7 @@ def merge_service_serp_validation(
         },
         "conversion_readiness": {
             "pages_with_booking": int(len(booking_pages)),
+            "contact_form_detected_sitewide": bool(service_intelligence.get("contact_form_detected_sitewide")),
             "pages_with_financing": int(len(financing_pages)),
             "pages_with_cta": int(len(cta_pages)),
             "average_cta_count": round((sum(cta_counts) / len(cta_counts)), 2) if cta_counts else 0.0,
@@ -1634,8 +2336,6 @@ def merge_service_serp_validation(
             "internal_linked_service_pages": int(len(internal_linked_pages)),
             "contact_cta_service_pages": int(len(cta_pages)),
             "faq_status": _tri_state(faq_detected_count, int(len(present_rows))),
-            "avg_inbound_unique_pages_body_only": round((sum(inbound_body_links) / len(inbound_body_links)), 2) if inbound_body_links else 0.0,
-            "pages_with_wiring_support": int(len([x for x in inbound_body_links if x > 0])),
         },
         "schema_bonus": {
             "pages_with_schema": schema_pages_detected,
@@ -1648,6 +2348,11 @@ def merge_service_serp_validation(
             "confidence": _crawl_confidence(pages_checked),
         },
     }
+    if str(service_intelligence.get("crawl_confidence") or "").lower() == "low":
+        service_intelligence["service_page_analysis_v2"]["service_coverage"]["status"] = "unknown"
+        service_intelligence["service_page_analysis_v2"]["service_coverage"]["note"] = "Not Evaluated (Low Crawl Confidence)"
+        service_intelligence["service_page_analysis_v2"]["conversion_readiness"]["status"] = "unknown"
+        service_intelligence["service_page_analysis_v2"]["conversion_readiness"]["note"] = "Not Evaluated (Low Crawl Confidence)"
     service_intelligence["high_value_service_leverage"] = leverage
     return service_intelligence
 
@@ -1698,10 +2403,12 @@ def run_strict_single_service_page_check(
     status = str(row.get("qualification_status") or "missing")
     prediction_status = str(row.get("prediction_status") or status)
     # For missing_service_page criterion, match means service page is effectively missing.
-    is_missing = status in {"missing", "weak_stub_page"}
+    crawl_conf = str(intel.get("crawl_confidence") or "").strip().lower()
+    is_missing = (crawl_conf in {"medium", "high"}) and status in {"missing", "weak_stub_page"}
     return {
         "service": slug,
         "matches": bool(is_missing),
+        "crawl_confidence": crawl_conf or None,
         "reason": str(row.get("detection_reason") or ""),
         "page_detected": bool(row.get("page_detected")),
         "qualification_status": status,

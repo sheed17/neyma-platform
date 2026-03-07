@@ -61,11 +61,16 @@ from pipeline.db import (
     insert_lead,
     insert_lead_signals,
     insert_decision,
+    insert_lead_doc_v1,
+    insert_lead_intel_v1,
     update_lead_dentist_data,
     update_run_completed,
     update_run_failed,
 )
+from pipeline.doc_builder import build_typed_docs_for_lead, build_llm_brief_summary_doc
 from pipeline.embedding_store import store_lead_embedding_if_eligible
+from pipeline.embeddings import get_embedding
+from pipeline.rag.hybrid_retriever import build_rag_context, build_retrieval_criteria
 from pipeline.validation import check_lead_signals
 from pipeline.context import build_context
 from pipeline.dentist_profile import (
@@ -444,12 +449,15 @@ def run_enrichment_pipeline(
     })
     use_meta_ads = get_meta_access_token() is not None
     agent = DecisionAgent(agency_type=agency_type)
+    rag_enabled = os.getenv("USE_HYBRID_RAG", "true").strip().lower() in ("1", "true", "yes")
+    embeddings_enabled = bool(os.getenv("OPENAI_API_KEY"))
     try:
         for idx, (lead, signal) in enumerate(zip(enriched_leads, signals)):
             merged = merge_signals_into_lead(lead, signal)
             if use_meta_ads:
                 augment_lead_with_meta_ads(merged)
             lead_id = insert_lead(run_id, merged)
+            merged["lead_id"] = lead_id
             insert_lead_signals(lead_id, signal)
 
             if is_dental_practice(merged):
@@ -511,6 +519,37 @@ def run_enrichment_pipeline(
                 if dentist_profile_v1:
                     context = build_context(merged)
                     lead_score = round((merged.get("confidence") or 0) * 100)
+                    # Build and persist deterministic typed docs (pre-LLM).
+                    typed_docs = build_typed_docs_for_lead(merged, signal, {"vertical": "dentist"})
+                    for doc in typed_docs:
+                        emb = None
+                        if embeddings_enabled and rag_enabled:
+                            emb = get_embedding(doc.get("content_text", ""))
+                        insert_lead_doc_v1(
+                            lead_id=lead_id,
+                            doc_type=doc.get("doc_type", ""),
+                            content_text=doc.get("content_text", ""),
+                            metadata=doc.get("metadata_json") or {},
+                            embedding=emb,
+                        )
+
+                    rag_context = {}
+                    if rag_enabled:
+                        criteria = build_retrieval_criteria(
+                            {
+                                **merged,
+                                "lead_id": lead_id,
+                                "city": merged.get("city"),
+                                "state": merged.get("state"),
+                            },
+                            query_docs=typed_docs,
+                        )
+                        rag_context = build_rag_context(
+                            current_lead={**merged, "lead_id": lead_id},
+                            criteria=criteria,
+                            k_similar=6,
+                        )
+
                     llm_reasoning_layer = dentist_llm_reasoning_layer(
                         business_snapshot=merged,
                         dentist_profile_v1=dentist_profile_v1,
@@ -518,7 +557,45 @@ def run_enrichment_pipeline(
                         lead_score=lead_score,
                         priority=merged.get("verdict"),
                         confidence=merged.get("confidence"),
+                        rag_context=rag_context if rag_context else None,
                     )
+                    # Persist structured intel output for downstream retrieval/analytics.
+                    insert_lead_intel_v1(
+                        lead_id=lead_id,
+                        vertical="dentist",
+                        primary_constraint=llm_reasoning_layer.get("primary_constraint"),
+                        primary_leverage=llm_reasoning_layer.get("primary_leverage"),
+                        contact_priority=llm_reasoning_layer.get("contact_priority"),
+                        outreach_angle=llm_reasoning_layer.get("outreach_angle") or llm_reasoning_layer.get("recommended_outreach_angle"),
+                        confidence=llm_reasoning_layer.get("confidence"),
+                        risks=llm_reasoning_layer.get("risks") or llm_reasoning_layer.get("risk_objections"),
+                        evidence=llm_reasoning_layer.get("evidence"),
+                    )
+                    # Persist post-LLM summary doc for future retrieval.
+                    llm_doc = build_llm_brief_summary_doc(
+                        merged,
+                        signal,
+                        {"vertical": "dentist", "llm_reasoning_layer": llm_reasoning_layer},
+                    )
+                    if llm_doc:
+                        llm_emb = get_embedding(llm_doc.get("content_text", "")) if (embeddings_enabled and rag_enabled) else None
+                        insert_lead_doc_v1(
+                            lead_id=lead_id,
+                            doc_type=llm_doc.get("doc_type", "llm_brief_summary"),
+                            content_text=llm_doc.get("content_text", ""),
+                            metadata=llm_doc.get("metadata_json") or {},
+                            embedding=llm_emb,
+                        )
+                    # UI/product proof layer.
+                    merged["cohort_count"] = llm_reasoning_layer.get("cohort_count")
+                    merged["cohort_close_rate"] = llm_reasoning_layer.get("cohort_close_rate")
+                    merged["top_constraints"] = llm_reasoning_layer.get("top_constraints")
+                    merged["top_outreach_angles"] = llm_reasoning_layer.get("top_outreach_angles")
+                    merged["similar_leads_count"] = llm_reasoning_layer.get("similar_leads_count")
+                    merged["rag_used"] = llm_reasoning_layer.get("rag_used")
+                    merged["retrieval_time_ms"] = llm_reasoning_layer.get("retrieval_time_ms")
+                    merged["num_similar_docs"] = llm_reasoning_layer.get("num_similar_docs")
+                    merged["extraction_method"] = merged.get("signal_extraction_method")
                     sales_intel = build_sales_intervention_intelligence(
                         business_snapshot=merged,
                         dentist_profile_v1=dentist_profile_v1,

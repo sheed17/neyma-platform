@@ -157,7 +157,7 @@ def _compare_predictions_to_actuals(
         comparison["metrics"]["services_fixed"] = list(fixed_services)
         comparison["metrics"]["services_fix_rate"] = len(fixed_services) / len(orig_missing) if orig_missing else 0
 
-    for signal in ["has_booking", "has_schema", "runs_google_ads"]:
+    for signal in ["has_booking", "has_ssl", "runs_google_ads"]:
         orig_val = original.get(signal)
         curr_val = current.get(signal)
         if orig_val is not None and curr_val is not None:
@@ -223,8 +223,6 @@ def get_calibration_stats() -> Dict[str, Any]:
 
             if metrics.get("has_booking_added"):
                 booking_added += 1
-            if metrics.get("has_schema_added"):
-                schema_added += 1
 
     return {
         "total_outcomes": len(rows),
@@ -233,7 +231,6 @@ def get_calibration_stats() -> Dict[str, Any]:
         "avg_review_delta": round(sum(review_deltas) / len(review_deltas), 1) if review_deltas else None,
         "avg_service_fix_rate": round(sum(service_fix_rates) / len(service_fix_rates), 2) if service_fix_rates else None,
         "booking_adoption_count": booking_added,
-        "schema_adoption_count": schema_added,
     }
 
 

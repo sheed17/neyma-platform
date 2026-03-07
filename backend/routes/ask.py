@@ -7,6 +7,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from backend.services.ask_config import ADAPTIVE_LIMITS_DEFAULTS
+from backend.services.criteria_registry import sanitize_criteria, sanitize_must_not
 from backend.services.moderation import moderate_text
 from backend.services.npl_service import resolve_ask_intent
 from pipeline.db import create_job, get_job, get_latest_diagnostic_by_place_id
@@ -17,7 +19,6 @@ MISSING_LOCATION_MSG = "Please include city and state in your query (e.g. 'Find 
 
 class AskRequest(BaseModel):
     query: str
-    accuracy_mode: str | None = None
     confirmed_low_confidence: bool = False
 
 
@@ -29,22 +30,14 @@ class AskEnsureBriefRequest(BaseModel):
     website: str | None = None
 
 
-class AskAgenticRequest(BaseModel):
-    query: str
-    accuracy_mode: str | None = None
-    confirmed_low_confidence: bool = False
-    min_results: int | None = None
-    max_iterations: int | None = None
-    max_minutes: int | None = None
-
-
 @router.post("/ask")
 def ask_find(body: AskRequest, request: Request):
     user_id = getattr(request.state, "user_id", 1)
-    # Moderate user input; reject without echoing content.
+
     is_safe, reject_message = moderate_text(body.query)
     if not is_safe:
         raise HTTPException(status_code=400, detail=reject_message)
+
     try:
         intent = resolve_ask_intent(body.query)
     except ValueError as exc:
@@ -53,42 +46,69 @@ def ask_find(body: AskRequest, request: Request):
     missing_required = intent.get("missing_required") or []
     if missing_required:
         raise HTTPException(status_code=400, detail=MISSING_LOCATION_MSG)
-    if not intent.get("criteria"):
+
+    raw_criteria = [c for c in (intent.get("criteria") or []) if isinstance(c, dict)]
+    raw_must_not = [c for c in (intent.get("must_not") or []) if isinstance(c, dict)]
+    criteria, criteria_unsupported = sanitize_criteria(raw_criteria, [])
+    must_not, must_not_unsupported = sanitize_must_not(raw_must_not, [])
+
+    if not criteria:
         raise HTTPException(
             status_code=400,
             detail="No valid supported criteria found. Try criteria like below_review_avg, missing_service_page, no_contact_form, or high_competition_density.",
         )
 
-    accuracy_mode = (body.accuracy_mode or intent.get("accuracy_mode") or "fast").strip().lower()
-    if accuracy_mode not in {"fast", "verified"}:
-        raise HTTPException(status_code=400, detail="accuracy_mode must be 'fast' or 'verified'")
+    unsupported = [str(x).strip() for x in (intent.get("unsupported_parts") or []) if str(x).strip()]
+    unsupported.extend(criteria_unsupported)
+    unsupported.extend(must_not_unsupported)
+    dedup_unsupported: list[str] = []
+    seen = set()
+    for item in unsupported:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup_unsupported.append(item)
 
-    low_conf = str(intent.get("intent_confidence") or "").lower() == "low"
-    if low_conf and not body.confirmed_low_confidence:
+    confidence = str(intent.get("intent_confidence") or "").lower()
+    if confidence == "low" and not body.confirmed_low_confidence:
         return {
             "job_id": None,
             "status": "requires_confirmation",
-            "intent": intent,
-            "message": "Query interpretation confidence is low. Please confirm before running.",
-            "accuracy_mode": accuracy_mode,
             "requires_confirmation": True,
+            "normalized_intent": intent,
+            "confidence": "low",
+            "question": "Query interpretation confidence is low. Do you want to run this query anyway?",
+            "message": "Query interpretation confidence is low. Please confirm before running.",
+            "unsupported_parts": dedup_unsupported,
         }
+
+    limit = max(1, min(int(intent.get("limit") or 10), 20))
+    # Ask pipeline returns lightweight-matched shortlist fast.
+    # Deep verification is deferred to on-demand brief generation.
+    require_deep_verification = False
+    adaptive_limits = dict(ADAPTIVE_LIMITS_DEFAULTS)
+    adaptive_limits["min_results"] = limit
 
     job_id = create_job(
         user_id=user_id,
-        job_type="npl_find",
-        input_data={"query": body.query, "intent": intent, "accuracy_mode": accuracy_mode},
+        job_type="ask_scan",
+        input_data={
+            "original_query": body.query,
+            "resolved_intent": intent,
+            "criteria": criteria,
+            "must_not": must_not,
+            "limit": limit,
+            "require_deep_verification": require_deep_verification,
+            "adaptive_limits": adaptive_limits,
+            "unsupported_parts": dedup_unsupported,
+        },
     )
+
     return {
         "job_id": job_id,
         "status": "pending",
-        "intent": intent,
-        "message": (
-            f"Verifying {intent.get('vertical', 'prospects')} in {intent.get('city')}{', ' + str(intent.get('state')) if intent.get('state') else ''}..."
-            if accuracy_mode == "verified"
-            else f"Finding {intent.get('vertical', 'prospects')} in {intent.get('city')}{', ' + str(intent.get('state')) if intent.get('state') else ''}..."
-        ),
-        "accuracy_mode": accuracy_mode,
+        "message": f"Finding {intent.get('vertical', 'prospects')} in {intent.get('city')}{', ' + str(intent.get('state')) if intent.get('state') else ''}...",
         "requires_confirmation": False,
     }
 
@@ -99,7 +119,7 @@ def ask_results(job_id: str, request: Request):
     job = get_job(job_id)
     if not job or job.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.get("type") not in {"npl_find", "ask_agentic_scan"}:
+    if job.get("type") not in {"ask_scan", "npl_find", "ask_agentic_scan"}:
         raise HTTPException(status_code=400, detail="Not an ask job")
     if job.get("status") != "completed":
         return {
@@ -111,70 +131,6 @@ def ask_results(job_id: str, request: Request):
         "job_id": job_id,
         "status": "completed",
         "result": job.get("result") or {},
-    }
-
-
-@router.post("/ask/agentic")
-def ask_agentic(body: AskAgenticRequest, request: Request):
-    user_id = getattr(request.state, "user_id", 1)
-    is_safe, reject_message = moderate_text(body.query)
-    if not is_safe:
-        raise HTTPException(status_code=400, detail=reject_message)
-    try:
-        intent = resolve_ask_intent(body.query)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if intent.get("missing_required"):
-        raise HTTPException(status_code=400, detail=MISSING_LOCATION_MSG)
-    if not intent.get("criteria"):
-        raise HTTPException(
-            status_code=400,
-            detail="No valid supported criteria found. Try criteria like below_review_avg, missing_service_page, no_contact_form, or high_competition_density.",
-        )
-
-    accuracy_mode = (body.accuracy_mode or intent.get("accuracy_mode") or "fast").strip().lower()
-    if accuracy_mode not in {"fast", "verified"}:
-        raise HTTPException(status_code=400, detail="accuracy_mode must be 'fast' or 'verified'")
-
-    low_conf = str(intent.get("intent_confidence") or "").lower() == "low"
-    if low_conf and not body.confirmed_low_confidence:
-        return {
-            "job_id": None,
-            "status": "requires_confirmation",
-            "intent": intent,
-            "message": "Query interpretation confidence is low. Please confirm before running.",
-            "accuracy_mode": accuracy_mode,
-            "requires_confirmation": True,
-        }
-
-    system_limits = {
-        "max_radius_miles": 40,
-        "max_candidate_cap": 140,
-        "max_iterations": max(1, min(int(body.max_iterations or 4), 8)),
-        "max_verify_per_iteration": 10,
-        "min_results": max(1, min(int(body.min_results or int(intent.get("limit") or 10)), 20)),
-        "max_minutes": max(1, min(int(body.max_minutes or 15), 45)),
-    }
-    job_id = create_job(
-        user_id=user_id,
-        job_type="ask_agentic_scan",
-        input_data={
-            "query": body.query,
-            "intent": intent,
-            "accuracy_mode": accuracy_mode,
-            "system_limits": system_limits,
-        },
-    )
-    return {
-        "job_id": job_id,
-        "status": "pending",
-        "intent": intent,
-        "message": (
-            f"Agentic scan started for {intent.get('vertical', 'prospects')} in {intent.get('city')}{', ' + str(intent.get('state')) if intent.get('state') else ''}."
-        ),
-        "accuracy_mode": accuracy_mode,
-        "requires_confirmation": False,
     }
 
 
@@ -207,6 +163,7 @@ def ask_ensure_brief(body: AskEnsureBriefRequest, request: Request):
             "city": city,
             "state": state,
             "website": body.website,
+            "deep_audit": True,
         },
     )
     return {

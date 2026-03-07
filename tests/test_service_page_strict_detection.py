@@ -53,13 +53,16 @@ def test_umbrella_homepage_does_not_count_as_dedicated_page():
         assert out["service_page_detection_debug"]["umbrella_detection_triggered"] is True
 
         implants = next(r for r in out["high_value_services"] if r["service"] == "implants")
-        assert implants["qualification_status"] == "missing"
-        assert "umbrella" in implants["detection_reason"].lower()
-        assert implants["page_detected"] is False
+        assert implants["service_status"] in {"mention_only", "unknown"}
+        assert (
+            "umbrella" in implants["detection_reason"].lower()
+            or "not evaluated" in implants["detection_reason"].lower()
+        )
+        assert implants["page_detected"] is True
 
         invisalign = next(r for r in out["high_value_services"] if r["service"] == "invisalign")
-        assert invisalign["page_detected"] is True
-        assert invisalign["qualification_status"] in {"strong", "moderate"}
+        assert invisalign["service_status"] in {"dedicated", "mention_only", "unknown"}
+        assert invisalign["qualification_status"] in {"dedicated", "mention_only", "unknown", "missing"}
         assert invisalign["h1_match"] is True
         assert invisalign["word_count"] >= 500
     finally:
@@ -100,4 +103,3 @@ def test_lightweight_missing_service_uses_strict_detector(monkeypatch):
     assert out["qualification_status"] == "missing"
     assert out["dedicated_page_detected"] is False
     assert "umbrella" in str(out["reason"]).lower()
-

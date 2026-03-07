@@ -93,15 +93,19 @@ export default function ListDetailPage() {
           <h1 className="text-2xl font-semibold tracking-tight">{data.list.name}</h1>
           <p className="text-sm text-[var(--text-muted)]">{rows.length} members</p>
         </div>
-        <Button variant="primary" onClick={() => void handleRescan()} disabled={rescanning}>
-          {rescanning ? "Re-scanning..." : "Re-scan list"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/ask"><Button>Ask Neyma</Button></Link>
+          <Link href="/territory/new"><Button>Run territory scan</Button></Link>
+          <Button variant="primary" onClick={() => void handleRescan()} disabled={rescanning}>
+            {rescanning ? "Refreshing..." : "Refresh list signals"}
+          </Button>
+        </div>
       </div>
 
-      {changeSummary && <Card className="mb-4 border-sky-200 bg-sky-50"><CardBody className="text-sm text-sky-800">Change summary: {changeSummary}</CardBody></Card>}
+      {changeSummary && <Card className="mb-4 border-sky-200 bg-sky-50"><CardBody className="text-sm text-sky-800">Refresh summary: {changeSummary}</CardBody></Card>}
 
       <Card>
-        <CardHeader title="List Members" />
+        <CardHeader title="List Pipeline" />
         <Table>
           <THead><tr><TH>Business</TH><TH>City</TH><TH>Revenue Band</TH><TH>Leverage / Constraint</TH><TH>Status</TH><TH>Updated</TH><TH className="text-right">Actions</TH></tr></THead>
           <tbody>
@@ -117,7 +121,12 @@ export default function ListDetailPage() {
                 <TD><Badge tone={row.outcome_status?.status === "closed_won" ? "success" : row.outcome_status?.status === "closed_lost" ? "danger" : "muted"}>{outcomeLabel(row.outcome_status?.status)}</Badge></TD>
                 <TD>{row.added_at ? new Date(row.added_at).toLocaleDateString("en-US") : "-"}</TD>
                 <TD className="text-right">
-                  <Link href={`/diagnostic/${row.diagnostic_id}`} className="app-link mr-2 font-medium">View brief</Link>
+                  <Link
+                    href={`/diagnostic/${row.diagnostic_id}?from=list&listId=${listId}`}
+                    className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-black px-4 text-sm font-medium text-white transition hover:bg-[#4f79c7]"
+                  >
+                    Open brief
+                  </Link>
                   <button onClick={() => void handleOutcome(row, "contacted")} className="mr-2 text-[var(--text-secondary)] hover:underline">Contacted</button>
                   <button onClick={() => void handleOutcome(row, "closed_won")} className="mr-2 text-emerald-700 hover:underline">Won</button>
                   <button onClick={() => void handleOutcome(row, "closed_lost")} className="mr-2 text-rose-700 hover:underline">Lost</button>
