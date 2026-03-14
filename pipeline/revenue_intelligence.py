@@ -8,6 +8,8 @@ paid_spend_range_estimate and cost_leakage_signals. NO LLM calls.
 
 from typing import Dict, Any, List, Optional
 
+from pipeline.consistency import normalize_service_intelligence
+
 
 def _has_high_ticket(high_ticket_procedures: List[Any]) -> bool:
     return bool(high_ticket_procedures and len(high_ticket_procedures) > 0)
@@ -53,7 +55,7 @@ def build_revenue_intelligence(
     from pipeline.metro_income import is_high_income_metro
 
     obj = objective_layer or {}
-    svc = obj.get("service_intelligence") or {}
+    svc = normalize_service_intelligence(obj.get("service_intelligence") or {})
     crawl_confidence = str(svc.get("crawl_confidence") or "").strip().lower()
     if crawl_confidence == "low" or bool(svc.get("suppress_revenue_modeling")):
         return {
@@ -145,10 +147,15 @@ def build_revenue_intelligence(
         cost_leakage_signals.append(f"Paid ads running but high-value service pages are missing{suffix}")
     # Use booking_conversion_path when available (dentist-realistic); else fall back to automated_scheduling
     booking_path = context.get("signal_booking_conversion_path")
-    has_online_booking = booking_path in ("Online booking (limited)", "Online booking (full)")
-    if booking_path is None:
-        has_online_booking = context.get("signal_has_automated_scheduling") is True
-    if ads_active and not has_online_booking:
+    has_online_booking: bool | None
+    if booking_path in ("Online booking (limited)", "Online booking (full)"):
+        has_online_booking = True
+    elif booking_path in ("Phone-only", "Request form"):
+        has_online_booking = False
+    else:
+        flag = context.get("signal_has_automated_scheduling")
+        has_online_booking = True if flag is True else (False if flag is False else None)
+    if ads_active and has_online_booking is False:
         cost_leakage_signals.append("Paid ads running but no online booking")
     if strong_reviews and weak_schema:
         cost_leakage_signals.append("Strong reviews but no schema markup for local visibility")

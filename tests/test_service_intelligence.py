@@ -80,6 +80,75 @@ def test_build_service_intelligence_outputs_structured_high_value_rows():
         service_depth._fetch_sitemap_urls = original_fetch_sitemap_urls
 
 
+def test_service_specific_url_and_heading_counts_as_dedicated_even_when_body_text_is_thin(monkeypatch):
+    original_fetch_html = service_depth._fetch_html
+    original_fetch_sitemap_urls = service_depth._fetch_sitemap_urls
+    try:
+        base = "https://thinservice.example"
+        homepage = """
+            <html><body>
+              <a href="/our-services/individual-implants">Implants</a>
+            </body></html>
+        """
+        thin_implants_page = """
+            <html>
+              <head>
+                <title>Individual Implants | Thin Service Dental</title>
+                <meta name="description" content="Individual implants in Phoenix, Arizona." />
+              </head>
+              <body>
+                <h1>Individual Implants</h1>
+                <a href="/make-appointment">Schedule with Us</a>
+              </body>
+            </html>
+        """
+
+        page_map = {
+            base: homepage,
+            f"{base}/our-services/individual-implants": thin_implants_page,
+        }
+
+        service_depth._fetch_html = lambda url: page_map.get(url)
+        service_depth._fetch_sitemap_urls = lambda _url: [f"{base}/our-services/individual-implants"]
+        class FakeCrawler:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def crawl(self, *args, **kwargs):
+                return {
+                    "pages": {
+                        base: {"html": homepage},
+                        f"{base}/our-services/individual-implants": {"html": thin_implants_page},
+                    },
+                    "pages_crawled": 2,
+                    "confidence": "high",
+                    "js_detected": False,
+                    "sitemap_found": True,
+                    "sitemap_urls": [f"{base}/our-services/individual-implants"],
+                    "errors": [],
+                    "skipped": [],
+                }
+
+        monkeypatch.setattr(service_depth, "CrawlManager", FakeCrawler)
+
+        out = service_depth.build_service_intelligence(
+            website_url=base,
+            website_html=homepage,
+            city="Phoenix",
+            state="AZ",
+            vertical="dentist",
+        )
+
+        implants = next(r for r in out["high_value_services"] if r["service"] == "implants")
+        assert implants["service_status"] == "dedicated"
+        assert implants["word_count"] < 100
+        assert "content depth appears limited" in implants["detection_reason"].lower()
+        assert "Implants" not in out["missing_high_value_pages"]
+    finally:
+        service_depth._fetch_html = original_fetch_html
+        service_depth._fetch_sitemap_urls = original_fetch_sitemap_urls
+
+
 def test_merge_service_serp_validation_recomputes_tiers_and_summary():
     service_intelligence = {
         "high_value_services": [
@@ -574,6 +643,7 @@ def test_rejected_candidate_with_strong_evidence_promotes_to_covered(monkeypatch
 def test_tiered_service_status_thresholds():
     assert service_depth._tiered_service_status(
         url_match=False,
+        title_match=False,
         h1_match=False,
         keyword_count=10,
         word_count=700,
@@ -581,6 +651,7 @@ def test_tiered_service_status_thresholds():
     ) == service_depth.ServiceStatus.STRONG_UMBRELLA
     assert service_depth._tiered_service_status(
         url_match=False,
+        title_match=False,
         h1_match=False,
         keyword_count=2,
         word_count=120,
@@ -635,16 +706,16 @@ def test_only_strong_umbrella_services_still_have_nonzero_coverage(monkeypatch):
     assert isinstance(out["missing_high_value_pages"], list)
 
 
-def test_no_service_dedicated_when_word_count_below_150():
+def test_service_specific_identity_can_still_count_as_dedicated_when_word_count_is_below_150():
     status = service_depth._tiered_service_status(
         url_match=True,
+        title_match=True,
         h1_match=True,
         keyword_count=10,
         word_count=120,
         cta_count=3,
     )
-    assert status != service_depth.ServiceStatus.DEDICATED_PAGE
-    assert status == service_depth.ServiceStatus.STRONG_UMBRELLA
+    assert status == service_depth.ServiceStatus.DEDICATED_PAGE
 
 
 def test_missing_allowed_at_medium_crawl_confidence(monkeypatch):

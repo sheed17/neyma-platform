@@ -44,7 +44,8 @@ export default function ListsPage() {
     <div className="mx-auto max-w-6xl">
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Lists</h1>
+          <p className="section-kicker">Workspace</p>
+          <h1 className="page-title">Lists</h1>
           <p className="text-sm text-[var(--text-muted)]">Save shortlisted prospects, track outcomes, and revisit priority accounts.</p>
         </div>
         <div className="flex gap-2">
@@ -62,7 +63,7 @@ export default function ListsPage() {
           action={<Button variant="primary" onClick={() => setOpen(true)}>Create list</Button>}
         />
       ) : (
-        <Card>
+        <Card className="border border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_18px_40px_rgba(10,10,10,0.04)]">
           <CardHeader title="Saved Prospect Lists" />
           <Table>
             <THead><tr><TH>Name</TH><TH>Members</TH><TH>Created</TH><TH className="text-right">Open</TH></tr></THead>

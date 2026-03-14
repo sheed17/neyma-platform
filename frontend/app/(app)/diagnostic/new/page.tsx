@@ -63,32 +63,32 @@ export default function NewDiagnosticPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <section className="rounded-[36px] border border-black/6 bg-[linear-gradient(135deg,#f7f3ea_0%,#ffffff_60%,#f2f7ff_100%)] p-5 shadow-[0_18px_50px_rgba(23,20,17,0.05)] sm:p-7">
+      <section className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)] p-5 shadow-[0_18px_50px_rgba(10,10,10,0.04)] sm:p-7">
         <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr]">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Build Brief</p>
-            <h1 className="display-title mt-3 max-w-[11ch] text-4xl font-black tracking-tight text-[var(--text-primary)] sm:text-6xl">
+            <p className="section-kicker">Build Brief</p>
+            <h1 className="display-title mt-3 max-w-[11ch] text-4xl text-[var(--text-primary)] sm:text-6xl">
               Build one full brief directly.
             </h1>
             <p className="mt-4 max-w-[42ch] text-sm leading-relaxed text-[var(--text-secondary)] sm:text-base">
-              Use this when you already know the business and want the full brief without starting from a territory scan or Ask query.
+              Use this when you already know the business and want the full AI-assisted brief without starting from a territory scan or Ask query.
             </p>
 
             <div className="mt-6 space-y-3">
               {[
                 "Best when the target business is already known",
-                "Builds the same evidence-backed brief as the rest of the workflow",
+                "Builds the same AI- and ML-backed brief as the rest of the workflow",
                 "Use website if you have it, but it is optional",
               ].map((line) => (
-                <div key={line} className="rounded-[22px] border border-black/6 bg-white px-4 py-3 text-sm text-[var(--text-secondary)]">
+                <div key={line} className="rounded-[18px] border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-sm text-[var(--text-secondary)]">
                   {line}
                 </div>
               ))}
             </div>
           </div>
 
-          <Card className="overflow-hidden border border-black/8 bg-white shadow-[0_18px_40px_rgba(23,20,17,0.05)]">
-            <CardHeader title="Brief Input" subtitle="Enter the business details and Neyma will build the full brief." />
+          <Card className="overflow-hidden border border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_18px_40px_rgba(10,10,10,0.04)]">
+            <CardHeader title="Brief Input" subtitle="Enter the business details and Neyma will build the full AI-assisted brief." />
             <CardBody className="p-4 sm:p-5">
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -98,14 +98,14 @@ export default function NewDiagnosticPage() {
                     value={businessName}
                     onChange={(e) => setBusinessName(e.target.value)}
                     placeholder="Japantown Dental"
-                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                    className="h-11"
                   />
                   <Input
                     label="Website (optional)"
                     value={website}
                     onChange={(e) => setWebsite(e.target.value)}
                     placeholder="japantowndental.com"
-                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                    className="h-11"
                   />
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -115,7 +115,7 @@ export default function NewDiagnosticPage() {
                     value={city}
                     onChange={(e) => setCity(e.target.value)}
                     placeholder="San Jose"
-                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                    className="h-11"
                   />
                   <Input
                     label="State *"
@@ -123,18 +123,18 @@ export default function NewDiagnosticPage() {
                     value={state}
                     onChange={(e) => setState(e.target.value)}
                     placeholder="CA"
-                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                    className="h-11"
                   />
                 </div>
 
-                <div className="rounded-[20px] border border-black/6 bg-[#fbfaf7] px-4 py-3 text-xs leading-5 text-[var(--text-muted)]">
-                  This path skips territory ranking and goes straight into the full brief pipeline.
+                <div className="rounded-[16px] border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-xs leading-5 text-[var(--text-muted)]">
+                  This path skips territory ranking and goes straight into the full AI and ML brief pipeline.
                 </div>
 
                 <Button
                   type="submit"
                   disabled={submitting}
-                  className="h-11 rounded-full bg-black px-5 text-white hover:bg-[#4f79c7]"
+                  className="h-11 rounded-full px-5"
                 >
                   {submitting ? "Building..." : "Build brief"}
                 </Button>

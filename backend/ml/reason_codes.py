@@ -83,7 +83,7 @@ def build_reason_payload(
                         evidence_refs=["service_intelligence.missing_services"],
                     )
                 )
-        if _get_int(features, "has_online_booking") == 0:
+        if _get_int(features, "has_online_booking_known", 1) == 1 and _get_int(features, "has_online_booking") == 0:
             reasons.append(
                 _reason(
                     "no_online_booking",

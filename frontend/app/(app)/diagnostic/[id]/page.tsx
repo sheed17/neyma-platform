@@ -17,8 +17,9 @@ import {
 } from "@/lib/api";
 import type { DiagnosticResponse, ProspectList } from "@/lib/types";
 import { computeVerdict } from "@/lib/verdict";
-import { generatePitchBullets } from "@/lib/pitch";
+import { generateObservationBullets, generateOpportunityFocus, generateWhyNow } from "@/lib/pitch";
 import { cleanWebsiteDisplay, isSchemaRelated } from "@/lib/present";
+import { getModeledUpsideDisplay } from "@/lib/revenueDisplay";
 import Button from "@/app/components/ui/Button";
 import { Card } from "@/app/components/ui/Card";
 import ListPickerModal from "@/app/components/ListPickerModal";
@@ -40,6 +41,23 @@ type CtaTypeRow = {
   count: number;
   pages: string[];
   clickableCount?: number;
+};
+
+type CaptureVerificationSignalLike = {
+  status?: string | null;
+  value?: string | null;
+  confidence?: string | null;
+  observed_pages?: string[] | null;
+  evidence?: string[] | null;
+};
+
+type CaptureReadinessState = {
+  status: string;
+  icon: string;
+  note: string;
+  confidence?: string;
+  observedPages?: string[];
+  evidence?: string;
 };
 
 function firstNumber(value: unknown): number | null {
@@ -76,13 +94,192 @@ function boolIcon(value: boolean | null | undefined): string {
   return "—";
 }
 
+function titleCase(value: string | null | undefined): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.replace(/[_-]+/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function buildDiagnosticHref(
+  diagnosticId: number,
+  context: { from: string; scanId: string; listId: string },
+  extra?: Record<string, string | number | null | undefined>,
+): string {
+  const params = new URLSearchParams();
+  if (context.from) params.set("from", context.from);
+  if (context.scanId) params.set("scanId", context.scanId);
+  if (context.listId) params.set("listId", context.listId);
+  Object.entries(extra || {}).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && String(value) !== "") {
+      params.set(key, String(value));
+    }
+  });
+  const query = params.toString();
+  return `/diagnostic/${diagnosticId}${query ? `?${query}` : ""}`;
+}
+
+function captureMeta(signal: CaptureVerificationSignalLike | null | undefined): {
+  confidence?: string;
+  observedPages?: string[];
+  evidence?: string;
+} {
+  const confidence = titleCase(signal?.confidence || undefined) || undefined;
+  const observedPages = (signal?.observed_pages || []).filter(Boolean).slice(0, 3);
+  const evidence = (signal?.evidence || []).find((item) => String(item || "").trim());
+  return {
+    confidence,
+    observedPages: observedPages.length ? observedPages : undefined,
+    evidence: evidence ? simplifyCaptureEvidence(String(evidence)) : undefined,
+  };
+}
+
+function capturePageLabel(page: string): string {
+  const raw = String(page || "").trim();
+  if (!raw || raw === "/") return "Homepage";
+  const normalized = raw.replace(/\/+$/, "").toLowerCase();
+  if (!normalized || normalized === "") return "Homepage";
+  if (normalized.includes("contact")) return "Contact page";
+  if (normalized.includes("appoint") || normalized.includes("schedule") || normalized.includes("book")) return "Appointment page";
+  return urlTitle(raw);
+}
+
+function simplifyCaptureEvidence(value: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  if (lower.includes("form html") || lower.includes("form plugin")) return "Submit-capable form found.";
+  if (lower.includes("appointment request cta")) return "Appointment request action found.";
+  if (lower.includes("strong scheduling cta")) return "Booking or scheduling call-to-action found.";
+  if (lower.includes("call-to-schedule")) return "Phone-only scheduling prompt found.";
+  if (lower.includes("time-selection")) return "Time-selection controls found.";
+  if (lower.includes("flow step markers")) return "Step-by-step appointment flow found.";
+  if (lower.includes("booking-oriented link target")) return "Likely booking path found from the homepage.";
+  if (lower.includes("known scheduling platform")) return "Scheduling platform detected.";
+  if (lower.includes("booking cta observed")) return "Booking action found on a scanned page.";
+  return text;
+}
+
+function verificationSummaryLabel(usesRenderedHomepage: boolean, followupCount: number): string {
+  if (usesRenderedHomepage && followupCount > 0) {
+    return `Rendered homepage + ${followupCount} follow-up page${followupCount === 1 ? "" : "s"}`;
+  }
+  if (usesRenderedHomepage) return "Rendered homepage check";
+  if (followupCount > 0) return `Homepage + ${followupCount} follow-up page${followupCount === 1 ? "" : "s"}`;
+  return "Homepage check only";
+}
+
+function flowOutcomeLabel(label: string): string {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("detected on scanned pages")) return "Scheduling CTA found";
+  if (normalized.includes("online self-scheduling")) return "Online booking verified";
+  if (normalized.includes("appointment request")) return "Request flow verified";
+  if (normalized.includes("phone-only")) return "Phone-only path verified";
+  if (normalized.includes("booking flow not verified")) return "Booking flow not verified";
+  if (normalized.includes("verified form detected")) return "Contact form verified";
+  if (normalized.includes("verified absent")) return "Contact form not found";
+  if (normalized.includes("not verified")) return "Not verified";
+  return label;
+}
+
+function schedulingCtaState(
+  signal: CaptureVerificationSignalLike | null | undefined,
+  detected: boolean | null | undefined,
+): CaptureReadinessState {
+  const meta = captureMeta(signal);
+  if (signal?.status === "detected" || detected === true) {
+    return {
+      status: "Scheduling CTA found",
+      icon: "✓",
+      note: "Neyma found a booking or scheduling call-to-action on scanned pages.",
+      ...meta,
+    };
+  }
+  return {
+    status: "Not verified in this scan",
+    icon: "—",
+    note: "No scheduling call-to-action was verified on the pages checked.",
+    ...meta,
+  };
+}
+
+function bookingFlowState(signal: CaptureVerificationSignalLike | null | undefined): CaptureReadinessState {
+  const meta = captureMeta(signal);
+  const value = String(signal?.value || "").trim().toLowerCase();
+  if (value === "online_self_scheduling") {
+    return {
+      status: "Online self-scheduling verified",
+      icon: "✓",
+      note: "Neyma verified a booking path where patients can continue online.",
+      ...meta,
+    };
+  }
+  if (value === "appointment_request_form") {
+    return {
+      status: "Appointment request flow detected",
+      icon: "✓",
+      note: "Neyma verified an appointment request flow, but not full self-scheduling.",
+      ...meta,
+    };
+  }
+  if (value === "call_only") {
+    return {
+      status: "Phone-only scheduling path verified",
+      icon: "✕",
+      note: "Neyma verified a path that sends patients to call instead of booking online.",
+      ...meta,
+    };
+  }
+  return {
+    status: "Booking flow not verified in this scan",
+    icon: "—",
+    note: "A scheduling path may exist, but Neyma did not verify the full booking flow in pages checked.",
+    ...meta,
+  };
+}
+
+function contactFormState(
+  signal: CaptureVerificationSignalLike | null | undefined,
+  detected: boolean | null | undefined,
+  formStructure: unknown,
+): CaptureReadinessState {
+  const meta = captureMeta(signal);
+  if (signal?.status === "detected" || detected === true) {
+    return {
+      status: "Verified form detected",
+      icon: "✓",
+      note: formStructure
+        ? `Neyma verified a submit-capable form (${String(formStructure)}).`
+        : "Neyma verified a submit-capable form.",
+      ...meta,
+    };
+  }
+  if (signal?.status === "not_detected" || detected === false) {
+    return {
+      status: "Verified absent on scanned pages",
+      icon: "✕",
+      note: formStructure
+        ? `Neyma checked the scanned pages and did not verify a submit-capable form (${String(formStructure)}).`
+        : "Neyma checked the scanned pages and did not verify a submit-capable form.",
+      ...meta,
+    };
+  }
+  return {
+    status: "Not verified in this scan",
+    icon: "—",
+    note: formStructure
+      ? `A contact path may exist, but Neyma did not verify a submit-capable form (${String(formStructure)}).`
+      : "A contact path may exist, but Neyma did not verify a submit-capable form in the pages checked.",
+    ...meta,
+  };
+}
+
 function crawlMethodLabel(raw: unknown): string {
   const v = String(raw || "").trim().toLowerCase();
-  if (v === "hybrid_playwright_landing_only") return "Hybrid (Playwright on landing pages)";
-  if (v === "playwright") return "Playwright (JS-rendered)";
-  if (v === "requests") return "Requests (static)";
-  if (v === "requests_fallback_playwright_unavailable") return "Requests fallback (Playwright unavailable)";
-  return "Unknown";
+  if (v === "hybrid_playwright_landing_only") return "Rendered homepage check";
+  if (v === "playwright") return "Rendered page check";
+  if (v === "requests") return "Page source check";
+  if (v === "requests_fallback_playwright_unavailable") return "Page source check";
+  return "Page check";
 }
 
 function urlTitle(url: string): string {
@@ -176,6 +373,7 @@ export default function DiagnosticDetailPage() {
   const from = String(searchParams.get("from") || "").toLowerCase();
   const scanId = searchParams.get("scanId") || "";
   const listId = searchParams.get("listId") || "";
+  const routeContext = { from, scanId, listId };
 
   const [result, setResult] = useState<DiagnosticResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -249,6 +447,14 @@ export default function DiagnosticDetailPage() {
     return { crumbLabel: "Workspace", backLabel: "Back to workspace", backHref: "/dashboard" };
   })();
 
+  function handleBack() {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      router.back();
+      return;
+    }
+    router.push(navContext.backHref);
+  }
+
   async function handleRerun(deepAudit = false) {
     if (!result) return;
     setError(null);
@@ -268,12 +474,12 @@ export default function DiagnosticDetailPage() {
       const job = await pollUntilDone(job_id, undefined, 2000, deepAudit ? 300 : 150);
       if (job.status === "completed" && job.diagnostic_id) {
         if (Number(job.diagnostic_id) === Number(id)) {
-          router.replace(`/diagnostic/${job.diagnostic_id}?refresh=${Date.now()}`);
+          router.replace(buildDiagnosticHref(Number(job.diagnostic_id), routeContext, { refresh: Date.now() }));
           setNotice("Results refreshed.");
           setRerunning(false);
           return;
         }
-        router.push(`/diagnostic/${job.diagnostic_id}`);
+        router.push(buildDiagnosticHref(Number(job.diagnostic_id), routeContext));
       } else {
         setError(job.error || "Re-run failed");
         setRerunning(false);
@@ -381,6 +587,14 @@ export default function DiagnosticDetailPage() {
   const csg = b?.competitive_service_gap || {};
   const conv = b?.conversion_infrastructure || result.conversion_infrastructure || {};
   const convStruct = b?.conversion_structure || {};
+  const captureVerification = conv.capture_verification || null;
+  const schedulingCta = captureVerification?.scheduling_cta || null;
+  const bookingFlow = captureVerification?.booking_flow || null;
+  const contactFormVerification = captureVerification?.contact_form || null;
+  const followupPagesChecked = Array.isArray(captureVerification?.followup_pages_checked)
+    ? captureVerification.followup_pages_checked.filter(Boolean)
+    : [];
+  const homepagePage = String(captureVerification?.homepage_page || "/");
   const reviewIntel = b?.review_intelligence || result.review_intelligence || {};
   const svc = result.service_intelligence || {};
   const spaV2 = (b?.service_page_analysis?.v2 as Record<string, unknown> | undefined)
@@ -392,6 +606,7 @@ export default function DiagnosticDetailPage() {
     ? (result.website.startsWith("http://") || result.website.startsWith("https://") ? result.website : `https://${result.website}`)
     : null;
   const websiteLabel = cleanWebsiteDisplay(result.website);
+  const hasWebsite = Boolean(String(result.website || "").trim());
   const phoneLabel = result.phone ? String(result.phone).trim() : "";
   const phoneHref = phoneLabel ? `tel:${phoneLabel}` : null;
   const paidStatus = paidStatusLabel(String(ds?.google_ads_line || result.paid_status || "Unknown"));
@@ -399,14 +614,26 @@ export default function DiagnosticDetailPage() {
   const rating = firstNumber(result.review_position);
   const localAvgReviews = firstNumber(mp?.local_avg) || firstNumber((result.evidence || []).find((e) => String(e.label || "").toLowerCase().includes("review"))?.value) || 0;
 
-  const opportunityBand = String(
-    ed?.modeled_revenue_upside
-    || (b?.revenue_upside_capture_gap?.annual_low != null
-      ? `$${Number(b.revenue_upside_capture_gap.annual_low).toLocaleString()}-$${Number(b.revenue_upside_capture_gap.annual_high ?? 0).toLocaleString()}`
-      : result.opportunity_profile || "—"),
-  );
-  const opportunityLabel = String(ed?.opportunity_profile?.label || verdict.label || "Opportunity Signal");
+  const opportunitySignal = String(ed?.opportunity_profile?.label || verdict.label || "Opportunity Signal");
+  const modeledUpside = getModeledUpsideDisplay(result);
   const topGap = String(verdict.topGap || csg?.service || sg?.service || "—");
+  const preferredFocus = modeledUpside.serviceContext && modeledUpside.serviceContext !== "Primary gap"
+    ? modeledUpside.serviceContext
+    : "";
+  const summaryFocus = generateOpportunityFocus(result, preferredFocus);
+  const noWebsiteConfirmed = [
+    "No website was detected for this business.",
+    (reviewCount > 0 || rating != null || localAvgReviews > 0)
+      ? `Listing data shows ${reviewCount || "0"} reviews${rating ? ` at ${rating.toFixed(1)} stars` : ""}${localAvgReviews > 0 ? ` versus a local average of ${localAvgReviews}` : ""}.`
+      : "",
+    String(mp?.market_density || result.market_density || "").trim() && String(mp?.market_density || result.market_density || "—") !== "—"
+      ? `Market density is currently classified as ${String(mp?.market_density || result.market_density || "").toLowerCase()}.`
+      : "",
+    paidStatus !== "Unknown"
+      ? `Paid demand signal: ${paidStatus === "Active" ? "active ads detected from off-site signals." : "no active ads detected."}`
+      : "",
+    phoneLabel ? "Phone contact is present in listing data." : "",
+  ].filter(Boolean);
 
   const crawlMethodRaw = String(svc.crawl_method || "").toLowerCase();
   const usesPlaywrightPath = crawlMethodRaw.includes("playwright");
@@ -427,8 +654,20 @@ export default function DiagnosticDetailPage() {
     || 0,
   );
 
-  const talkingPoints = generatePitchBullets(result).slice(0, 3);
-  const revenueDrivers = verdict.reasons.slice(0, 4);
+  const observations = generateObservationBullets(result, summaryFocus).slice(0, 3);
+  const whyNow = generateWhyNow(result, summaryFocus);
+  const schedulingState = schedulingCtaState(schedulingCta, conv.scheduling_cta_detected as boolean | null | undefined);
+  const bookingState = bookingFlowState(bookingFlow);
+  const contactState = contactFormState(
+    contactFormVerification,
+    conv.contact_form as boolean | null | undefined,
+    convStruct.form_single_or_multi_step,
+  );
+  const verificationOutcomeSummary = [bookingState.status, contactState.icon === "✓" ? "Contact form verified" : ""]
+    .filter(Boolean)
+    .join(" • ");
+  const verificationSummary = verificationSummaryLabel(usesPlaywrightPath, followupPagesChecked.length);
+  const uniqueFollowupPagesChecked = Array.from(new Set(followupPagesChecked.filter(Boolean)));
 
   const rawRisks = ((b?.risk_flags || result.risk_flags || []) as string[])
     .filter((flag) => {
@@ -489,6 +728,25 @@ export default function DiagnosticDetailPage() {
   const maxReviews = Math.max(...competitorRows.map((r) => r.reviews), 1);
   const nearestReviews = Number(firstNumber(sg?.competitor_reviews) || firstNumber(csg?.competitor_reviews) || 0);
   const reviewDelta = nearestReviews > 0 ? reviewCount - nearestReviews : 0;
+  const geoCoverage = pagesCrawled > 0
+    ? `${pct(geoIntentPages, pagesCrawled)}% · ${geoIntentPages}/${pagesCrawled} pages`
+    : geoIntentPages > 0
+      ? `${geoIntentPages} page${geoIntentPages === 1 ? "" : "s"}`
+      : "—";
+  const whyNowItems = (observations.length ? observations : [whyNow]).slice(0, 3);
+  const heroCompetitors = competitorRows.slice(0, 4);
+  const recommendationSummary = hasWebsite
+    ? `${result.business_name} is worth pursuing where ${summaryFocus.toLowerCase()} overlaps with visible demand and a fixable capture gap.`
+    : `${result.business_name} is worth pursuing where listing demand signals are already present and the competitive story is still favorable.`;
+  const recommendationDetail = modeledUpside.mode === "range"
+    ? `${modeledUpside.value} in modeled annual upside suggests this brief is strong enough to move into outreach.`
+    : `Use the brief to frame the outreach around ${summaryFocus.toLowerCase()} before opening the full audit.`;
+  const heroVerificationItems = [
+    { label: "Scheduling CTA", status: schedulingState.status, complete: schedulingState.icon === "✓" },
+    { label: "Booking flow", status: bookingState.status, complete: bookingState.icon === "✓" },
+    { label: "Contact form", status: contactState.status, complete: contactState.icon === "✓" },
+    { label: "Phone prominent", status: boolLabel(conv.phone_prominent as boolean | null | undefined), complete: Boolean(conv.phone_prominent) },
+  ];
 
   const cityTokens = String(result.city || "").toLowerCase().split(/\s+/).filter(Boolean);
   const geoExamples = (
@@ -558,8 +816,6 @@ export default function DiagnosticDetailPage() {
   const activeCtaPages = activeCtaRow?.pages || [];
   const activeCtaPageCount = activeCtaPages.length;
 
-  const statusBadge = verdict.verdict === "HIGH_LEVERAGE" ? "STRONG LEAD" : "QUALIFIED LEAD";
-
   return (
     <div className="mx-auto max-w-7xl px-2 pb-24 md:px-4">
       <main className="space-y-4">
@@ -581,45 +837,148 @@ export default function DiagnosticDetailPage() {
           </Card>
         )}
 
-        <Card ref={headerRef} className="sticky top-2 z-20 border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="space-y-1">
-              <h1 className="text-lg font-semibold tracking-tight text-slate-900">{result.business_name}</h1>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                <span>{result.city}{result.state ? `, ${result.state}` : ""}</span>
-                {(websiteHref || phoneHref) ? <span>•</span> : null}
-                {websiteHref ? (
-                  <a href={websiteHref} target="_blank" rel="noreferrer" className="font-medium text-slate-700 hover:underline">
-                    {websiteLabel || websiteHref}
-                  </a>
-                ) : <span>Website not available</span>}
-                {phoneHref ? (
-                  <>
-                    <span>•</span>
-                    <a href={phoneHref} className="font-medium text-slate-700 hover:underline">
-                      {phoneLabel}
-                    </a>
-                  </>
-                ) : null}
+        <div ref={headerRef}>
+          <Card className="border border-[var(--border-default)] bg-[var(--bg-card)] p-4 md:p-5">
+            <div className="space-y-4 md:space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1 space-y-3">
+                  <button
+                    type="button"
+                    onClick={handleBack}
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)] transition hover:brightness-95"
+                  >
+                    <span aria-hidden="true">←</span>
+                    <span>{navContext.backLabel}</span>
+                  </button>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <HeroPill tone="green">Qualified Lead</HeroPill>
+                    <HeroPill tone="neutral">{opportunitySignal}</HeroPill>
+                  </div>
+
+                  <div className="space-y-1">
+                    <h1 className="page-title text-[clamp(2rem,4vw,2.75rem)]">{result.business_name}</h1>
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+                      <span>{result.city}{result.state ? `, ${result.state}` : ""}</span>
+                      {(websiteHref || phoneHref) ? <span>•</span> : null}
+                      {websiteHref ? (
+                        <a href={websiteHref} target="_blank" rel="noreferrer" className="font-medium text-[var(--text-primary)] hover:underline">
+                          {websiteLabel || websiteHref}
+                        </a>
+                      ) : <span>Website not available</span>}
+                      {phoneHref ? (
+                        <>
+                          <span>•</span>
+                          <a href={phoneHref} className="font-medium text-[var(--text-primary)] hover:underline">
+                            {phoneLabel}
+                          </a>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="primary" onClick={() => setAddListOpen(true)}>Add to Pipeline</Button>
+                  <Button onClick={() => setOutreachOpen(true)} className="border-[var(--border-default)]">Log Outreach</Button>
+                </div>
+              </div>
+
+              <div className="grid gap-2 lg:grid-cols-5">
+                <HeroSignalCell label="Reviews count" value={reviewCount ? String(reviewCount) : "—"} />
+                <HeroSignalCell
+                  label="Review delta vs nearest"
+                  value={nearestReviews > 0 ? `${reviewDelta >= 0 ? "+" : ""}${reviewDelta} vs nearest` : "—"}
+                />
+                <HeroSignalCell label="Paid ads" value={paidStatus} />
+                <HeroSignalCell label="Market density" value={String(mp?.market_density || result.market_density || "—")} />
+                <HeroSignalCell label="Geo intent coverage" value={geoCoverage} />
+              </div>
+
+              <div className="flex flex-col gap-3 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="space-y-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">Top Gap</p>
+                  <p className="text-base font-medium text-[var(--text-primary)]">{topGap}</p>
+                </div>
+                <span className="inline-flex items-center rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-medium text-amber-700">
+                  {summaryFocus}
+                </span>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="section-kicker">Why now</p>
+                    <span className="text-xs text-[var(--text-secondary)]">{whyNow}</span>
+                  </div>
+                  <ul className="mt-3 space-y-3">
+                    {whyNowItems.map((item) => (
+                      <li key={item} className="flex items-start gap-3">
+                        <span className={`mt-1.5 h-2.5 w-2.5 rounded-full ${rationaleTone(item) === "urgent" ? "bg-amber-500" : "bg-emerald-500"}`} />
+                        <span className="text-sm leading-6 text-[var(--text-primary)]">{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+
+                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="section-kicker">Competitors nearby</p>
+                    <span className="text-xs text-[var(--text-secondary)]">
+                      {nearestReviews > 0 ? `${reviewDelta >= 0 ? "+" : ""}${reviewDelta} vs nearest` : "Review context"}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 space-y-3">
+                    {heroCompetitors.map((row, idx) => (
+                      <div
+                        key={`${row.name}-${idx}`}
+                        className="grid grid-cols-[minmax(0,1.4fr)_92px_72px] items-center gap-3 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-[var(--text-primary)]">
+                            {row.name}{row.isYou ? " (You)" : ""}
+                          </p>
+                          <div className="mt-1 h-2.5 rounded-full bg-white">
+                            <div
+                              className={`h-2.5 rounded-full ${row.isYou ? "bg-[var(--text-primary)]" : "bg-[var(--primary)]/55"}`}
+                              style={{ width: `${pct(row.reviews, maxReviews)}%` }}
+                            />
+                          </div>
+                        </div>
+                        <p className="text-right font-medium tabular-nums text-[var(--text-primary)]">{row.reviews || "—"}</p>
+                        <p className="text-right text-[var(--text-secondary)]">{row.distance}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                  <p className="section-kicker">Capture verification</p>
+                  <div className="mt-3 space-y-3">
+                    {heroVerificationItems.map((item) => (
+                      <VerificationItem key={item.label} label={item.label} status={item.status} complete={item.complete} />
+                    ))}
+                  </div>
+                </section>
+
+                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                  <p className="section-kicker">Recommendation</p>
+                  <p className="mt-3 text-sm leading-6 text-[var(--text-primary)]">{recommendationSummary}</p>
+                  <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">{recommendationDetail}</p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button onClick={() => setOutreachOpen(true)}>Draft outreach</Button>
+                    <Button onClick={() => setActiveTab("fullAudit")} className="border-[var(--border-default)]">
+                      Full audit
+                    </Button>
+                  </div>
+                </section>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
-                {statusBadge}
-              </span>
-              <Button onClick={() => setAddListOpen(true)}>Add to Pipeline</Button>
-              <Button onClick={() => setOutreachOpen(true)} className="border-[var(--border-default)]">Log Outreach</Button>
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-            <QuickStat label="Opportunity" value={opportunityBand} />
-            <QuickStat label="Reviews / Rating" value={`${reviewCount || "—"}${rating ? ` / ${rating.toFixed(1)}` : ""}`} />
-            <QuickStat label="Paid Ads" value={paidStatus} />
-            <QuickStat label="Top Gap" value={topGap} />
-            <QuickStat label="Market Density" value={String(mp?.market_density || result.market_density || "—")} />
-          </div>
-        </Card>
+          </Card>
+        </div>
 
         <Card className="p-4">
           <div className="mb-3 flex flex-wrap gap-2">
@@ -653,39 +1012,26 @@ export default function DiagnosticDetailPage() {
 
           {activeTab === "overview" && (
             <div className="space-y-3 text-sm">
-              <div className="grid gap-3 lg:grid-cols-2">
-                <Card className="border border-slate-200 p-3">
-                  <h3 className="text-sm font-semibold text-slate-900">Revenue Signal</h3>
-                  <div className="mt-2 space-y-2">
-                    <p><span className="text-xs text-slate-500">Opportunity Band:</span> <span className="font-semibold">{opportunityBand}</span></p>
-                    <p><span className="text-xs text-slate-500">Opportunity Label:</span> <span className="font-semibold">{opportunityLabel}</span></p>
-                    <div>
-                      <p className="text-xs text-slate-500">Revenue Drivers</p>
-                      <ul className="mt-1 list-disc space-y-1 pl-5 text-slate-700">
-                        {revenueDrivers.length ? revenueDrivers.map((r, i) => <li key={i}>{r}</li>) : <li>No urgent revenue drivers detected.</li>}
-                      </ul>
-                    </div>
+              <Card className="border border-slate-200 p-4">
+                <p className="section-kicker">Overview</p>
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  Core lead context now lives above the fold. Use the tabs to go deeper into nearby competitors, verified site gaps, and the full audit trail.
+                </p>
+                {modeledUpside.mode === "range" ? (
+                  <div className="mt-4 rounded-xl border border-[#4f79c7]/20 bg-[#4f79c7]/6 px-3 py-3 text-xs text-slate-700">
+                    <p><span className="text-slate-500">Annual upside:</span> <span className="font-semibold">{modeledUpside.value}</span></p>
+                    <p className="mt-1 text-slate-600">{modeledUpside.context}</p>
                   </div>
-                </Card>
-
-                <Card className="border border-slate-200 p-3">
-                  <h3 className="text-sm font-semibold text-slate-900">Talking Points</h3>
-                  <ol className="mt-2 list-decimal space-y-1 pl-5 text-slate-700">
-                    {talkingPoints.length ? talkingPoints.map((t, i) => <li key={i}>{t}</li>) : <li>No talking points generated.</li>}
-                  </ol>
-                </Card>
-              </div>
-
-              {rawRisks.length > 0 ? (
-                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
-                  <p className="text-xs font-semibold uppercase tracking-wide">Risk Flags</p>
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    {rawRisks.slice(0, 5).map((flag, idx) => (
-                      <span key={idx} className="rounded border border-amber-300 bg-white px-2 py-1 text-xs">{flag}</span>
-                    ))}
+                ) : null}
+                {!hasWebsite ? (
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                    <h3 className="text-sm font-semibold text-slate-900">What Neyma can confirm without a website</h3>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-700">
+                      {noWebsiteConfirmed.map((item, i) => <li key={i}>{item}</li>)}
+                    </ul>
                   </div>
-                </div>
-              ) : null}
+                ) : null}
+              </Card>
             </div>
           )}
 
@@ -709,13 +1055,13 @@ export default function DiagnosticDetailPage() {
                   </thead>
                   <tbody>
                     {competitorRows.map((row, idx) => (
-                      <tr key={`${row.name}-${idx}`} className={`border-t border-slate-200 ${row.isYou ? "bg-blue-50" : "bg-white"}`}>
+                      <tr key={`${row.name}-${idx}`} className={`border-t border-slate-200 ${row.isYou ? "bg-zinc-100/70" : "bg-white"}`}>
                         <td className="px-3 py-2 font-medium text-slate-900">{row.name}{row.isYou ? " (You)" : ""}</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-2">
                             <span className="w-10 text-right tabular-nums">{row.reviews || "—"}</span>
                             <div className="h-2 w-28 rounded bg-slate-100">
-                              <div className={`h-2 rounded ${row.isYou ? "bg-blue-600" : "bg-slate-400"}`} style={{ width: `${pct(row.reviews, maxReviews)}%` }} />
+                              <div className={`h-2 rounded ${row.isYou ? "bg-zinc-700" : "bg-slate-400"}`} style={{ width: `${pct(row.reviews, maxReviews)}%` }} />
                             </div>
                           </div>
                         </td>
@@ -744,19 +1090,31 @@ export default function DiagnosticDetailPage() {
               </div>
 
               <Card className="border border-slate-200 p-3">
-                <h3 className="text-sm font-semibold text-slate-900">Capture Readiness</h3>
-                <div className="mt-2 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Capture Verification</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Neyma shows only what it verified in rendered page content and first-hop booking/contact pages.
+                    </p>
+                  </div>
+                  {followupPagesChecked.length ? (
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                      {followupPagesChecked.length} follow-up page{followupPagesChecked.length === 1 ? "" : "s"} checked
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-3 space-y-2">
                   <CaptureReadinessRow
-                    label="Online Scheduling"
-                    status={boolLabel(conv.online_booking as boolean | null | undefined)}
-                    icon={boolIcon(conv.online_booking as boolean | null | undefined)}
-                    note="Booking path detection from rendered page content."
+                    label="Scheduling CTA"
+                    {...schedulingState}
+                  />
+                  <CaptureReadinessRow
+                    label="Booking Flow"
+                    {...bookingState}
                   />
                   <CaptureReadinessRow
                     label="Contact Form"
-                    status={boolLabel(conv.contact_form as boolean | null | undefined)}
-                    icon={boolIcon(conv.contact_form as boolean | null | undefined)}
-                    note={convStruct.form_single_or_multi_step ? `Form structure: ${String(convStruct.form_single_or_multi_step)}` : "No form structure signal found."}
+                    {...contactState}
                   />
                   <CaptureReadinessRow
                     label="Phone Prominent"
@@ -771,11 +1129,43 @@ export default function DiagnosticDetailPage() {
                     note="Homepage tap-to-call detection."
                   />
                   <CaptureReadinessRow
-                    label="JS Rendering"
-                    status={usesPlaywrightPath ? "Enabled" : "Unavailable"}
+                    label="Rendered Page Check"
+                    status={usesPlaywrightPath ? "Used in this scan" : "Not used in this scan"}
                     icon={usesPlaywrightPath ? "✓" : "✕"}
-                    note={crawlMethodLabel(svc.crawl_method)}
+                    note={usesPlaywrightPath
+                      ? "Neyma used a rendered page check where needed during capture verification."
+                      : "This scan relied on page-source checks only."}
                   />
+                </div>
+                <div className="mt-3 rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Verification path</p>
+                    <span className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-slate-700">
+                      {verificationSummary}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <CapturePagePill page={homepagePage} tone="primary" />
+                    {uniqueFollowupPagesChecked.length ? (
+                      <>
+                        <span className="text-slate-400">→</span>
+                        {uniqueFollowupPagesChecked.slice(0, 3).map((page) => <CapturePagePill key={page} page={page} />)}
+                      </>
+                    ) : null}
+                    {verificationOutcomeSummary ? (
+                      <>
+                        <span className="text-slate-400">→</span>
+                        {[schedulingState.status, bookingState.status, contactState.status]
+                          .filter((value) => value && value !== "Not verified in this scan")
+                          .slice(0, 3)
+                          .map((value) => (
+                            <span key={value} className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700">
+                              {flowOutcomeLabel(value)}
+                            </span>
+                          ))}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
               </Card>
 
@@ -839,7 +1229,7 @@ export default function DiagnosticDetailPage() {
                     <span>{pct(geoIntentPages, 30)}%</span>
                   </div>
                   <div className="h-2 rounded bg-slate-100">
-                    <div className="h-2 rounded bg-blue-600" style={{ width: `${pct(geoIntentPages, 30)}%` }} />
+                    <div className="h-2 rounded bg-zinc-700" style={{ width: `${pct(geoIntentPages, 30)}%` }} />
                   </div>
                 </div>
 
@@ -864,7 +1254,7 @@ export default function DiagnosticDetailPage() {
                             <td className={`px-2 py-1.5 font-mono text-[11px] ${highlighted ? "text-amber-900" : "text-slate-700"}`}>{row.url}</td>
                             <td className="px-2 py-1.5">
                               <div className="flex flex-wrap gap-1">
-                                {row.signals.includes("city") ? <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-700">📍 city</span> : null}
+                                {row.signals.includes("city") ? <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] text-zinc-800">📍 city</span> : null}
                                 {row.signals.includes("near-me") ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">🔍 near-me</span> : null}
                                 {row.signals.includes("schema") ? <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] text-violet-700">🏷 schema</span> : null}
                                 {row.signals.includes("meta") ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800">📝 meta</span> : null}
@@ -911,7 +1301,7 @@ export default function DiagnosticDetailPage() {
                               <span className="font-medium text-slate-900">{row.service}</span>
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${verdictTone}`}>{verdictLabel}</span>
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${confTone}`}>{row.confidence}</span>
-                              {row.aiVerdict ? <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">AI: {row.aiVerdict}</span> : null}
+                              {row.aiVerdict ? <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-800">AI: {row.aiVerdict}</span> : null}
                             </div>
                             <p className="mt-1 text-xs text-slate-700">{row.reason}</p>
                             {row.aiReason ? <p className="mt-0.5 text-[11px] text-slate-500">AI note: {row.aiReason}</p> : null}
@@ -942,7 +1332,7 @@ export default function DiagnosticDetailPage() {
                         className={`block w-full rounded border p-2 text-left transition ${activeCtaType === row.type ? "border-amber-300 bg-amber-50/70" : activeCtaType && activeCtaType !== row.type ? "border-slate-200 bg-white opacity-40 hover:opacity-70" : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}`}
                       >
                         <div className="mb-1 flex items-center justify-between">
-                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${row.type === "Book" ? "bg-blue-100 text-blue-700" : row.type === "Schedule" ? "bg-emerald-100 text-emerald-700" : row.type === "Contact" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{row.type}</span>
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${row.type === "Book" ? "bg-zinc-200 text-zinc-800" : row.type === "Schedule" ? "bg-emerald-100 text-emerald-700" : row.type === "Contact" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{row.type}</span>
                           <span className="text-xs font-semibold text-slate-900">{row.count}</span>
                         </div>
                         <p className="mb-1 text-[11px] text-slate-500">{Number(row.clickableCount || 0)} clickable</p>
@@ -998,7 +1388,7 @@ export default function DiagnosticDetailPage() {
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-xs font-semibold">{result.business_name}</p>
-              <p className="truncate text-[11px] text-[var(--text-muted)]">{opportunityBand || "Opportunity: —"}</p>
+              <p className="truncate text-[11px] text-[var(--text-muted)]">{opportunitySignal || "Opportunity signal: —"}</p>
             </div>
             <div className="flex gap-2">
               <Button onClick={() => setAddListOpen(true)}>Add to Pipeline</Button>
@@ -1085,7 +1475,7 @@ export default function DiagnosticDetailPage() {
               <div className="rounded-[22px] border border-black/6 bg-[#fbfaf7] p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Active focus</p>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className={`rounded px-2 py-1 text-xs font-semibold ${activeCtaRow.type === "Book" ? "bg-blue-100 text-blue-700" : activeCtaRow.type === "Schedule" ? "bg-emerald-100 text-emerald-700" : activeCtaRow.type === "Contact" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>
+                  <span className={`rounded px-2 py-1 text-xs font-semibold ${activeCtaRow.type === "Book" ? "bg-zinc-200 text-zinc-800" : activeCtaRow.type === "Schedule" ? "bg-emerald-100 text-emerald-700" : activeCtaRow.type === "Contact" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>
                     {activeCtaRow.type}
                   </span>
                   <span className="text-xs text-[var(--text-secondary)]">
@@ -1146,11 +1536,59 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
-function QuickStat({ label, value }: { label: string; value: string }) {
+function HeroPill({ children, tone }: { children: React.ReactNode; tone: "green" | "neutral" }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
-      <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="truncate text-xs font-semibold text-slate-900">{value || "—"}</p>
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${
+        tone === "green"
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          : "border-[var(--border-default)] bg-[var(--surface)] text-[var(--text-primary)]"
+      }`}
+    >
+      {children}
+    </span>
+  );
+}
+
+function HeroSignalCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[14px] bg-[var(--surface)] px-4 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-secondary)]">{label}</p>
+      <p className="mt-1 text-sm font-medium text-[var(--text-primary)]">{value || "—"}</p>
+    </div>
+  );
+}
+
+function rationaleTone(text: string): "urgent" | "advantage" {
+  const lower = text.toLowerCase();
+  if (
+    lower.includes("active") ||
+    lower.includes("dense") ||
+    lower.includes("gap") ||
+    lower.includes("missing") ||
+    lower.includes("weak") ||
+    lower.includes("limited") ||
+    lower.includes("thin")
+  ) {
+    return "urgent";
+  }
+  return "advantage";
+}
+
+function VerificationItem({ label, status, complete }: { label: string; status: string; complete: boolean }) {
+  return (
+    <div className="flex items-start gap-3 rounded-[14px] bg-white px-3 py-3">
+      <span
+        className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold ${
+          complete ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"
+        }`}
+      >
+        {complete ? "✓" : "—"}
+      </span>
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-[var(--text-primary)]">{label}</p>
+        <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{status}</p>
+      </div>
     </div>
   );
 }
@@ -1166,15 +1604,81 @@ function MetricCard({ label, value, status, tone = "default" }: { label: string;
   );
 }
 
-function CaptureReadinessRow({ label, status, icon, note }: { label: string; status: string; icon: string; note: string }) {
+function captureTone(icon: string): { dot: string; panel: string; badge: string } {
   const ok = icon === "✓";
+  if (ok) {
+    return {
+      dot: "bg-emerald-100 text-emerald-700",
+      panel: "border-emerald-200 bg-emerald-50/40",
+      badge: "bg-emerald-100 text-emerald-700",
+    };
+  }
+  if (icon === "✕") {
+    return {
+      dot: "bg-red-100 text-red-700",
+      panel: "border-red-200 bg-red-50/40",
+      badge: "bg-red-100 text-red-700",
+    };
+  }
+  return {
+    dot: "bg-slate-100 text-slate-500",
+    panel: "border-slate-200 bg-white",
+    badge: "bg-slate-100 text-slate-700",
+  };
+}
+
+function CapturePagePill({ page, tone = "default" }: { page: string; tone?: "default" | "primary" }) {
+  const label = capturePageLabel(page);
   return (
-    <div className="grid grid-cols-[24px_1fr] items-start gap-2 rounded border border-slate-200 px-2 py-1.5">
-      <span className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold ${ok ? "bg-emerald-100 text-emerald-700" : icon === "✕" ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-500"}`}>{icon}</span>
-      <div>
-        <p className="text-xs font-semibold text-slate-900">{label}</p>
-        <p className="text-xs text-slate-700">{status}</p>
-        <p className="text-[11px] text-slate-500">{note}</p>
+    <span className={`rounded-full border px-2.5 py-1 font-mono text-[11px] ${tone === "primary" ? "border-[#4f79c7]/25 bg-[#4f79c7]/8 text-[#22406e]" : "border-slate-200 bg-white text-slate-700"}`}>
+      {label}
+    </span>
+  );
+}
+
+function CaptureReadinessRow({
+  label,
+  status,
+  icon,
+  note,
+  confidence,
+  observedPages,
+  evidence,
+}: {
+  label: string;
+  status: string;
+  icon: string;
+  note: string;
+  confidence?: string;
+  observedPages?: string[];
+  evidence?: string;
+}) {
+  const tone = captureTone(icon);
+  const uniqueObservedPages = Array.from(new Set((observedPages || []).filter(Boolean)));
+  return (
+    <div className={`grid grid-cols-[24px_1fr] items-start gap-2 rounded border px-2 py-2 ${tone.panel}`}>
+      <span className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold ${tone.dot}`}>{icon}</span>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs font-semibold text-slate-900">{label}</p>
+          <p className="text-xs text-slate-700">{status}</p>
+          {confidence ? (
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tone.badge}`}>
+              {confidence} confidence
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-[11px] text-slate-500">{note}</p>
+        {(uniqueObservedPages.length || evidence) ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {uniqueObservedPages.map((page) => <CapturePagePill key={page} page={page} />)}
+            {evidence ? (
+              <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600">
+                {evidence}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

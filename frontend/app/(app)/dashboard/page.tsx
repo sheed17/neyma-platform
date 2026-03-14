@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { deleteDiagnostic, getOutcomesSummary, getRecentTerritoryScans, listDiagnostics } from "@/lib/api";
+import { deleteDiagnostic, getBaseUrl, getOutcomesSummary, getRecentTerritoryScans, listDiagnostics } from "@/lib/api";
 import type { DiagnosticListItem, OutcomesSummaryResponse, TerritoryScanListItem } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import Input from "@/app/components/ui/Input";
@@ -11,6 +11,7 @@ import Badge from "@/app/components/ui/Badge";
 import { Table, THead, TH, TR, TD } from "@/app/components/ui/Table";
 import EmptyState from "@/app/components/ui/EmptyState";
 import { Skeleton } from "@/app/components/ui/Skeleton";
+import { BorderTrail } from "@/components/ui/border-trail";
 
 const PAGE_SIZE = 10;
 
@@ -32,11 +33,11 @@ function summarizeConstraint(value?: string | null, fallback?: string | null) {
   return `${cleaned.slice(0, 85).trim()}...`;
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
+function MiniStat({ label, value, className = "" }: { label: string; value: string; className?: string }) {
   return (
-    <div className="rounded-[24px] border border-black/6 bg-white px-4 py-4 shadow-[0_10px_30px_rgba(23,20,17,0.035)]">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</p>
-      <p className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--text-primary)]">{value}</p>
+    <div className={`bg-white px-4 py-5 ${className}`}>
+      <p className="section-kicker">{label}</p>
+      <p className="mt-3 text-[2.8rem] font-bold leading-none tracking-[-0.055em] text-[var(--text-primary)]">{value}</p>
     </div>
   );
 }
@@ -46,12 +47,14 @@ export default function DashboardPage() {
   const [scans, setScans] = useState<TerritoryScanListItem[]>([]);
   const [summary, setSummary] = useState<OutcomesSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
+      setError(null);
       try {
         const [diag, recent, out] = await Promise.all([
           listDiagnostics(200, 0),
@@ -61,6 +64,15 @@ export default function DashboardPage() {
         setItems(diag.items);
         setScans(recent.items);
         setSummary(out);
+      } catch (err) {
+        setItems([]);
+        setScans([]);
+        setSummary(null);
+        setError(
+          err instanceof Error
+            ? err.message
+            : `Unable to load workspace data from ${getBaseUrl()}.`,
+        );
       } finally {
         setLoading(false);
       }
@@ -95,14 +107,34 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-[var(--max-content)] space-y-5">
+      {error ? (
+        <Card>
+          <CardBody className="p-5">
+            <p className="card-title text-[var(--text-primary)]">Workspace unavailable</p>
+            <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">{error}</p>
+            <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+              The frontend is trying to reach <span className="font-mono text-[var(--text-primary)]">{getBaseUrl()}</span>.
+            </p>
+          </CardBody>
+        </Card>
+      ) : null}
+
       <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-        <Card className="overflow-hidden border border-black/8 bg-[linear-gradient(135deg,#f7f3ea_0%,#ffffff_60%,#f2f7ff_100%)] shadow-[0_18px_50px_rgba(23,20,17,0.05)]">
+        <Card className="relative overflow-hidden">
+          <BorderTrail
+            className="bg-[var(--primary)] opacity-70"
+            size={92}
+            style={{
+              boxShadow:
+                "0 0 22px 10px rgba(139,80,212,0.12), 0 0 44px 18px rgba(139,80,212,0.08)",
+            }}
+          />
           <CardBody className="p-5 sm:p-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Workspace</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-[-0.06em] text-[var(--text-primary)] sm:text-4xl">
+            <p className="section-kicker">Workspace</p>
+            <h2 className="mt-3 text-4xl font-semibold tracking-[-0.06em] text-[var(--text-primary)] sm:text-[3.3rem]">
               What should happen next?
             </h2>
-            <p className="mt-3 max-w-[46ch] text-sm leading-relaxed text-[var(--text-secondary)]">
+            <p className="mt-4 max-w-[46ch] text-lg leading-relaxed text-[var(--text-secondary)]">
               Use the workspace to start a market, narrow a shortlist, or open the next brief that needs attention.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
@@ -110,27 +142,27 @@ export default function DashboardPage() {
                 <Button variant="primary" className="h-11 rounded-full px-5">Run territory scan</Button>
               </Link>
               <Link href="/ask">
-                <Button className="h-11 rounded-full border-black/10 bg-white px-5 text-[var(--text-primary)] hover:bg-black/[0.03]">Ask Neyma</Button>
+                <Button variant="secondary" className="h-11 rounded-full px-5">Ask Neyma</Button>
               </Link>
               <Link href="/diagnostic/new">
-                <Button className="h-11 rounded-full border-black/10 bg-white px-5 text-[var(--text-primary)] hover:bg-black/[0.03]">Build brief</Button>
+                <Button variant="secondary" className="h-11 rounded-full px-5">Build brief</Button>
               </Link>
             </div>
           </CardBody>
         </Card>
 
-        <Card className="border border-black/8 bg-white shadow-[0_18px_40px_rgba(23,20,17,0.04)]">
+        <Card className="border-l-2" style={{ borderLeftColor: "var(--primary)", boxShadow: "0 12px 30px rgba(0,0,0,0.05)" }}>
           <CardHeader title="Next Up" subtitle="The cleanest next action based on the current workflow." />
           <CardBody className="space-y-4">
-            <div className="rounded-[24px] border border-black/6 bg-[#fbfaf7] p-4">
-              <p className="text-sm font-semibold text-[var(--text-primary)]">
+            <div className="app-surface border border-[var(--border-default)]">
+              <p className="card-title text-[var(--text-primary)]">
                 {scans.length === 0
                   ? "Run a territory scan for the next market."
                   : items.length === 0
                     ? "Use Ask Neyma to narrow the current market."
                     : "Open the next brief or continue narrowing in Ask Neyma."}
               </p>
-              <p className="mt-1 text-sm text-[var(--text-muted)]">
+              <p className="mt-2 text-base leading-7 text-[var(--text-secondary)]">
                 {scans.length === 0
                   ? "Start with the market before building any deeper brief."
                   : items.length === 0
@@ -140,7 +172,7 @@ export default function DashboardPage() {
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <Link href="/territory/new"><Button variant="primary" className="w-full rounded-full">Start with territory</Button></Link>
-              <Link href="/ask"><Button className="w-full rounded-full border-black/10 bg-white text-[var(--text-primary)] hover:bg-black/[0.03]">Continue in Ask</Button></Link>
+              <Link href="/ask"><Button variant="secondary" className="w-full rounded-full">Continue in Ask</Button></Link>
             </div>
           </CardBody>
         </Card>
@@ -149,12 +181,12 @@ export default function DashboardPage() {
       {summary && (
         <Card>
           <CardHeader title="Pipeline Status" subtitle="Latest outreach state across briefs and lists." />
-          <CardBody className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <MiniStat label="Contacted" value={String(summary.contacted || 0)} />
-            <MiniStat label="Won" value={String(summary.closed_won || 0)} />
-            <MiniStat label="Lost" value={String(summary.closed_lost || 0)} />
-            <MiniStat label="Not contacted" value={String(summary.not_contacted || 0)} />
-            <MiniStat label="Won (30d)" value={String(summary.closed_this_month || 0)} />
+          <CardBody className="grid gap-0 overflow-hidden rounded-[16px] border border-[var(--border-default)] bg-[var(--surface)] sm:grid-cols-2 xl:grid-cols-5">
+            <MiniStat label="Contacted" value={String(summary.contacted || 0)} className="rounded-none sm:border-r sm:border-[var(--border-default)]" />
+            <MiniStat label="Won" value={String(summary.closed_won || 0)} className="rounded-none xl:border-r xl:border-[var(--border-default)]" />
+            <MiniStat label="Lost" value={String(summary.closed_lost || 0)} className="rounded-none sm:border-r sm:border-[var(--border-default)] xl:border-r xl:border-[var(--border-default)]" />
+            <MiniStat label="Not contacted" value={String(summary.not_contacted || 0)} className="rounded-none xl:border-r xl:border-[var(--border-default)]" />
+            <MiniStat label="Won (30d)" value={String(summary.closed_this_month || 0)} className="rounded-none" />
           </CardBody>
         </Card>
       )}
@@ -181,7 +213,7 @@ export default function DashboardPage() {
                     <TD><Badge tone={s.status === "completed" ? "success" : "muted"}>{s.status}</Badge></TD>
                     <TD>{fmtDate(s.created_at)}</TD>
                     <TD className="text-right">
-                      <Link href={`/territory/${s.id}`} className="inline-flex h-9 items-center justify-center rounded-full border border-black/8 bg-white px-4 text-sm font-medium text-[var(--text-primary)] transition hover:bg-black/[0.03]">
+                      <Link href={`/territory/${s.id}`} className="inline-flex h-9 items-center justify-center rounded-[8px] border border-[var(--border-default)] bg-white px-4 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface)]">
                         Open scan
                       </Link>
                     </TD>
@@ -196,12 +228,12 @@ export default function DashboardPage() {
           <CardHeader title="Recent Work" subtitle="Jump back into the most recent briefs." />
           <CardBody className="space-y-2">
             {items.slice(0, 5).map((item) => (
-              <div key={item.id} className="flex items-center justify-between gap-3 rounded-[22px] border border-black/6 bg-[#fbfaf7] px-4 py-3">
+              <div key={item.id} className="flex items-center justify-between gap-3 rounded-[12px] border border-[var(--border-default)] bg-white px-4 py-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-[var(--text-primary)]">{item.business_name}</p>
                   <p className="mt-1 text-xs text-[var(--text-muted)]">{item.city}{item.state ? `, ${item.state}` : ""} · {fmtDate(item.created_at)}</p>
                 </div>
-                <Link href={`/diagnostic/${item.id}`} className="inline-flex shrink-0 h-9 items-center justify-center rounded-full bg-black px-4 text-sm font-medium text-white transition hover:bg-[#4f79c7]">
+                <Link href={`/diagnostic/${item.id}`} className="inline-flex shrink-0 h-9 items-center justify-center rounded-[8px] border border-[var(--border-default)] bg-white px-4 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface)]">
                   Open brief
                 </Link>
               </div>
@@ -231,7 +263,7 @@ export default function DashboardPage() {
                     <TD>{item.city}{item.state ? `, ${item.state}` : ""}</TD>
                     <TD>
                       <div className="max-w-[34rem]">
-                        <div className="inline-flex rounded-full bg-[#eef2f7] px-3 py-1 text-xs font-medium text-[#314056]">
+                        <div className="inline-flex rounded-full border border-[var(--border-default)] bg-[var(--surface)] px-3 py-1 text-xs font-medium text-[var(--text-primary)]">
                           {summarizeOpportunity(item.opportunity_profile)}
                         </div>
                         {summarizeConstraint(item.constraint, item.modeled_revenue_upside) ? (
@@ -245,7 +277,7 @@ export default function DashboardPage() {
                     <TD className="text-right">
                       <Link
                         href={`/diagnostic/${item.id}`}
-                        className="mr-3 inline-flex h-9 items-center justify-center rounded-full bg-black px-4 text-sm font-medium text-white transition hover:bg-[#4f79c7]"
+                        className="mr-3 inline-flex h-9 items-center justify-center rounded-[8px] border border-[var(--border-default)] bg-white px-4 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface)]"
                       >
                         Open brief
                       </Link>
@@ -256,7 +288,7 @@ export default function DashboardPage() {
               </tbody>
             </Table>
             {totalPages > 1 && (
-              <CardBody className="flex items-center justify-between border-t border-[var(--border-default)]">
+              <CardBody className="flex items-center justify-between border-t border-white/10">
                 <p className="text-sm text-[var(--text-muted)]">
                   Showing {page * PAGE_SIZE + 1}-{Math.min((page + 1) * PAGE_SIZE, filtered.length)} of {filtered.length}
                 </p>

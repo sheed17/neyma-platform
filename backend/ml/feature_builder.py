@@ -38,6 +38,14 @@ def _to_bool_int(value: Any) -> int:
     return 0
 
 
+def _bool_known(value: Any) -> int:
+    return 1 if isinstance(value, bool) else 0
+
+
+def _tri_component(value: int, known: int) -> float:
+    return float(value) if known else 0.5
+
+
 def _market_density_to_ord(value: Any) -> int:
     raw = str(value or "").strip().lower()
     if raw == "high":
@@ -82,14 +90,22 @@ def _weighted_service_gap(missing_services: Iterable[Any], detected_services: It
     return round(_clip(score, 0.0, 1.0), 6)
 
 
-def _compute_t1_quality_score(has_website: int, has_ssl: int, has_contact_form: int, has_phone: int, has_viewport: int, has_schema: int) -> float:
+def _compute_t1_quality_score(
+    has_website: int,
+    has_ssl: int,
+    has_contact_form: int,
+    has_contact_form_known: int,
+    has_phone: int,
+    has_viewport: int,
+    has_schema: int,
+) -> float:
     if not has_website:
         return 0.0
     return round(
         100.0
         * (
             0.22 * has_ssl
-            + 0.22 * has_contact_form
+            + 0.22 * _tri_component(has_contact_form, has_contact_form_known)
             + 0.22 * has_phone
             + 0.17 * has_viewport
             + 0.17 * has_schema
@@ -115,8 +131,10 @@ def _compute_t2_quality_score(
     has_ssl: int,
     mobile_optimized: int,
     has_contact_form: int,
+    has_contact_form_known: int,
     phone_prominent: int,
     has_online_booking: int,
+    has_online_booking_known: int,
     has_schema: int,
     page_load_ms: float | None,
 ) -> float:
@@ -127,9 +145,9 @@ def _compute_t2_quality_score(
         * (
             0.15 * has_ssl
             + 0.17 * mobile_optimized
-            + 0.17 * has_contact_form
+            + 0.17 * _tri_component(has_contact_form, has_contact_form_known)
             + 0.16 * phone_prominent
-            + 0.20 * has_online_booking
+            + 0.20 * _tri_component(has_online_booking, has_online_booking_known)
             + 0.07 * has_schema
             + 0.08 * _page_speed_score(page_load_ms)
         ),
@@ -160,6 +178,7 @@ def _base_market_features(
     has_website: int,
     has_ssl: int,
     has_contact_form: int,
+    has_contact_form_known: int,
     has_phone: int,
     has_viewport: int,
     has_schema: int,
@@ -172,6 +191,7 @@ def _base_market_features(
         has_website=has_website,
         has_ssl=has_ssl,
         has_contact_form=has_contact_form,
+        has_contact_form_known=has_contact_form_known,
         has_phone=has_phone,
         has_viewport=has_viewport,
         has_schema=has_schema,
@@ -196,6 +216,7 @@ def _base_market_features(
         "has_website": has_website,
         "has_ssl": has_ssl,
         "has_contact_form": has_contact_form,
+        "has_contact_form_known": has_contact_form_known,
         "has_phone": has_phone,
         "has_viewport": has_viewport,
         "has_schema": has_schema,
@@ -229,6 +250,7 @@ def build_tier1_feature_vector(row: Mapping[str, Any]) -> Dict[str, Any]:
 
     has_website = _to_bool_int(row.get("has_website"))
     has_ssl = _to_bool_int(row.get("ssl"))
+    has_contact_form_known = _bool_known(row.get("has_contact_form"))
     has_contact_form = _to_bool_int(row.get("has_contact_form"))
     has_phone = _to_bool_int(row.get("has_phone"))
     has_viewport = _to_bool_int(row.get("has_viewport"))
@@ -244,6 +266,7 @@ def build_tier1_feature_vector(row: Mapping[str, Any]) -> Dict[str, Any]:
         has_website=has_website,
         has_ssl=has_ssl,
         has_contact_form=has_contact_form,
+        has_contact_form_known=has_contact_form_known,
         has_phone=has_phone,
         has_viewport=has_viewport,
         has_schema=has_schema,
@@ -255,7 +278,7 @@ def build_tier1_feature_vector(row: Mapping[str, Any]) -> Dict[str, Any]:
         "local_avg_rating",
         "has_website",
         "has_ssl",
-        "has_contact_form",
+        "has_contact_form_known",
         "has_phone",
         "has_viewport",
         "has_schema",
@@ -308,6 +331,7 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
 
     has_website = 1 if str(response.get("website") or "").strip() else 0
     has_ssl = 1 if str(response.get("website") or "").startswith("https://") else 0
+    has_contact_form_known = _bool_known(conversion.get("contact_form"))
     has_contact_form = _to_bool_int(conversion.get("contact_form"))
     has_phone = 1 if str(response.get("phone") or "").strip() else 0
     has_viewport = 1
@@ -323,6 +347,7 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
         has_website=has_website,
         has_ssl=has_ssl,
         has_contact_form=has_contact_form,
+        has_contact_form_known=has_contact_form_known,
         has_phone=has_phone,
         has_viewport=has_viewport,
         has_schema=has_schema,
@@ -338,6 +363,7 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
     page_load_raw = conversion.get("page_load_ms")
     page_load_ms = _to_float(page_load_raw, default=-1.0)
     page_load_val = None if page_load_ms <= 0 else page_load_ms
+    has_online_booking_known = _bool_known(conversion.get("online_booking"))
     has_online_booking = _to_bool_int(conversion.get("online_booking"))
     phone_prominent = _to_bool_int(conversion.get("phone_prominent"))
     mobile_optimized = _to_bool_int(conversion.get("mobile_optimized"))
@@ -346,8 +372,10 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
         has_ssl=has_ssl,
         mobile_optimized=mobile_optimized,
         has_contact_form=has_contact_form,
+        has_contact_form_known=has_contact_form_known,
         phone_prominent=phone_prominent,
         has_online_booking=has_online_booking,
+        has_online_booking_known=has_online_booking_known,
         has_schema=has_schema,
         page_load_ms=page_load_val,
     )
@@ -409,6 +437,7 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
     features.update(
         {
             "has_online_booking": has_online_booking,
+            "has_online_booking_known": has_online_booking_known,
             "phone_prominent": phone_prominent,
             "mobile_optimized": mobile_optimized,
             "page_load_ms": page_load_val,
@@ -430,7 +459,7 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
             "runs_google_ads": runs_google_ads,
             "runs_meta_ads": runs_meta_ads,
             "paid_channels_count": paid_channels_count,
-            "ads_without_booking_flag": 1 if runs_google_ads == 1 and has_online_booking == 0 else 0,
+            "ads_without_booking_flag": 1 if runs_google_ads == 1 and has_online_booking_known == 1 and has_online_booking == 0 else 0,
             "ads_without_service_depth_flag": 1 if runs_google_ads == 1 and service_gap_weighted_score >= 0.30 else 0,
             "geo_intent_page_count": geo_intent_page_count,
             "missing_geo_page_count": missing_geo_page_count,
@@ -455,7 +484,7 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
             else 0,
             "distressed_clinic_flag_t2": 1 if review_count < 10 and (rating <= 0 or rating < 3.5) and quality_t2 < 35 else 0,
             "mid_market_fit_flag_t2": 1 if 0.15 <= features["review_gap_pct"] <= 0.50 and 20 <= review_count <= 250 and rating >= 3.9 and quality_t2 >= 45 else 0,
-            "investable_gap_flag": 1 if (features["review_gap_pct"] >= 0.15 or service_gap_weighted_score >= 0.25 or has_online_booking == 0) and review_count >= 20 and rating >= 3.9 and quality_t2 >= 45 else 0,
+            "investable_gap_flag": 1 if (features["review_gap_pct"] >= 0.15 or service_gap_weighted_score >= 0.25 or (has_online_booking_known == 1 and has_online_booking == 0)) and review_count >= 20 and rating >= 3.9 and quality_t2 >= 45 else 0,
             "service_scan_observed_flag": service_observed,
             "conversion_scan_observed_flag": 1 if has_website == 1 and page_load_val is not None else 0,
             "feature_scope": "tier2",
@@ -470,10 +499,10 @@ def build_tier2_feature_vector(response: Mapping[str, Any]) -> Dict[str, Any]:
         "local_avg_rating",
         "has_website",
         "has_ssl",
-        "has_contact_form",
+        "has_contact_form_known",
         "has_phone",
         "has_schema",
-        "has_online_booking",
+        "has_online_booking_known",
         "mobile_optimized",
         "service_page_count",
         "pages_crawled",

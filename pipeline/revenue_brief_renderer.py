@@ -9,6 +9,8 @@ No model version labels. Wording focused on SEO for dental practices (local visi
 
 from typing import Dict, Any, List, Optional, Tuple
 
+from pipeline.consistency import normalize_conversion_infrastructure, normalize_service_intelligence
+
 
 def _is_dental_for_brief(lead: Dict[str, Any]) -> bool:
     """Lightweight dental check for brief rendering (avoids heavy dentist_profile import)."""
@@ -637,6 +639,69 @@ def _fmt_currency(val: Any) -> str:
         return str(val)
 
 
+def _revenue_confidence_label(score: Any) -> str:
+    try:
+        value = int(float(score))
+    except (TypeError, ValueError):
+        value = 0
+    if value >= 70:
+        return "High"
+    if value >= 40:
+        return "Medium"
+    return "Low"
+
+
+def _build_modeled_upside_display(
+    rev: Dict[str, Any],
+    *,
+    annual_low: Optional[int],
+    annual_high: Optional[int],
+    service_label: Optional[str],
+    source: str,
+) -> Dict[str, Any]:
+    confidence_score = int(rev.get("revenue_confidence_score") or 0)
+    reliability_grade = str(rev.get("revenue_reliability_grade") or "C").strip().upper() or "C"
+    indicative_only = bool(rev.get("revenue_indicative_only"))
+    traffic_tier = str(rev.get("traffic_estimate_tier") or "").strip()
+    confidence_label = _revenue_confidence_label(confidence_score)
+    service_context = f"{service_label} capture gap" if service_label else "Modeled capture gap"
+
+    if annual_low is None or annual_high is None:
+        display_mode = "suppressed"
+    elif not indicative_only and reliability_grade in {"A", "B"} and confidence_score >= 70:
+        display_mode = "range"
+    else:
+        display_mode = "indicative"
+
+    basis_parts: List[str] = []
+    if service_label:
+        basis_parts.append(f"{service_label.lower()} gap")
+    if source == "ga4_calibrated":
+        basis_parts.append("GA4-calibrated conversion proxy")
+    else:
+        if traffic_tier:
+            basis_parts.append(f"{traffic_tier.lower()} traffic tier")
+        else:
+            basis_parts.append("traffic proxy")
+        basis_parts.append("service-value assumptions")
+
+    return {
+        "display_mode": display_mode,
+        "display_value": f"${annual_low:,}–${annual_high:,} annually" if display_mode == "range" and annual_low is not None and annual_high is not None else None,
+        "confidence_score": confidence_score,
+        "confidence_label": confidence_label,
+        "reliability_grade": reliability_grade,
+        "basis": f"Modeled from {', '.join(basis_parts)}." if basis_parts else "Modeled from public proxy signals.",
+        "context": "Directional estimate only — not a booked revenue forecast.",
+        "suppressed_reason": (
+            "Numeric range withheld because the estimate is still proxy-based or confidence is limited."
+            if display_mode != "range"
+            else None
+        ),
+        "service_context": service_context,
+    }
+
+
 def _normalize_to_canonical_services(
     high_ticket: List[str], missing: List[str]
 ) -> Tuple[List[str], List[str]]:
@@ -1011,7 +1076,7 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
             vm["demand_signals"]["review_velocity_estimated"] = True
 
     # ---------- 4) High-Ticket Capture Gaps (canonical normalization) ----------
-    svc = obj.get("service_intelligence") or {}
+    svc = normalize_service_intelligence(obj.get("service_intelligence") or {})
     suppress_service_gap = bool(svc.get("suppress_service_gap"))
     suppress_conversion_absence_claims = bool(svc.get("suppress_conversion_absence_claims") or suppress_service_gap)
     high_ticket_raw = svc.get("high_ticket_procedures_detected")
@@ -1107,6 +1172,15 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
                 "source": upside_source,
                 "method_note": "From: service gaps, traffic proxy, and conversion assumptions (see disclaimer).",
             }
+            vm["revenue_upside_capture_gap"].update(
+                _build_modeled_upside_display(
+                    rev,
+                    annual_low=annual_low,
+                    annual_high=annual_high,
+                    service_label=display_name,
+                    source=upside_source,
+                )
+            )
             gap_service_raw = (vm.get("competitive_service_gap") or {}).get("service")
             if gap_service_raw and str(gap_service_raw).strip().lower() != display_name.strip().lower():
                 vm["revenue_upside_capture_gap"]["gap_service"] = str(gap_service_raw).strip()
@@ -1118,23 +1192,24 @@ def build_revenue_brief_view_model(lead: Dict[str, Any]) -> Dict[str, Any]:
     # ---------- 5) Conversion Infrastructure ----------
     crawl_conf = str(svc.get("crawl_confidence") or "").strip().lower()
     low_crawl = crawl_conf == "low"
-    if low_crawl:
-        vm["conversion_infrastructure"]["online_booking"] = None
-        vm["conversion_infrastructure"]["contact_form"] = None
-        vm["conversion_infrastructure"]["phone_prominent"] = signals.get("signal_has_phone") is True
-        vm["conversion_infrastructure"]["mobile_optimized"] = signals.get("signal_mobile_friendly") is True
-        vm["conversion_infrastructure"]["page_load_ms"] = signals.get("signal_page_load_time_ms")
-    else:
-        vm["conversion_infrastructure"]["online_booking"] = (
-            signals.get("signal_has_automated_scheduling") is True
-            or (signals.get("signal_booking_conversion_path") or "").startswith("Online booking")
-        )
-        vm["conversion_infrastructure"]["contact_form"] = signals.get("signal_has_contact_form") is True
-        vm["conversion_infrastructure"]["phone_prominent"] = signals.get("signal_has_phone") is True
-        vm["conversion_infrastructure"]["mobile_optimized"] = signals.get("signal_mobile_friendly") is True
-        page_load = signals.get("signal_page_load_time_ms")
-        if page_load is not None:
-            vm["conversion_infrastructure"]["page_load_ms"] = page_load
+    vm["conversion_infrastructure"]["online_booking"] = signals.get("signal_has_automated_scheduling")
+    vm["conversion_infrastructure"]["contact_form"] = True if svc.get("contact_form_detected_sitewide") else signals.get("signal_has_contact_form")
+    vm["conversion_infrastructure"]["booking_flow_type"] = signals.get("signal_booking_flow_type")
+    vm["conversion_infrastructure"]["booking_flow_confidence"] = signals.get("signal_booking_flow_confidence")
+    vm["conversion_infrastructure"]["scheduling_cta_detected"] = signals.get("signal_scheduling_cta_detected")
+    vm["conversion_infrastructure"]["contact_form_confidence"] = "high" if svc.get("contact_form_detected_sitewide") else signals.get("signal_contact_form_confidence")
+    vm["conversion_infrastructure"]["contact_form_cta_detected"] = signals.get("signal_contact_form_cta_detected")
+    vm["conversion_infrastructure"]["capture_verification"] = signals.get("signal_capture_verification")
+    vm["conversion_infrastructure"]["phone_prominent"] = signals.get("signal_has_phone") is True
+    vm["conversion_infrastructure"]["mobile_optimized"] = signals.get("signal_mobile_friendly") is True
+    page_load = signals.get("signal_page_load_time_ms")
+    if page_load is not None:
+        vm["conversion_infrastructure"]["page_load_ms"] = page_load
+    vm["conversion_infrastructure"] = normalize_conversion_infrastructure(
+        vm["conversion_infrastructure"],
+        service_intel=svc,
+        signals=signals,
+    )
     vm["conversion_structure"] = {
         "phone_clickable": signals.get("signal_phone_clickable"),
         "cta_count": signals.get("signal_cta_count"),

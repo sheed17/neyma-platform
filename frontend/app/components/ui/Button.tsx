@@ -5,16 +5,16 @@ type Props = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 const variants: Record<NonNullable<Props["variant"]>, string> = {
-  primary: "bg-[var(--accent)] text-[var(--accent-ink)] hover:brightness-95 border border-transparent",
-  secondary: "bg-[var(--bg-card)] text-[var(--text-secondary)] border border-[var(--border-default)] hover:bg-slate-50",
-  ghost: "bg-transparent text-[var(--text-secondary)] border border-transparent hover:bg-slate-100",
+  primary: "border border-transparent bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-95",
+  secondary: "border border-[var(--border-default)] bg-white text-[var(--text-primary)] hover:bg-[var(--surface)]",
+  ghost: "border border-transparent bg-transparent text-[var(--text-primary)] hover:bg-[var(--surface)]",
 };
 
 export default function Button({ variant = "secondary", className = "", ...props }: Props) {
   return (
     <button
       {...props}
-      className={`h-9 rounded-[var(--radius-md)] px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${variants[variant]} ${className}`}
+      className={`h-10 rounded-[8px] px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${variants[variant]} ${className}`}
     />
   );
 }

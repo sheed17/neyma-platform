@@ -5,8 +5,8 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
 
 export const metadata: Metadata = {
-  title: "Neyma — Lead Intelligence",
-  description: "Turn any business name into a revenue intelligence brief",
+  title: "Neyma — AI Prospecting Intelligence",
+  description: "Use AI and ML to turn territory scans and diagnostics into ranked opportunities and revenue intelligence briefs",
 };
 
 export default function RootLayout({

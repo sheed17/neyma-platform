@@ -247,11 +247,11 @@ def init_db() -> None:
                 rating REAL,
                 user_ratings_total INTEGER,
                 has_website INTEGER DEFAULT 0,
-                ssl INTEGER DEFAULT 0,
-                has_contact_form INTEGER DEFAULT 0,
+                ssl INTEGER,
+                has_contact_form INTEGER,
                 has_phone INTEGER DEFAULT 0,
-                has_viewport INTEGER DEFAULT 0,
-                has_schema INTEGER DEFAULT 0,
+                has_viewport INTEGER,
+                has_schema INTEGER,
                 rank_key REAL DEFAULT 0,
                 rank INTEGER,
                 review_position_summary TEXT,
@@ -2182,6 +2182,14 @@ def save_territory_prospects(scan_id: str, user_id: int, prospects: List[Dict[st
     if not prospects:
         return 0
     now = datetime.now(timezone.utc).isoformat()
+
+    def _sqlite_bool(value: Any) -> Optional[int]:
+        if value is True:
+            return 1
+        if value is False:
+            return 0
+        return None
+
     conn = _get_conn()
     try:
         for p in prospects:
@@ -2229,11 +2237,11 @@ def save_territory_prospects(scan_id: str, user_id: int, prospects: List[Dict[st
                     p.get("rating"),
                     p.get("user_ratings_total"),
                     1 if p.get("has_website") else 0,
-                    1 if p.get("ssl") else 0,
-                    1 if p.get("has_contact_form") else 0,
+                    _sqlite_bool(p.get("ssl")),
+                    _sqlite_bool(p.get("has_contact_form")),
                     1 if p.get("has_phone") else 0,
-                    1 if p.get("has_viewport") else 0,
-                    1 if p.get("has_schema") else 0,
+                    _sqlite_bool(p.get("has_viewport")),
+                    _sqlite_bool(p.get("has_schema")),
                     float(p.get("rank_key") or 0),
                     p.get("rank"),
                     p.get("review_position_summary"),

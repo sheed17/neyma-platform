@@ -1,69 +1,88 @@
 "use client";
 
+import { ArrowRight, CheckCircle2, Mail } from "lucide-react";
 import Link from "next/link";
+
+import { FaqSection } from "@/components/ui/faq";
+import { Footer } from "@/components/ui/footer";
+import { HeroSection } from "@/components/ui/hero-section-1";
+import { NeymaButton } from "@/components/ui/neyma-button";
+import ShineHoverButton from "@/components/ui/shine-hover";
 import { useAuth } from "@/lib/auth";
 
-const navItems = [
-  { label: "Product", href: "#product" },
-  { label: "Workflow", href: "#workflow" },
-  { label: "Why Neyma", href: "#why" },
-  { label: "Integrations", href: "#integrations" },
-];
-
 const rankedPractices = [
-  { rank: "01", name: "Willow Glen Dental", signal: "Review gap + weak implants depth", action: "Open brief" },
-  { rank: "02", name: "Evergreen Smiles", signal: "Strong demand, weak conversion path", action: "Add to list" },
-  { rank: "03", name: "Almaden Family Dental", signal: "Service depth under-supported", action: "Watch" },
-  { rank: "04", name: "Rose Garden Dental", signal: "Booking friction on high-intent pages", action: "Open brief" },
-];
-
-const workflow = [
   {
-    step: "01",
-    title: "Run a territory scan",
-    text: "Start with a ranked market view, not a cold list.",
+    rank: "01",
+    name: "Northside Dental Studio",
+    signal: "High-Leverage",
+    note: "strong demand, weak implants coverage",
   },
   {
-    step: "02",
-    title: "Use Ask Neyma",
-    text: "Narrow the shortlist with plain-English intent.",
+    rank: "02",
+    name: "Riverwalk Family Dental",
+    signal: "High-Leverage",
+    note: "high review volume, weak booking flow",
   },
   {
-    step: "03",
-    title: "Open briefs on demand",
-    text: "Go deep only where the opportunity justifies it.",
+    rank: "03",
+    name: "Summit Lane Dental",
+    signal: "Moderate",
+    note: "dense market, shallow service depth",
   },
 ];
 
-const reasons = [
-  "Ranked prospects instead of undifferentiated contacts",
-  "Real structural signals instead of a generic lead score",
-  "Briefs, lists, and outcomes connected in one workflow",
+const briefReasons = [
+  { label: "Demand is there", tone: "amber" as const },
+  { label: "Coverage is thin", tone: "amber" as const },
+  { label: "Conversion path is active", tone: "green" as const },
 ];
 
-const integrations = [
-  "high demand",
-  "weak service depth",
-  "review gap",
-  "booking friction",
-  "implant opportunity",
-  "conversion weakness",
-  "dense market",
-  "list ready",
+const competitorRows = [
+  { name: "Northside Dental Studio", reviews: 278, distance: "You", width: "100%" },
+  { name: "Riverwalk Family Dental", reviews: 25, distance: "0.9 mi", width: "18%" },
+  { name: "Summit Lane Dental", reviews: 18, distance: "1.2 mi", width: "13%" },
 ];
 
-const faqs = [
+const verificationItems = [
+  "Scheduling CTA found",
+  "Booking flow detected",
+  "Contact form present",
+  "Phone prominent",
+];
+
+const landingMenuItems = [
+  { name: "Run Territory Scan", href: "/territory/new" },
+  { name: "Open Workspace", href: "/dashboard" },
+  { name: "Build Brief", href: "/diagnostic/new" },
+  { name: "Ask Neyma", href: "/ask" },
+];
+
+const askSteps = [
+  "Start with a city and a state.",
+  "Describe the type of practice or gap you want.",
+  "Neyma returns a ranked list you can work from.",
+];
+
+const landingFaqs = [
   {
-    q: "What is Neyma?",
-    a: "A territory-first prospecting system for agencies focused on finding the practices most worth pursuing.",
+    question: "Does Neyma only work for dental right now?",
+    answer:
+      "Yes. Neyma is focused on dental practices first. The workflow is designed to expand later, but the product story and ranking system are built around dental today.",
   },
   {
-    q: "Who is it for today?",
-    a: "Dental is the strongest vertical today. The workflow is designed to expand into adjacent local-service categories over time.",
+    question: "Do I need a practice name to start?",
+    answer:
+      "No. Territory Scan starts with the market. Drop in a city, state, and specialty focus, and Neyma returns ranked practices for you.",
   },
   {
-    q: "What does Ask Neyma do?",
-    a: "It turns a plain-English prospecting request into a tighter shortlist using the same ranking and signal system as the rest of the product.",
+    question: "Where does Ask Neyma fit?",
+    answer:
+      "Ask Neyma turns a plain-English request into ranked output. Use it when you know the kind of practice, service gap, or opportunity you want to target.",
+  },
+  {
+    question: "Can I build a brief without scanning a market first?",
+    answer:
+      "Yes. If you already know the practice, you can go straight to Build Brief and generate the intelligence view directly.",
   },
 ];
 
@@ -71,259 +90,176 @@ export default function LandingPage() {
   const { user } = useAuth();
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#f6f0d9_0%,#ede9df_38%,#e8ece6_100%)] text-[#171411]">
-      <div className="bg-[#111111] text-white">
-        <div className="mx-auto flex h-12 max-w-[1280px] items-center justify-center gap-3 px-4 text-sm">
-          <span className="inline-flex h-2 w-2 rounded-full bg-[#f2bf2f]" />
-          <span className="text-white/70">Territory-first prospecting for agencies working local markets</span>
-          <a href="#product" className="font-medium text-white">See how it works</a>
-        </div>
-      </div>
-
-      <header className="px-4 pb-4 pt-6 sm:px-6">
-        <div className="mx-auto flex max-w-[1280px] items-center justify-between">
-          <Link href="/" className="text-[34px] font-semibold tracking-[-0.04em] text-[#171411]">
-            neyma
-          </Link>
-          <nav className="hidden items-center gap-8 text-sm text-[#5d564c] lg:flex">
-            {navItems.map((item) => (
-              <a key={item.href} href={item.href} className="transition hover:text-[#171411]">
-                {item.label}
-              </a>
-            ))}
-          </nav>
-          <div className="flex items-center gap-3">
-            {!user && (
-              <Link href="/login" className="hidden text-sm text-[#5d564c] transition hover:text-[#171411] sm:inline-flex">
-                Log in
-              </Link>
-            )}
-            <Link
-              href={user ? "/dashboard" : "/register"}
-              className="inline-flex h-11 items-center rounded-full bg-[#171411] px-5 text-sm font-medium text-white transition hover:opacity-90"
-            >
-              {user ? "Open workspace" : "Start free"}
-            </Link>
-          </div>
-        </div>
-      </header>
-
+    <div className="theme-light min-h-screen bg-[radial-gradient(circle_at_top,rgba(139,80,212,0.14)_0%,#ffffff_34%,#ffffff_100%)] text-[#0a0a0a]">
       <main>
-        <section id="product" className="px-4 pb-8 sm:px-6 sm:pb-12">
-          <div className="mx-auto max-w-[1280px] rounded-[36px] border border-black/8 bg-[#f5f2ea] p-3 sm:p-4">
-            <div className="rounded-[30px] border border-black/6 bg-[linear-gradient(135deg,#f8f5ee_0%,#f7f4ea_48%,#eef3ed_100%)] p-6 sm:p-8 lg:p-10">
-              <div className="grid gap-10 lg:grid-cols-[0.95fr_1.05fr]">
-                <div className="max-w-[520px]">
-                  <p className="text-sm text-[#7c7468]">Dentist-first today. Expanding outward carefully.</p>
-                  <h1 className="mt-6 max-w-[12ch] text-5xl font-semibold leading-[0.96] tracking-[-0.055em] text-[#171411] sm:text-7xl">
-                    Find the practices most worth pursuing.
-                  </h1>
-                  <p className="mt-6 max-w-[44ch] text-lg leading-relaxed text-[#5d564c]">
-                    Neyma scans a market, ranks the strongest opportunities, narrows the shortlist with Ask Neyma, and opens full briefs only when deeper work is justified.
-                  </p>
-                  <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <Link
-                      href={user ? "/territory/new" : "/register"}
-                      className="inline-flex h-12 items-center justify-center rounded-full bg-[#171411] px-6 text-sm font-medium text-white transition hover:opacity-90"
-                    >
-                      Run territory scan
-                    </Link>
-                    <Link
-                      href={user ? "/ask" : "/login"}
-                      className="inline-flex h-12 items-center justify-center rounded-full border border-black/10 bg-white px-6 text-sm font-medium text-[#171411] transition hover:bg-black/[0.03]"
-                    >
-                      Ask Neyma
-                    </Link>
-                  </div>
-                </div>
-
-                <div className="rounded-[28px] border border-black/6 bg-white p-4 shadow-[0_20px_60px_rgba(23,20,17,0.06)] sm:p-5">
-                  <div className="grid gap-4">
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      <span className="rounded-full bg-[#1b2432]/8 px-3 py-1 text-[#1b2432]">Territory scan</span>
-                      <span className="rounded-full bg-[#f2bf2f]/16 px-3 py-1 text-[#7c6111]">Ask Neyma</span>
-                      <span className="rounded-full bg-[#1f57c3]/10 px-3 py-1 text-[#1f57c3]">Brief</span>
-                    </div>
-
-                    <div className="rounded-[24px] border border-black/6 bg-[#fbfaf7] p-4">
-                      <div className="flex items-center justify-between gap-3 border-b border-black/6 pb-3">
-                        <div>
-                          <p className="text-sm font-medium text-[#171411]">San Jose, CA</p>
-                          <p className="text-xs text-[#7c7468]">Top 20 ranked prospects</p>
-                        </div>
-                        <span className="rounded-full bg-[#1b2432]/8 px-3 py-1 text-xs font-medium text-[#1b2432]">Market scan complete</span>
-                      </div>
-
-                      <div className="mt-3 space-y-2">
-                        {rankedPractices.map((row) => (
-                          <div key={row.rank} className="grid grid-cols-[36px_1fr_auto] items-center gap-3 rounded-2xl border border-black/6 bg-white px-3 py-3">
-                            <span className="text-xs font-medium text-[#7c7468]">{row.rank}</span>
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-[#171411]">{row.name}</p>
-                              <p className="truncate text-xs text-[#7c7468]">{row.signal}</p>
-                            </div>
-                            <span className="rounded-full border border-black/8 px-3 py-1 text-[11px] text-[#5d564c]">{row.action}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-[0.95fr_1.05fr]">
-                      <div className="rounded-[24px] border border-black/6 bg-[#fbfaf7] p-4">
-                        <p className="text-[11px] uppercase tracking-[0.14em] text-[#7c7468]">Ask Neyma</p>
-                        <div className="mt-3 rounded-2xl border border-black/6 bg-white p-3">
-                          <p className="font-mono text-[12px] text-[#171411]">
-                            Find dentists with strong demand but weak service depth.
-                          </p>
-                        </div>
-                        <div className="mt-3 space-y-2 text-xs text-[#5d564c]">
-                          <div className="rounded-xl bg-white px-3 py-2">city: San Jose, CA</div>
-                          <div className="rounded-xl bg-white px-3 py-2">vertical: dentist</div>
-                          <div className="rounded-xl bg-white px-3 py-2">output: narrowed shortlist with reasons</div>
-                        </div>
-                      </div>
-
-                      <div className="rounded-[24px] border border-black/6 bg-[#fbfaf7] p-4">
-                        <p className="text-[11px] uppercase tracking-[0.14em] text-[#7c7468]">Brief snapshot</p>
-                        <div className="mt-3 space-y-2">
-                          <PreviewMetric label="Opportunity" value="$72k-$118k" tone="green" />
-                          <PreviewMetric label="Top gap" value="Implants page missing" tone="gold" />
-                          <PreviewMetric label="Constraint" value="Conversion + service depth" tone="blue" />
-                          <PreviewMetric label="Next step" value="Add to list and work outreach" tone="neutral" />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <StatCard value="40+" label="Signals per brief" />
-                <StatCard value="Top 20" label="Ranked prospects returned" />
-                <StatCard value="Dental" label="Focused vertical today" />
-              </div>
-            </div>
-          </div>
+        <section id="product" className="page-section-tight">
+          <HeroSection
+            badge="AI-ranked prospect intelligence"
+            menuItems={landingMenuItems}
+            title={
+              <>
+                <span className="block">Drop in a market.</span>
+                <span className="block">Get your best leads ranked.</span>
+              </>
+            }
+            description={
+              <>
+                <span className="block">No practice name needed. Neyma finds them for you.</span>
+                <span className="mt-2 block text-[15px] text-[#7A7A7A]">
+                  Built for dental practices first. Expanding beyond that later.
+                </span>
+              </>
+            }
+            primaryCta={{
+              label: "Run Territory Scan",
+              href: user ? "/territory/new" : "/register",
+            }}
+            secondaryCta={{
+              label: "Open Workspace",
+              href: user ? "/dashboard" : "/login",
+            }}
+          >
+            <TerritoryHeroPreview signedIn={Boolean(user)} />
+          </HeroSection>
         </section>
 
-        <section id="workflow" className="px-4 py-8 sm:px-6 sm:py-10">
-          <div className="mx-auto max-w-[1280px]">
-            <div className="max-w-[680px]">
-              <p className="text-sm text-[#7c7468]">How it works</p>
-              <h2 className="mt-2 text-4xl font-semibold tracking-[-0.045em] text-[#171411] sm:text-5xl">
-                Simplicity first. Context built in.
+        <section className="page-section pt-8">
+          <div className="app-container">
+            <div className="mx-auto max-w-[660px] text-center">
+              <p className="section-kicker">The brief</p>
+              <h2 className="section-title mt-2 text-black">
+                Click a lead. Get the full picture.
               </h2>
+              <p className="mt-4 text-[16px] leading-7 text-[var(--text-secondary)] sm:text-[18px]">
+                The scan gets you the list. The brief gets you the pitch.
+              </p>
             </div>
 
-            <div className="mt-8 grid gap-4 lg:grid-cols-3">
-              {workflow.map((item) => (
-                <article key={item.step} className="rounded-[28px] border border-black/8 bg-[#f5f2ea] p-5">
-                  <p className="text-xs font-medium text-[#7c7468]">{item.step}</p>
-                  <h3 className="mt-6 text-2xl font-semibold tracking-[-0.04em] text-[#171411]">{item.title}</h3>
-                  <p className="mt-3 max-w-[30ch] text-sm leading-relaxed text-[#5d564c]">{item.text}</p>
-                </article>
-              ))}
+            <div className="mx-auto mt-10 max-w-[980px]">
+              <BriefSectionPreview signedIn={Boolean(user)} />
             </div>
           </div>
         </section>
 
-        <section id="why" className="px-4 py-8 sm:px-6 sm:py-10">
-          <div className="mx-auto max-w-[1280px] rounded-[36px] bg-[#171411] px-6 py-8 text-white sm:px-8 sm:py-10">
-            <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+        <section id="integrations" className="page-section">
+          <div className="app-container">
+            <div className="grid gap-8 rounded-[24px] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[0_10px_30px_rgba(0,0,0,0.05)] lg:grid-cols-[0.88fr_1.12fr] lg:p-8">
               <div>
-                <p className="text-sm text-white/50">Why Neyma</p>
-                <h2 className="mt-2 max-w-[12ch] text-4xl font-semibold leading-[0.98] tracking-[-0.05em] sm:text-5xl">
-                  Less noise. Better decisions.
+                <p className="section-kicker">Ask Neyma</p>
+                <h2 className="section-title mt-2 max-w-[13ch] text-black">
+                  Tell Neyma what you want. Get a ranked list back.
                 </h2>
-              </div>
-              <div className="grid gap-3">
-                {reasons.map((item) => (
-                  <div key={item} className="rounded-[24px] border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/80">
-                    {item}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section id="integrations" className="px-4 py-8 sm:px-6 sm:py-10">
-          <div className="mx-auto max-w-[1280px] rounded-[36px] border border-black/8 bg-[#f5f2ea] px-6 py-8 sm:px-8 sm:py-10">
-            <div className="grid gap-6 lg:grid-cols-[0.82fr_1.18fr] lg:items-center">
-              <div>
-                <p className="text-sm text-[#7c7468]">Ask Neyma</p>
-                <h2 className="mt-2 text-4xl font-semibold tracking-[-0.045em] text-[#171411] sm:text-5xl">
-                  Less talking. More narrowing.
-                </h2>
-                <p className="mt-4 max-w-[42ch] text-sm leading-relaxed text-[#5d564c] sm:text-base">
-                  Ask Neyma should feel like a sharp command surface. You describe the kind of practice you want, and the shortlist gets tighter around the issues that actually matter.
+                <p className="mt-4 max-w-[42ch] text-[16px] leading-7 text-[var(--text-secondary)]">
+                  Ask Neyma turns a plain-English request into ranked output. Give it a city, a state, and the kind of practice, service gap, or opportunity you care about. Then build the brief from the names that come back.
                 </p>
-                <div className="mt-6 rounded-[24px] border border-black/8 bg-white p-4">
-                  <p className="font-mono text-[13px] text-[#171411]">
-                    Find dentists in Austin with high demand, thin implant coverage, and weak conversion paths.
-                  </p>
-                </div>
-              </div>
-              <div className="rounded-[28px] border border-black/8 bg-white p-4 shadow-[0_20px_50px_rgba(23,20,17,0.05)]">
-                <div className="flex items-center justify-between gap-3 border-b border-black/6 pb-3">
-                  <div>
-                    <p className="text-sm font-medium text-[#171411]">Ask output</p>
-                    <p className="text-xs text-[#7c7468]">6 matches after narrowing</p>
-                  </div>
-                  <span className="rounded-full bg-[#1b2432]/8 px-3 py-1 text-[11px] font-medium text-[#1b2432]">Shortlist ready</span>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {integrations.map((item, index) => (
-                    <span
-                      key={item}
-                      className={`rounded-full border px-3 py-1.5 text-[12px] ${
-                        index === 0 || index === 1
-                          ? "border-[#1b2432]/16 bg-[#1b2432]/8 text-[#1b2432]"
-                          : index === 2 || index === 3
-                            ? "border-[#f2bf2f]/24 bg-[#f2bf2f]/12 text-[#7c6111]"
-                            : index === 4 || index === 5
-                              ? "border-[#1f57c3]/18 bg-[#1f57c3]/8 text-[#1f57c3]"
-                              : "border-black/8 bg-[#fbfaf7] text-[#5d564c]"
-                      }`}
+                <div className="mt-8 space-y-3">
+                  {askSteps.map((step, index) => (
+                    <div
+                      key={step}
+                      className="flex gap-4 rounded-[16px] border border-[var(--border)] bg-white px-4 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.05)]"
                     >
-                      {item}
-                    </span>
+                      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#F5EEFC] text-sm font-medium text-[#8B50D4]">
+                        0{index + 1}
+                      </span>
+                      <p className="text-sm leading-6 text-[var(--text-primary)]">{step}</p>
+                    </div>
                   ))}
                 </div>
-
-                <div className="mt-4 space-y-2">
-                  <AskRow
-                    name="Barton Creek Dental"
-                    summary="Strong demand, implant gap, weak conversion path"
-                    tone="green"
-                  />
-                  <AskRow
-                    name="Westlake Family Smiles"
-                    summary="Review deficit in dense market, weak service depth"
-                    tone="gold"
-                  />
-                  <AskRow
-                    name="South Lamar Dental"
-                    summary="High-intent traffic, shallow page coverage"
-                    tone="blue"
-                  />
-                </div>
               </div>
+
+              <AskRefinePreview signedIn={Boolean(user)} />
             </div>
           </div>
         </section>
 
-        <section className="px-4 py-8 sm:px-6 sm:py-10">
-          <div className="mx-auto max-w-[1280px]">
-            <div className="grid gap-4 lg:grid-cols-3">
-              {faqs.map((item) => (
-                <article key={item.q} className="rounded-[28px] border border-black/8 bg-white px-5 py-5">
-                  <h3 className="text-lg font-medium text-[#171411]">{item.q}</h3>
-                  <p className="mt-3 text-sm leading-relaxed text-[#5d564c]">{item.a}</p>
-                </article>
-              ))}
+        <section id="workflow" className="page-section pt-0">
+          <div className="app-container">
+            <div className="mx-auto max-w-[760px] text-center">
+              <p className="section-kicker">Build one brief</p>
+              <h2 className="section-title mt-2 text-black">
+                Already have the practice? Start there.
+              </h2>
+              <p className="mt-4 text-[16px] leading-7 text-[var(--text-secondary)] sm:text-[18px]">
+                Neyma does not have to start with a market. If you already know the account, just enter the practice details and generate the brief directly.
+              </p>
             </div>
+            <div className="mx-auto mt-10 max-w-[920px]">
+              <SingleBriefInputPreview signedIn={Boolean(user)} />
+            </div>
+          </div>
+        </section>
+
+        <FaqSection
+          title="Questions, answered."
+          description="The essentials on how Neyma works today."
+          items={landingFaqs}
+          contactInfo={{
+            title: "Still have questions?",
+            description: "Reach out directly and we’ll help.",
+            buttonText: "Contact",
+            onContact: () => {
+              window.location.href = "mailto:rasheed@tryneyma.com";
+            },
+          }}
+        />
+
+        <section className="mt-10 bg-[#151122] px-6 py-16 sm:px-10 sm:py-20">
+          <div className="mx-auto max-w-[760px] text-center">
+            <p className="section-kicker text-white/65">The next move</p>
+            <h2
+              className="mt-3 text-[48px] font-medium leading-[1.05] tracking-[-0.04em] sm:text-[64px]"
+              style={{ color: "#ffffff" }}
+            >
+              Start with the market.
+              <span className="block">Follow the signal.</span>
+            </h2>
+            <p className="mx-auto mt-5 max-w-[620px] text-[16px] leading-7 text-white/70 sm:text-[18px]">
+              Run a scan, see what rises to the top, and open the brief only when it is worth the deeper work.
+            </p>
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
+              <ShineHoverButton asChild>
+                <Link href={user ? "/territory/new" : "/register"}>Run Territory Scan</Link>
+              </ShineHoverButton>
+              <NeymaButton
+                asChild
+                variant="secondary"
+                className="border-white/12 bg-white text-[#0A0A0A] hover:bg-white/92"
+              >
+                <Link href={user ? "/diagnostic/new" : "/register"}>
+                  <span className="text-[#0A0A0A]">Build Brief</span>
+                </Link>
+              </NeymaButton>
+            </div>
+          </div>
+
+          <div className="app-container mt-16">
+            <Footer
+              theme="dark"
+              className="pb-0 pt-0"
+              logo={null}
+              brandName="neyma"
+              socialLinks={[
+                {
+                  icon: <Mail className="h-5 w-5" />,
+                  href: "mailto:rasheed@tryneyma.com",
+                  label: "Email",
+                },
+              ]}
+              mainLinks={[
+                { href: "/territory/new", label: "Run Territory Scan" },
+                { href: "/dashboard", label: "Open Workspace" },
+                { href: "/diagnostic/new", label: "Build Brief" },
+                { href: "/ask", label: "Ask Neyma" },
+              ]}
+              legalLinks={[
+                { href: "/login", label: "Log in" },
+                { href: "/register", label: "Sign up" },
+              ]}
+              copyright={{
+                text: "© 2026 Neyma",
+                license: "Built for dental practices first.",
+              }}
+            />
           </div>
         </section>
       </main>
@@ -331,60 +267,327 @@ export default function LandingPage() {
   );
 }
 
-function StatCard({ value, label }: { value: string; label: string }) {
+function TerritoryHeroPreview({ signedIn }: { signedIn: boolean }) {
   return (
-    <div className="rounded-[24px] border border-black/6 bg-white px-4 py-5">
-      <p className="text-3xl font-semibold tracking-[-0.04em] text-[#171411]">{value}</p>
-      <p className="mt-2 text-sm text-[#7c7468]">{label}</p>
-    </div>
-  );
-}
+    <div className="overflow-hidden rounded-[26px] border border-[#E6E6E6] bg-white p-4 shadow-[0_25px_60px_rgba(0,0,0,0.08)] sm:p-6">
+      <div className="space-y-5">
+        <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.08fr_auto]">
+          <ScanField label="City" value="Austin" />
+          <ScanField label="State" value="TX" />
+          <ScanField label="Specialty focus" value="Dental implants" />
+          <div className="flex items-end">
+            <ShineHoverButton asChild className="w-full justify-center">
+              <Link href={signedIn ? "/territory/new" : "/register"}>Run scan</Link>
+            </ShineHoverButton>
+          </div>
+        </div>
 
-function PreviewMetric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "green" | "gold" | "blue" | "neutral";
-}) {
-  const toneClass =
-    tone === "green"
-      ? "border-[#1b2432]/16 bg-[#1b2432]/8"
-      : tone === "gold"
-        ? "border-[#d8b429]/24 bg-[#d8b429]/12"
-        : tone === "blue"
-          ? "border-[#205ecf]/16 bg-[#205ecf]/8"
-          : "border-black/6 bg-white";
+        <div className="flex items-center justify-between gap-3 rounded-[16px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-3">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">
+              Territory results
+            </p>
+            <p className="mt-1 text-sm text-[#0A0A0A]">Machine learning ranks the market before you open a single brief.</p>
+          </div>
+          <span className="rounded-full border border-[#E7D8FB] bg-[#F5EEFC] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#8B50D4]">
+            top 20 returned
+          </span>
+        </div>
 
-  return (
-    <div className={`rounded-2xl border px-3 py-3 ${toneClass}`}>
-      <p className="text-[11px] uppercase tracking-[0.12em] text-[#7c7468]">{label}</p>
-      <p className="mt-1 text-sm font-medium text-[#171411]">{value}</p>
-    </div>
-  );
-}
+        <div className="space-y-3">
+          {rankedPractices.map((practice) => (
+            <div
+              key={practice.rank}
+              className="grid gap-3 rounded-[16px] border border-[#E6E6E6] bg-white px-4 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.05)] sm:grid-cols-[auto_1fr_auto]"
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">{practice.rank}</span>
+                <span className="rounded-full border border-[#E6E6E6] bg-[#F8F8FB] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#0A0A0A]">
+                  {practice.signal}
+                </span>
+              </div>
+              <div>
+                <p className="text-[18px] font-medium tracking-[-0.02em] text-[#0A0A0A]">{practice.name}</p>
+                <p className="mt-1 text-sm text-[#6B6B6B]">{practice.note}</p>
+              </div>
+              <div className="flex items-center gap-2 sm:justify-end">
+                <span className="rounded-full border border-[#E7D8FB] bg-[#F5EEFC] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#8B50D4]">
+                  ranked
+                </span>
+                <span className="rounded-full border border-[#E6E6E6] bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#6B6B6B]">
+                  build brief
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
 
-function AskRow({
-  name,
-  summary,
-  tone,
-}: {
-  name: string;
-  summary: string;
-  tone: "green" | "gold" | "blue";
-}) {
-  const dotClass =
-    tone === "green" ? "bg-[#1b2432]" : tone === "gold" ? "bg-[#f2bf2f]" : "bg-[#3c5b8a]";
-
-  return (
-    <div className="flex items-center gap-3 rounded-2xl border border-black/8 bg-[#fbfaf7] px-3 py-3">
-      <span className={`inline-flex h-2.5 w-2.5 rounded-full ${dotClass}`} />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-[#171411]">{name}</p>
-        <p className="truncate text-xs text-[#7c7468]">{summary}</p>
+        <div className="rounded-[18px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-5 text-center">
+          <p className="text-sm font-medium text-[#0A0A0A]">Sign up to get your ranked list</p>
+          <div className="mt-2 flex justify-center">
+            <ArrowRight className="h-4 w-4 rotate-90 text-[#8B50D4]" />
+          </div>
+          <div className="mt-3 flex justify-center">
+            <ShineHoverButton asChild>
+              <Link href={signedIn ? "/territory/new" : "/register"}>Sign up</Link>
+            </ShineHoverButton>
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function BriefSectionPreview({ signedIn }: { signedIn: boolean }) {
+  return (
+    <div className="relative overflow-hidden rounded-[24px] border border-[#E6E6E6] bg-white p-4 shadow-[0_25px_60px_rgba(0,0,0,0.08)] sm:p-6">
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-[#BFE9D2] bg-[#EAFBF2] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#15803D]">
+                Qualified lead
+              </span>
+              <span className="rounded-full border border-[#E6E6E6] bg-[#F8F8FB] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#0A0A0A]">
+                High-leverage
+              </span>
+            </div>
+            <h3 className="mt-4 text-[32px] font-medium tracking-[-0.03em] text-[#0A0A0A] sm:text-[40px]">
+              Northside Dental Studio
+            </h3>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-[#6B6B6B]">
+              <span>Austin, TX</span>
+              <span>·</span>
+              <span className="font-medium text-[#0A0A0A]">northsidedentalstudio.com</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded-[10px] border border-[#E6E6E6] bg-white px-4 py-2.5 text-sm font-medium text-[#0A0A0A]"
+            >
+              Log outreach
+            </button>
+            <button
+              type="button"
+              className="rounded-[10px] bg-[#8B50D4] px-4 py-2.5 text-sm font-medium text-white shadow-sm"
+            >
+              Add to pipeline
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-2 lg:grid-cols-5">
+          {[
+            ["Reviews", "278"],
+            ["Review delta", "+253 vs nearest"],
+            ["Paid ads", "Active"],
+            ["Market density", "High"],
+            ["Geo coverage", "80% · 24/30 pages"],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-[14px] bg-[#F8F8FB] px-4 py-3">
+              <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">{label}</p>
+              <p className="mt-1 text-sm font-medium text-[#0A0A0A]">{value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="rounded-[16px] border border-[#F3D39A] bg-[#FFF7E8] px-4 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#9A6700]">Top gap</p>
+              <p className="mt-1 text-sm font-medium text-[#0A0A0A]">No dedicated implants page found</p>
+            </div>
+            <span className="rounded-full border border-[#F4D9A7] bg-white/80 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#9A6700]">
+              Implant capture gap
+            </span>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-[16px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">Why now</p>
+            <div className="mt-4 space-y-3">
+              {briefReasons.map((reason) => (
+                <div key={reason.label} className="flex items-center gap-3">
+                  <span className={`inline-flex h-2.5 w-2.5 rounded-full ${reason.tone === "amber" ? "bg-[#D97706]" : "bg-[#16A34A]"}`} />
+                  <p className="text-sm text-[#0A0A0A]">{reason.label}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-[16px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">Competitors nearby</p>
+            <div className="mt-4 space-y-3">
+              {competitorRows.map((row) => (
+                <div key={row.name}>
+                  <div className="flex items-center justify-between gap-3 text-sm text-[#0A0A0A]">
+                    <span className="truncate">{row.name}</span>
+                    <span className="shrink-0 text-[#6B6B6B]">{row.reviews} · {row.distance}</span>
+                  </div>
+                  <div className="mt-2 h-2 rounded-full bg-white">
+                    <div className="h-2 rounded-full bg-[#8B50D4]" style={{ width: row.width }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-[16px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">Capture verification</p>
+            <div className="mt-4 space-y-3">
+              {verificationItems.map((item) => (
+                <div key={item} className="flex items-center gap-3 text-sm text-[#0A0A0A]">
+                  <CheckCircle2 className="h-4 w-4 text-[#16A34A]" />
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-[16px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">Recommendation</p>
+            <p className="mt-4 text-sm leading-7 text-[#0A0A0A]">
+              Strong local demand is already in the market. The site still leaves implants demand under-served, which makes this a clean outreach angle.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <NeymaButton asChild variant="secondary">
+                <Link href={signedIn ? "/ask" : "/register"}>Draft outreach</Link>
+              </NeymaButton>
+              <ShineHoverButton asChild>
+                <Link href={signedIn ? "/diagnostic/new" : "/register"}>Full audit</Link>
+              </ShineHoverButton>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-b from-transparent via-white/88 to-white" />
+      <div className="absolute inset-x-0 bottom-0 flex justify-center px-6 pb-6">
+        <Link href="/register" className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-[#8B50D4] shadow-[0_10px_30px_rgba(0,0,0,0.08)]">
+          Sign up to see the full brief
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function AskRefinePreview({ signedIn }: { signedIn: boolean }) {
+  return (
+    <div className="overflow-hidden rounded-[20px] border border-[#E6E6E6] bg-white shadow-[0_12px_30px_rgba(0,0,0,0.05)]">
+      <div className="flex items-center justify-between border-b border-[#E6E6E6] px-4 py-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.14em] text-[#6B6B6B]">Ask Neyma</p>
+          <p className="mt-1 text-sm font-medium text-[#0A0A0A]">Describe the market and the kind of lead you want</p>
+        </div>
+        <span className="rounded-full border border-[#E7D8FB] bg-[#F5EEFC] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#8B50D4]">
+          ranked output
+        </span>
+      </div>
+
+      <div className="space-y-4 p-4">
+        <div className="rounded-[14px] border border-[#E6E6E6] bg-[#F8F8FB] p-4">
+          <p className="font-mono text-[12px] leading-6 text-[#0A0A0A]">
+            Austin, TX. Find dental practices with active demand, thin implants coverage, and weak conversion paths.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {["city: Austin", "state: TX", "dental", "implant gap", "weak conversion"].map((chip) => (
+            <span
+              key={chip}
+              className="rounded-full border border-[#E6E6E6] bg-white px-3 py-1.5 text-[11px] text-[#6B6B6B]"
+            >
+              {chip}
+            </span>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {[
+            ["Northside Dental Studio", "Best fit for the request: demand is present, implants depth is thin, and the path still leaks intent."],
+            ["Riverwalk Family Dental", "Strong local visibility, but the service gap is weaker than the lead above."],
+            ["West Harbor Dental", "Worth a brief if you want another implants angle after the top-ranked account."],
+          ].map(([name, summary]) => (
+            <div key={name} className="rounded-[14px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-3">
+              <p className="text-sm font-medium text-[#0A0A0A]">{name}</p>
+              <p className="mt-1 text-xs leading-5 text-[#6B6B6B]">{summary}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-end">
+          <ShineHoverButton asChild>
+            <Link href={signedIn ? "/ask" : "/register"}>Ask Neyma</Link>
+          </ShineHoverButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SingleBriefInputPreview({ signedIn }: { signedIn: boolean }) {
+  return (
+    <div className="overflow-hidden rounded-[24px] border border-[#E6E6E6] bg-white p-4 shadow-[0_25px_60px_rgba(0,0,0,0.08)] sm:p-6">
+      <div className="grid gap-6 lg:grid-cols-[0.88fr_1.12fr]">
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">Direct brief input</p>
+          <h3 className="mt-3 text-[30px] font-medium tracking-[-0.03em] text-[#0A0A0A] sm:text-[36px]">
+            One practice in. One brief out.
+          </h3>
+          <p className="mt-4 max-w-[42ch] text-sm leading-7 text-[#6B6B6B] sm:text-base">
+            If you already know the practice, enter the business details and let Neyma build the brief without running a territory scan first.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-2">
+            <ShineHoverButton asChild>
+              <Link href={signedIn ? "/diagnostic/new" : "/register"}>Generate Brief</Link>
+            </ShineHoverButton>
+            <NeymaButton asChild variant="secondary" className="text-[#0A0A0A]">
+              <Link href={signedIn ? "/dashboard" : "/login"}>
+                <span className="text-[#0A0A0A]">Open Workspace</span>
+              </Link>
+            </NeymaButton>
+          </div>
+        </div>
+
+        <div className="grid gap-3">
+          <ScanField label="Practice name" value="Northside Dental Studio" />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ScanField label="City" value="Austin" />
+            <ScanField label="State" value="TX" />
+          </div>
+          <ScanField label="Website" value="northsidedentalstudio.com" />
+          <div className="rounded-[16px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">Required elements</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {["practice", "city", "state"].map((item) => (
+                <span
+                  key={item}
+                  className="rounded-full border border-[#E6E6E6] bg-white px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-[#0A0A0A]"
+                >
+                  {item}
+                </span>
+              ))}
+              <span className="rounded-full border border-[#E7D8FB] bg-[#F5EEFC] px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-[#8B50D4]">
+                website optional
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScanField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[14px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-3">
+      <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">{label}</p>
+      <p className="mt-1 text-sm font-medium text-[#0A0A0A]">{value}</p>
     </div>
   );
 }

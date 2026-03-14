@@ -14,11 +14,13 @@ import {
 } from "@/lib/api";
 import type { ProspectList } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
+import Badge from "@/app/components/ui/Badge";
 import { Card, CardBody } from "@/app/components/ui/Card";
 import Textarea from "@/app/components/ui/Textarea";
 import EmptyState from "@/app/components/ui/EmptyState";
 import ListPickerModal from "@/app/components/ListPickerModal";
 import BriefBuildProgress, { type BriefBuildProgressState } from "@/app/components/BriefBuildProgress";
+import { BorderTrail } from "@/components/ui/border-trail";
 
 type AskProspect = {
   diagnostic_id?: number | null;
@@ -32,6 +34,15 @@ type AskProspect = {
   opportunity_profile?: string;
   primary_leverage?: string;
   ai_explanation?: string;
+  match_evidence_level?: "deep_verified" | "lightweight_verified" | "deterministic" | "inferred" | null;
+  match_evidence?: Array<{
+    criterion_key?: string;
+    criterion_type?: string;
+    service?: string | null;
+    source?: string;
+    matched?: boolean;
+    details?: Record<string, unknown> | null;
+  }> | null;
 };
 
 const ASK_RESULTS_STORAGE_KEY = "ask_results";
@@ -69,6 +80,10 @@ type AskProgressEvent = {
   detail: string;
 };
 
+function askBriefReady(row: AskProspect): boolean {
+  return Boolean(row.diagnostic_id);
+}
+
 const promptIdeas = [
   "Find 10 dentists in San Jose, CA with missing implants page",
   "Find dentists in Austin, TX with strong demand but weak service depth",
@@ -83,7 +98,7 @@ function normalizeAskError(error: string | null) {
   if (lower.includes("we can't process this query") || lower.includes("please use a location")) {
     return {
       title: "Tighten the request",
-      description: "Ask Neyma needs a city and state, plus one supported filter, before it can build the shortlist.",
+      description: "Ask Neyma needs a city and state, plus one supported filter, before the AI ranking flow can build the shortlist.",
       hints: [
         "Use City, ST: San Jose, CA",
         "Use supported filters like review gap, website quality, or missing service page",
@@ -121,6 +136,56 @@ function formatPhaseLabel(phase: string) {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
+function formatEvidenceLevel(level: AskProspect["match_evidence_level"]) {
+  switch (level) {
+    case "deep_verified":
+      return "Deep verified";
+    case "lightweight_verified":
+      return "Fast verified";
+    case "deterministic":
+      return "Signal matched";
+    default:
+      return "Inferred";
+  }
+}
+
+function evidenceLevelClassName(level: AskProspect["match_evidence_level"]) {
+  switch (level) {
+    case "deep_verified":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    case "lightweight_verified":
+      return "border-sky-200 bg-sky-50 text-sky-700";
+    case "deterministic":
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    default:
+      return "border-slate-200 bg-slate-100 text-slate-700";
+  }
+}
+
+function humanizeCriterionLabel(item: NonNullable<AskProspect["match_evidence"]>[number]) {
+  const type = String(item.criterion_type || "").trim();
+  const service = String(item.service || "").trim();
+
+  if (type === "missing_service_page") {
+    return service ? `Missing ${service.replaceAll("_", " ")} page` : "Missing service page";
+  }
+
+  return (type || "matched signal").replaceAll("_", " ");
+}
+
+function formatEvidenceSource(source: string | undefined) {
+  switch (source) {
+    case "deep_verified_diagnostic":
+      return "deep check";
+    case "lightweight_check":
+      return "fast check";
+    case "deterministic_signal":
+      return "signal";
+    default:
+      return "inference";
+  }
+}
+
 export default function AskPage() {
   const router = useRouter();
   const [query, setQuery] = useState("Find 10 dentists in San Jose that have missing implants page");
@@ -147,6 +212,8 @@ export default function AskPage() {
   const [listTargetDiagnosticId, setListTargetDiagnosticId] = useState<number | null>(null);
   const [listTargetBusinessName, setListTargetBusinessName] = useState<string>("");
   const [briefProgress, setBriefProgress] = useState<BriefBuildProgressState | null>(null);
+  const readyBriefCount = results.filter((row) => askBriefReady(row)).length;
+  const pendingBriefCount = Math.max(0, results.length - readyBriefCount);
 
   function applyPrompt(next: string) {
     setQuery(next);
@@ -250,6 +317,18 @@ export default function AskPage() {
     sessionStorage.removeItem(ASK_RESULTS_STORAGE_KEY);
   }
 
+  function markAskBriefReady(row: AskProspect, diagnosticId: number) {
+    setResults((prev) => prev.map((candidate) => {
+      const samePlace = row.place_id && candidate.place_id && row.place_id === candidate.place_id;
+      const sameIdentity = (candidate.business_name || "") === (row.business_name || "")
+        && (candidate.city || "") === (row.city || "")
+        && (candidate.state || "") === (row.state || "");
+      return samePlace || sameIdentity
+        ? { ...candidate, diagnostic_id: diagnosticId }
+        : candidate;
+    }));
+  }
+
   async function executeRun(confirmedLowConfidence = false) {
     setError(null);
     setResults([]);
@@ -283,7 +362,7 @@ export default function AskPage() {
       if (!start.job_id) {
         throw new Error("Ask job did not start");
       }
-      setMessage(start.message);
+      setMessage(start.message || null);
 
       let completed = false;
       const maxLoops = 360;
@@ -407,6 +486,7 @@ export default function AskPage() {
         website: row.website,
       });
       if (ensure.status === "ready" && ensure.diagnostic_id) {
+        markAskBriefReady(row, ensure.diagnostic_id);
         return ensure.diagnostic_id;
       }
       if (!ensure.job_id) throw new Error("Failed to start brief build");
@@ -423,6 +503,7 @@ export default function AskPage() {
         const st = await getJobStatus(ensure.job_id);
         if (st.status === "completed" && st.diagnostic_id) {
           setBriefProgress(null);
+          markAskBriefReady(row, st.diagnostic_id);
           return st.diagnostic_id;
         }
         if (st.status === "failed") throw new Error(st.error || "Brief build failed");
@@ -489,16 +570,24 @@ export default function AskPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mx-auto max-w-4xl text-center">
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Ask Neyma</p>
-        <h1 className="display-title mt-3 text-4xl font-black tracking-tight sm:text-6xl">
+        <p className="section-kicker">Ask Neyma</p>
+        <h1 className="display-title mt-3 text-4xl sm:text-6xl">
           Ask for the exact prospect you want.
         </h1>
         <p className="mx-auto mt-4 max-w-2xl text-sm text-[var(--text-secondary)] sm:text-base">
-          Describe the target in plain English. Neyma turns that request into a shortlist with reasons, not just names.
+          Describe the target in plain English. Neyma uses AI reasoning and ML ranking to turn that request into a shortlist with reasons, not just names.
         </p>
       </div>
 
-      <Card className="mx-auto mt-6 max-w-4xl overflow-hidden border border-black/8 bg-[linear-gradient(180deg,#f8f5ee_0%,#ffffff_100%)] shadow-[0_20px_50px_rgba(23,20,17,0.05)]">
+      <Card className="relative mx-auto mt-6 max-w-4xl overflow-hidden border border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_20px_50px_rgba(10,10,10,0.04)]">
+        <BorderTrail
+          className="bg-[#a1a1a1] opacity-60"
+          size={88}
+          style={{
+            boxShadow:
+              "0 0 18px 8px rgb(161 161 161 / 16%), 0 0 32px 14px rgb(161 161 161 / 10%)",
+          }}
+        />
         <CardBody className="p-4 sm:p-5">
           <div className="mb-4 flex flex-wrap gap-2">
             {promptIdeas.map((idea) => (
@@ -506,7 +595,7 @@ export default function AskPage() {
                 key={idea}
                 type="button"
                 onClick={() => applyPrompt(idea)}
-                className="rounded-full border border-black/8 bg-white px-3 py-1.5 text-xs text-[var(--text-secondary)] transition hover:bg-black/[0.03] hover:text-[var(--text-primary)]"
+                className="rounded-full border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-1.5 text-xs text-[var(--text-secondary)] transition hover:bg-[var(--muted)] hover:text-[var(--text-primary)]"
               >
                 {idea}
               </button>
@@ -514,7 +603,7 @@ export default function AskPage() {
           </div>
 
           <form onSubmit={handleRun} className="space-y-3">
-            <div className="rounded-[28px] border border-black/8 bg-white p-3 shadow-[0_10px_30px_rgba(23,20,17,0.04)]">
+            <div className="rounded-[20px] border border-[var(--border-default)] bg-[var(--bg-card)] p-3 shadow-[0_10px_30px_rgba(10,10,10,0.04)]">
               <Textarea
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -522,10 +611,10 @@ export default function AskPage() {
                 placeholder="Find dentists in San Jose with strong demand but weak service depth"
                 className="resize-none border-0 bg-transparent px-1 py-1 text-base leading-relaxed focus:border-transparent"
               />
-              <div className="mt-3 flex flex-col gap-3 border-t border-black/6 pt-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mt-3 flex flex-col gap-3 border-t border-[var(--border-default)] pt-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--text-muted)]">
-                  <span className="rounded-full bg-[#1b2432]/8 px-2.5 py-1 text-[#1b2432]">Plain-English query</span>
-                  <span className="rounded-full bg-[#f2bf2f]/14 px-2.5 py-1 text-[#7c6111]">Shortlist with reasons</span>
+                  <span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-[var(--secondary-foreground)]">Plain-English query</span>
+                  <span className="rounded-full bg-[var(--muted)] px-2.5 py-1 text-[var(--text-secondary)]">Shortlist with reasons</span>
                   <Link href="/territory/new" className="app-link font-medium">
                     Start from territory scan
                   </Link>
@@ -534,7 +623,7 @@ export default function AskPage() {
                   type="submit"
                   disabled={loading}
                   variant="primary"
-                  className="h-11 rounded-full bg-black px-5 text-white hover:bg-[#4f79c7]"
+                  className="h-11 rounded-full px-5"
                 >
                   {loading ? (
                     <span className="inline-flex items-center gap-2">
@@ -550,7 +639,7 @@ export default function AskPage() {
               loading && progressState ? (
                 <AgentProgressPanel progress={progressState} events={progressEvents} />
               ) : (
-                <div className="rounded-2xl border border-[#1f57c3]/10 bg-[#1f57c3]/[0.06] px-4 py-3 text-left text-sm text-[var(--text-secondary)]">
+                <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-left text-sm text-[var(--text-secondary)]">
                   <div className="flex flex-wrap items-center gap-2">
                     <span>{message}</span>
                     {messageHref && messageCta ? <Link href={messageHref} className="app-link font-medium">{messageCta}</Link> : null}
@@ -559,14 +648,14 @@ export default function AskPage() {
               )
             )}
             {error && (
-              <div className="rounded-[24px] border border-[#4f79c7]/12 bg-[linear-gradient(135deg,rgba(79,121,199,0.08)_0%,rgba(242,191,47,0.08)_100%)] p-4 text-left">
-                <div className="rounded-[20px] border border-white/70 bg-[rgba(255,255,255,0.9)] px-4 py-3">
+              <div className="rounded-[20px] border border-[var(--border-default)] bg-[var(--muted)] p-4 text-left">
+                <div className="rounded-[16px] border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
                   <p className="text-sm font-semibold text-[var(--text-primary)]">{normalizeAskError(error).title}</p>
                   <p className="mt-1 text-sm text-[var(--text-secondary)]">{normalizeAskError(error).description}</p>
                   {normalizeAskError(error).hints.length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {normalizeAskError(error).hints.map((hint) => (
-                        <span key={hint} className="rounded-full border border-black/8 bg-[#fbfaf7] px-3 py-1.5 text-xs text-[var(--text-secondary)]">
+                        <span key={hint} className="rounded-full border border-[var(--border-default)] bg-[var(--secondary)] px-3 py-1.5 text-xs text-[var(--text-secondary)]">
                           {hint}
                         </span>
                       ))}
@@ -605,7 +694,12 @@ export default function AskPage() {
 
       {headline && (
         <div className="mx-auto mt-6 flex max-w-5xl items-center justify-between gap-3">
-          <p className="text-sm font-medium text-[var(--text-secondary)]">{headline}</p>
+          <div>
+            <p className="text-sm font-medium text-[var(--text-secondary)]">{headline}</p>
+            {results.length > 0 && (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">{readyBriefCount} briefs ready · {pendingBriefCount} not built yet</p>
+            )}
+          </div>
           <button onClick={clearResults} className="text-sm text-[var(--text-secondary)] hover:underline">Clear results</button>
         </div>
       )}
@@ -614,7 +708,7 @@ export default function AskPage() {
           {appliedCriteria.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {appliedCriteria.map((item) => (
-                <span key={item} className="rounded-full border border-black/8 bg-white px-3 py-1 text-xs text-[var(--text-secondary)]">
+                <span key={item} className="rounded-full border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-1 text-xs text-[var(--text-secondary)]">
                   {item}
                 </span>
               ))}
@@ -646,7 +740,7 @@ export default function AskPage() {
         </Card>
       )}
       {agenticIterations.length > 0 && (
-        <details className="mx-auto mt-4 max-w-5xl rounded-[24px] border border-black/8 bg-white px-4 py-3">
+        <details className="mx-auto mt-4 max-w-5xl rounded-[20px] border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
           <summary className="cursor-pointer list-none">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -656,10 +750,10 @@ export default function AskPage() {
               <span className="text-xs font-medium text-[var(--text-secondary)]">View details</span>
             </div>
           </summary>
-          <div className="mt-3 space-y-2 rounded-[20px] border border-black/6 bg-[#fbfaf7] px-3 py-3 text-xs text-[var(--text-muted)]">
+          <div className="mt-3 space-y-2 rounded-[16px] border border-[var(--border-default)] bg-[var(--muted)] px-3 py-3 text-xs text-[var(--text-muted)]">
             {agenticIterations.map((it, idx) => {
               return (
-                <div key={idx} className="rounded-2xl border border-black/6 bg-white px-3 py-2.5">
+                <div key={idx} className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-2.5">
                   <p className="font-medium text-[var(--text-primary)]">Pass {Number(it.iter || idx + 1)}</p>
                   <p className="mt-1">
                     {Number(it.postfilter_count || 0)} matches returned after scanning the local market.
@@ -678,15 +772,28 @@ export default function AskPage() {
         <div className="mx-auto mt-4 max-w-5xl space-y-3">
           {results.map((r, i) => {
             const key = `${r.place_id || ""}-${r.business_name || ""}`;
+            const busy = ensuringKey === key;
+            const briefReady = askBriefReady(r);
+            const evidence = Array.isArray(r.match_evidence)
+              ? r.match_evidence.filter((item) => item && item.matched !== false).slice(0, 4)
+              : [];
             return (
-              <Card key={`${r.diagnostic_id || i}-${r.business_name || ""}`} className="overflow-hidden border border-black/8 bg-white shadow-[0_12px_30px_rgba(23,20,17,0.04)]">
+              <Card key={`${r.diagnostic_id || i}-${r.business_name || ""}`} className={`overflow-hidden bg-[var(--bg-card)] shadow-[0_12px_30px_rgba(10,10,10,0.04)] ${briefReady ? "border border-emerald-200" : "border border-[var(--border-default)]"}`}>
                 <CardBody className="p-4 sm:p-5">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-lg font-semibold text-[var(--text-primary)]">{r.business_name || "—"}</h3>
+                        <Badge tone={busy ? "default" : briefReady ? "success" : "muted"}>
+                          {busy ? "Building brief" : briefReady ? "Brief ready" : "Brief not built"}
+                        </Badge>
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${evidenceLevelClassName(r.match_evidence_level)}`}
+                        >
+                          {formatEvidenceLevel(r.match_evidence_level)}
+                        </span>
                         {(r.rating != null || r.user_ratings_total != null) && (
-                          <span className="rounded-full border border-black/8 bg-[#fbfaf7] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
+                          <span className="rounded-full border border-[var(--border-default)] bg-[var(--secondary)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
                             {r.rating ?? "—"} stars · {r.user_ratings_total ?? "—"} reviews
                           </span>
                         )}
@@ -694,22 +801,42 @@ export default function AskPage() {
                       <p className="mt-1 text-sm text-[var(--text-muted)]">
                         {r.city || "—"}{r.state ? `, ${r.state}` : ""}
                       </p>
-                      <div className="mt-3 rounded-2xl border border-black/6 bg-[#f8f5ee] px-4 py-3 text-sm leading-relaxed text-[var(--text-secondary)]">
+                      <div className="mt-3 rounded-2xl border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-sm leading-relaxed text-[var(--text-secondary)]">
                         {r.ai_explanation || r.primary_leverage || r.opportunity_profile || "No explanation returned."}
                       </div>
+                      {evidence.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {evidence.map((item, idx) => (
+                            <span
+                              key={`${r.place_id || r.business_name || i}-evidence-${item.criterion_key || idx}`}
+                              className="inline-flex items-center gap-1 rounded-full border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-1 text-xs text-[var(--text-secondary)]"
+                            >
+                              <span className="font-medium capitalize text-[var(--text-primary)]">
+                                {humanizeCriterionLabel(item)}
+                              </span>
+                              <span className="text-[var(--text-muted)]">· {formatEvidenceSource(item.source)}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {r.match_evidence_level === "inferred" && (
+                        <p className="mt-2 text-xs text-[var(--text-muted)]">
+                          This match is still inference-heavy. Open the brief for stronger verification.
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 flex-wrap gap-2 sm:flex-col sm:items-end">
                       <Button
                         onClick={() => void onViewBrief(r)}
                         variant="primary"
-                        disabled={ensuringKey === key}
-                        className="h-10 rounded-full bg-black px-4 text-white hover:bg-[#4f79c7]"
+                        disabled={busy}
+                        className="h-10 rounded-full px-4"
                       >
-                        {ensuringKey === key ? "Building..." : "Open brief"}
+                        {busy ? "Building..." : briefReady ? "Open brief" : "Build brief"}
                       </Button>
                       <Button
                         onClick={() => void onAddToList(r)}
-                        disabled={ensuringKey === key}
+                        disabled={busy}
                         className="h-10 rounded-full px-4"
                       >
                         Add to list
@@ -813,20 +940,20 @@ function AgentProgressPanel({
   }, [activePhaseEvents.length]);
 
   return (
-    <div className="rounded-[32px] border border-[#1b2432]/10 bg-[linear-gradient(135deg,rgba(27,36,50,0.08)_0%,rgba(242,191,47,0.08)_45%,rgba(60,91,138,0.08)_100%)] p-4 text-left shadow-[0_24px_60px_rgba(23,20,17,0.08)] sm:p-5">
-      <div className="rounded-[26px] border border-white/70 bg-[rgba(255,255,255,0.86)] p-4 backdrop-blur-sm sm:p-5">
+    <div className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4 text-left shadow-[0_24px_60px_rgba(10,10,10,0.04)] sm:p-5">
+      <div className="rounded-[20px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4 sm:p-5">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
           <div className="flex items-center gap-4 sm:w-[240px] sm:flex-col sm:items-start">
-            <div className="relative flex h-18 w-18 items-center justify-center rounded-full border border-[#1b2432]/12 bg-[radial-gradient(circle_at_30%_30%,rgba(242,191,47,0.28),transparent_45%),radial-gradient(circle_at_70%_70%,rgba(60,91,138,0.18),transparent_48%),#fcfbf8] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(23,20,17,0.08)]">
-              <span className="absolute inline-flex h-14 w-14 animate-ping rounded-full border border-[#1b2432]/12" />
-              <span className="absolute inline-flex h-10 w-10 animate-spin rounded-full border-2 border-[#1b2432]/18 border-t-[#1b2432]" />
-              <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-[#1b2432] shadow-[0_0_0_6px_rgba(27,36,50,0.08)]" />
+            <div className="relative flex h-18 w-18 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(10,10,10,0.04)]">
+              <span className="absolute inline-flex h-14 w-14 animate-ping rounded-full border border-[var(--border-default)]" />
+              <span className="absolute inline-flex h-10 w-10 animate-spin rounded-full border-2 border-[var(--border-default)] border-t-[var(--primary)]" />
+              <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-[var(--primary)] shadow-[0_0_0_6px_rgba(10,10,10,0.04)]" />
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold text-[var(--text-primary)]">Neyma is working</p>
                 {progress.iteration ? (
-                  <span className="rounded-full border border-black/6 bg-white px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
+                  <span className="rounded-full border border-[var(--border-default)] bg-[var(--secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
                     Iteration {progress.iteration}{progress.maxIterations ? `/${progress.maxIterations}` : ""}
                   </span>
                 ) : null}
@@ -846,16 +973,16 @@ function AgentProgressPanel({
               <ProgressMetric label="Listed" value={progress.listed} tint="gold" />
             </div>
 
-            <div className="mt-3 rounded-[24px] border border-black/6 bg-[#fbfaf7] p-3.5">
+            <div className="mt-3 rounded-[20px] border border-[var(--border-default)] bg-[var(--muted)] p-3.5">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">Action trace</p>
                 <p className="text-xs text-[var(--text-muted)]">{totalSignals} workflow updates</p>
               </div>
               {events.length > 0 && (
-                <div className="mt-3 space-y-2 rounded-[20px] border border-black/6 bg-white px-3 py-3">
+                <div className="mt-3 space-y-2 rounded-[16px] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
                   {events.map((event, index) => (
                     <div key={event.id} className="flex items-start gap-3">
-                      <span className={`mt-0.5 inline-flex h-2.5 w-2.5 shrink-0 rounded-full ${index === 0 ? "animate-pulse bg-[#1b2432]" : "bg-black/15"}`} />
+                      <span className={`mt-0.5 inline-flex h-2.5 w-2.5 shrink-0 rounded-full ${index === 0 ? "animate-pulse bg-[var(--primary)]" : "bg-black/15"}`} />
                       <div className="min-w-0">
                         <p className="text-xs font-medium text-[var(--text-primary)]">{event.label}</p>
                         <p className="text-xs leading-5 text-[var(--text-muted)]">{event.detail}</p>
@@ -866,12 +993,12 @@ function AgentProgressPanel({
               )}
               <div className="mt-3 space-y-2">
                 {steps.map((step) => (
-                  <div key={step.label} className="flex items-start gap-3 rounded-2xl border border-black/6 bg-white px-3 py-3">
-                    <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-black/8 bg-[#fcfbf8]">
+                  <div key={step.label} className="flex items-start gap-3 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                    <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--muted)]">
                       {step.done ? (
-                        <span className="inline-flex h-2.5 w-2.5 rounded-full bg-[#1b2432]" />
+                        <span className="inline-flex h-2.5 w-2.5 rounded-full bg-[var(--primary)]" />
                       ) : step.active ? (
-                        <span className="inline-flex h-2.5 w-2.5 animate-pulse rounded-full bg-[#1f57c3]" />
+                        <span className="inline-flex h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--primary)]" />
                       ) : (
                         <span className="inline-flex h-2.5 w-2.5 rounded-full bg-black/15" />
                       )}
@@ -966,13 +1093,13 @@ function ProgressMetric({
   tint: "green" | "blue" | "gold";
 }) {
   const palette = {
-    green: "bg-[#1b2432]/8 text-[#1b2432]",
-    blue: "bg-[#3c5b8a]/10 text-[#3c5b8a]",
-    gold: "bg-[#f2bf2f]/16 text-[#8a6500]",
+    green: "bg-[var(--secondary)] text-[var(--secondary-foreground)]",
+    blue: "bg-[var(--secondary)] text-[var(--secondary-foreground)]",
+    gold: "bg-[var(--secondary)] text-[var(--secondary-foreground)]",
   }[tint];
 
   return (
-    <div className="rounded-[22px] border border-black/6 bg-white px-3 py-3">
+    <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
       <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</p>
       <div className="mt-2 flex items-center justify-between gap-3">
         <p className="text-2xl font-semibold text-[var(--text-primary)]">{value}</p>

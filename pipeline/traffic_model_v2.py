@@ -136,10 +136,14 @@ def _efficiency_score_and_label(context: Dict, objective_layer: Dict) -> tuple:
     if context.get("signal_runs_paid_ads") is True:
         score -= 20
     booking_path = context.get("signal_booking_conversion_path")
-    has_online_booking = booking_path in ("Online booking (limited)", "Online booking (full)")
-    if booking_path is None:
-        has_online_booking = context.get("signal_has_automated_scheduling") is True
-    if not has_online_booking:
+    if booking_path in ("Online booking (limited)", "Online booking (full)"):
+        has_online_booking = True
+    elif booking_path in ("Phone-only", "Request form"):
+        has_online_booking = False
+    else:
+        booking_flag = context.get("signal_has_automated_scheduling")
+        has_online_booking = True if booking_flag is True else (False if booking_flag is False else None)
+    if has_online_booking is False:
         score -= 15
     svc = (objective_layer or {}).get("service_intelligence") or {}
     missing = svc.get("missing_high_value_pages") or []

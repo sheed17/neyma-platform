@@ -98,9 +98,38 @@ export interface RevenueBreakdown {
   annual_revenue_range: string;
 }
 
+export interface CaptureVerificationSignal {
+  status?: string;
+  value?: string;
+  confidence?: string;
+  observed_pages?: string[];
+  evidence?: string[];
+}
+
+export interface CaptureVerificationMethod {
+  page: string;
+  method: string;
+  source: string;
+}
+
+export interface CaptureVerification {
+  homepage_page?: string;
+  followup_pages_checked?: string[];
+  verification_methods?: CaptureVerificationMethod[];
+  scheduling_cta?: CaptureVerificationSignal;
+  booking_flow?: CaptureVerificationSignal;
+  contact_form?: CaptureVerificationSignal;
+}
+
 export interface ConversionInfrastructure {
   online_booking?: boolean;
   contact_form?: boolean;
+  booking_flow_type?: string | null;
+  booking_flow_confidence?: string | null;
+  scheduling_cta_detected?: boolean | null;
+  contact_form_confidence?: string | null;
+  contact_form_cta_detected?: boolean | null;
+  capture_verification?: CaptureVerification | null;
   phone_prominent?: boolean;
   mobile_optimized?: boolean;
   page_load_ms?: number;
@@ -193,12 +222,28 @@ export interface BriefRevenueUpsideCaptureGap {
   case_high?: number;
   annual_low?: number;
   annual_high?: number;
+  source?: string;
   method_note?: string;
+  display_mode?: "range" | "indicative" | "suppressed" | string;
+  display_value?: string | null;
+  confidence_score?: number | null;
+  confidence_label?: string | null;
+  reliability_grade?: string | null;
+  basis?: string | null;
+  context?: string | null;
+  suppressed_reason?: string | null;
+  service_context?: string | null;
 }
 
 export interface BriefConversionInfrastructure {
   online_booking?: boolean;
   contact_form?: boolean;
+  booking_flow_type?: string | null;
+  booking_flow_confidence?: string | null;
+  scheduling_cta_detected?: boolean | null;
+  contact_form_confidence?: string | null;
+  contact_form_cta_detected?: boolean | null;
+  capture_verification?: CaptureVerification | null;
   phone_prominent?: boolean;
   mobile_optimized?: boolean;
   page_load_ms?: number;
@@ -413,17 +458,29 @@ export type ProspectRow = {
   email?: string | null;
   key_signal?: string | null;
   ai_explanation?: string | null;
+  match_evidence_level?: "deep_verified" | "lightweight_verified" | "deterministic" | "inferred" | null;
+  match_evidence?: Array<{
+    criterion_key?: string;
+    criterion_type?: string;
+    service?: string | null;
+    source?: string;
+    matched?: boolean;
+    details?: Record<string, unknown> | null;
+  }> | null;
   ai_rerank?: Record<string, unknown> | null;
   rating?: number | null;
   user_ratings_total?: number | null;
   full_brief_ready?: boolean;
   tier1_signals?: {
     has_website?: boolean;
-    ssl?: boolean;
-    has_contact_form?: boolean;
+    ssl?: boolean | null;
+    has_contact_form?: boolean | null;
     has_phone?: boolean;
-    has_viewport?: boolean;
-    has_schema?: boolean;
+    has_viewport?: boolean | null;
+    has_schema?: boolean | null;
+    has_booking?: boolean | null;
+    booking_conversion_path?: string | null;
+    capture_verification?: CaptureVerification | null;
   };
   change?: {
     changed: boolean;

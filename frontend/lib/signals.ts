@@ -13,20 +13,50 @@ export function isPaidActive(data: DiagnosticResponse): boolean {
   return paid.includes("active") || paid.includes("running");
 }
 
-export function getMissingServices(data: DiagnosticResponse): string[] {
+export function getServiceCoverageGaps(data: DiagnosticResponse): {
+  missing: string[];
+  mentionOnly: string[];
+  all: string[];
+} {
   const rows = data.service_intelligence?.high_value_services;
   if (Array.isArray(rows) && rows.length > 0) {
-    const gaps = rows
-      .filter((r) => {
-        const status = String((r as Record<string, unknown>).service_status || "").toLowerCase();
-        return status === "missing" || status === "mention_only";
+    const normalized = rows
+      .map((r) => {
+        const row = r as Record<string, unknown>;
+        const status = String(row.service_status || "").toLowerCase();
+        return {
+          name: String(row.display_name || row.service || ""),
+          status,
+          revenueWeight: Number(row.revenue_weight || 0),
+        };
       })
-      .sort((a, b) => Number((b as Record<string, unknown>).revenue_weight || 0) - Number((a as Record<string, unknown>).revenue_weight || 0))
-      .map((r) => String((r as Record<string, unknown>).display_name || (r as Record<string, unknown>).service || ""))
-      .filter(Boolean);
-    if (gaps.length) return gaps;
+      .filter((r) => Boolean(r.name) && (r.status === "missing" || r.status === "mention_only"))
+      .sort((a, b) => {
+        const rankA = a.status === "missing" ? 0 : 1;
+        const rankB = b.status === "missing" ? 0 : 1;
+        if (rankA !== rankB) return rankA - rankB;
+        return b.revenueWeight - a.revenueWeight;
+      });
+    if (normalized.length) {
+      const missing = normalized.filter((r) => r.status === "missing").map((r) => r.name);
+      const mentionOnly = normalized.filter((r) => r.status === "mention_only").map((r) => r.name);
+      return {
+        missing,
+        mentionOnly,
+        all: [...missing, ...mentionOnly],
+      };
+    }
   }
-  return (data.brief?.high_ticket_gaps?.missing_landing_pages || data.service_intelligence?.missing_services || []) as string[];
+  const fallback = (data.brief?.high_ticket_gaps?.missing_landing_pages || data.service_intelligence?.missing_services || []) as string[];
+  return {
+    missing: fallback,
+    mentionOnly: [],
+    all: fallback,
+  };
+}
+
+export function getMissingServices(data: DiagnosticResponse): string[] {
+  return getServiceCoverageGaps(data).missing;
 }
 
 export function getTopGapService(data: DiagnosticResponse): { name: string; status: string } | null {
@@ -37,7 +67,14 @@ export function getTopGapService(data: DiagnosticResponse): { name: string; stat
       const st = String((r as Record<string, unknown>).service_status || "").toLowerCase();
       return st === "missing" || st === "mention_only";
     })
-    .sort((a, b) => Number((b as Record<string, unknown>).revenue_weight || 0) - Number((a as Record<string, unknown>).revenue_weight || 0));
+    .sort((a, b) => {
+      const aStatus = String((a as Record<string, unknown>).service_status || "").toLowerCase();
+      const bStatus = String((b as Record<string, unknown>).service_status || "").toLowerCase();
+      const aRank = aStatus === "missing" ? 0 : 1;
+      const bRank = bStatus === "missing" ? 0 : 1;
+      if (aRank !== bRank) return aRank - bRank;
+      return Number((b as Record<string, unknown>).revenue_weight || 0) - Number((a as Record<string, unknown>).revenue_weight || 0);
+    });
   if (!gaps.length) return null;
   const top = gaps[0] as Record<string, unknown>;
   return {

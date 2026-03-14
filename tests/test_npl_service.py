@@ -83,6 +83,11 @@ def test_website_phrases_no_website():
     assert "no_website" in _types(intent)
 
 
+def test_website_phrase_dont_have_a_website():
+    intent = parse_npl_query("Find 10 dentists in Phoenix AZ that don't have a website")
+    assert "no_website" in _types(intent)
+
+
 def test_website_phrases_has_website():
     intent = parse_npl_query("Dentists in San Jose CA that have a website")
     assert "has_website" in _types(intent)

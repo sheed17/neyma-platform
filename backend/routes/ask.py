@@ -8,7 +8,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.services.ask_config import ADAPTIVE_LIMITS_DEFAULTS
-from backend.services.criteria_registry import sanitize_criteria, sanitize_must_not
+from backend.services.criteria_registry import (
+    normalize_accuracy_mode,
+    sanitize_criteria,
+    sanitize_must_not,
+)
 from backend.services.moderation import moderate_text
 from backend.services.npl_service import resolve_ask_intent
 from pipeline.db import create_job, get_job, get_latest_diagnostic_by_place_id
@@ -84,11 +88,16 @@ def ask_find(body: AskRequest, request: Request):
         }
 
     limit = max(1, min(int(intent.get("limit") or 10), 20))
-    # Ask pipeline returns lightweight-matched shortlist fast.
-    # Deep verification is deferred to on-demand brief generation.
-    require_deep_verification = False
+    accuracy_mode = normalize_accuracy_mode(intent.get("accuracy_mode") or "fast")
+    has_high_risk_criteria = any(str(c.get("type") or "") == "missing_service_page" for c in criteria)
+    require_deep_verification = has_high_risk_criteria
     adaptive_limits = dict(ADAPTIVE_LIMITS_DEFAULTS)
     adaptive_limits["min_results"] = limit
+    if accuracy_mode == "verified" and has_high_risk_criteria:
+        adaptive_limits["deep_top_k"] = max(
+            int(adaptive_limits.get("deep_top_k") or 20),
+            min(60, max(limit * 3, 20)),
+        )
 
     job_id = create_job(
         user_id=user_id,
@@ -96,6 +105,7 @@ def ask_find(body: AskRequest, request: Request):
         input_data={
             "original_query": body.query,
             "resolved_intent": intent,
+            "accuracy_mode": accuracy_mode,
             "criteria": criteria,
             "must_not": must_not,
             "limit": limit,

@@ -99,9 +99,6 @@ def _dimension_paid_growth(signals: Dict) -> Dict:
     if _is_false(_get_signal(signals, "has_contact_form")):
         evidence.append("No contact form to capture ad traffic")
         gap_count += 1
-    elif _get_signal(signals, "has_contact_form") is None:
-        evidence.append("Contact form status unknown (possible gap)")
-        gap_count += 1
     if _is_false(_get_signal(signals, "has_automated_scheduling")):
         evidence.append("No automated scheduling to convert visitors")
         gap_count += 1

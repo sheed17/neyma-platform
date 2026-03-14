@@ -1,5 +1,5 @@
 import type { DiagnosticResponse } from "./types";
-import { parseNum, isPaidActive, getMissingServices, getTopGapService, isServiceSuppressed, isRevenueSuppressed, isMarketHigh, hasConversionGap } from "./signals";
+import { parseNum, isPaidActive, getServiceCoverageGaps, getTopGapService, isServiceSuppressed, isRevenueSuppressed, isMarketHigh, hasConversionGap } from "./signals";
 
 export type Verdict = "GO" | "SOFT_PASS" | "PASS";
 
@@ -51,7 +51,7 @@ export function computeVerdict(data: DiagnosticResponse): {
   const suppressRevenue = isRevenueSuppressed(data);
 
   const paid = isPaidActive(data);
-  const miss = getMissingServices(data).length;
+  const miss = getServiceCoverageGaps(data).all.length;
   const oppHigh = !suppressRevenue && opportunityHigh(data);
   const revStrong = reviewStrength(data);
   const revDeficit = reviewDeficit(data);

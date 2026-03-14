@@ -19,7 +19,7 @@ import type {
   AskEnsureBriefResponse,
 } from "./types";
 
-const getBaseUrl = () =>
+export const getBaseUrl = () =>
   process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 function timeoutSignal(ms: number): AbortSignal {
@@ -82,10 +82,15 @@ export async function listDiagnostics(
   limit = 50,
   offset = 0,
 ): Promise<DiagnosticListResponse> {
-  const res = await fetch(
-    `${getBaseUrl()}/diagnostics?limit=${limit}&offset=${offset}`,
-    { cache: "no-store" },
-  );
+  let res: Response;
+  try {
+    res = await fetch(
+      `${getBaseUrl()}/diagnostics?limit=${limit}&offset=${offset}`,
+      { cache: "no-store" },
+    );
+  } catch {
+    throw new Error(`Unable to reach the API at ${getBaseUrl()}. Start the backend or set NEXT_PUBLIC_API_URL.`);
+  }
   if (!res.ok) throw new Error("Failed to load diagnostics");
   return res.json();
 }

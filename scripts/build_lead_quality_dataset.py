@@ -9,6 +9,7 @@ import json
 import os
 import sqlite3
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
@@ -23,12 +24,20 @@ from backend.ml.feature_schema import (
     LABEL_VERSION,
     TERRITORY_FEATURE_COLUMNS,
 )
+from backend.ml.training_utils import load_market_specs, market_key_from_row
 from backend.ml.labeler import generate_lead_quality_label
 
 META_COLUMNS = [
     "place_id",
     "diagnostic_id",
     "snapshot_ts",
+    "city",
+    "state",
+    "market_city",
+    "market_state",
+    "market_key",
+    "market_source",
+    "source_scan_id",
     "feature_scope",
     "feature_version",
     "label_version",
@@ -92,11 +101,93 @@ def _write_csv(path: str, fieldnames: List[str], rows: Iterable[Dict[str, Any]])
     return count
 
 
+def _load_diagnostic_rows(limit: int | None = None, cutoff: str | None = None) -> list[sqlite3.Row]:
+    conn = _get_conn()
+    try:
+        sql = """
+            WITH diagnostic_base AS (
+                SELECT d.*,
+                       (
+                           SELECT tp.scan_id
+                           FROM territory_prospects tp
+                           JOIN territory_scans ts ON ts.id = tp.scan_id
+                           WHERE tp.diagnostic_id = d.id AND ts.scan_type = 'territory'
+                           ORDER BY COALESCE(tp.updated_at, tp.created_at) DESC, tp.id DESC
+                           LIMIT 1
+                       ) AS source_scan_id
+                FROM diagnostics d
+                WHERE d.response_json IS NOT NULL
+            )
+            SELECT diagnostic_base.*,
+                   ts.city AS source_market_city,
+                   ts.state AS source_market_state
+            FROM diagnostic_base
+            LEFT JOIN territory_scans ts ON ts.id = diagnostic_base.source_scan_id
+        """
+        params: List[Any] = []
+        if cutoff:
+            sql += " WHERE diagnostic_base.created_at <= ?"
+            params.append(cutoff)
+        sql += " ORDER BY diagnostic_base.created_at ASC"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+
+def _resolve_market_context(row: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, str]:
+    market_city = str(
+        row.get("source_market_city")
+        or row.get("city")
+        or response.get("city")
+        or ""
+    ).strip()
+    market_state = str(
+        row.get("source_market_state")
+        or row.get("state")
+        or response.get("state")
+        or ""
+    ).strip()
+    market_key = market_key_from_row({"city": market_city, "state": market_state})
+    return {
+        "market_city": market_city,
+        "market_state": market_state,
+        "market_key": market_key,
+        "market_source": "territory_scan" if row.get("source_scan_id") else "business_location",
+        "source_scan_id": str(row.get("source_scan_id") or ""),
+    }
+
+
+def _summarize_market_rows(rows: list[dict]) -> Dict[str, Dict[str, int]]:
+    market_counts = Counter()
+    source_counts = Counter()
+    for row in rows:
+        market_key = str(row.get("market_key") or "").strip()
+        if market_key:
+            market_counts[market_key] += 1
+        source_key = str(row.get("market_source") or "").strip()
+        if source_key:
+            source_counts[source_key] += 1
+    return {
+        "market_counts": dict(sorted(market_counts.items())),
+        "market_source_counts": dict(sorted(source_counts.items())),
+    }
+
+
 def _project_row(
     *,
     place_id: str,
     diagnostic_id: int,
     snapshot_ts: str,
+    city: str,
+    state: str,
+    market_city: str,
+    market_state: str,
+    market_key: str,
+    market_source: str,
+    source_scan_id: str,
     features: Dict[str, Any],
     feature_columns: List[str],
     feature_scope: str,
@@ -106,6 +197,13 @@ def _project_row(
         "place_id": place_id,
         "diagnostic_id": diagnostic_id,
         "snapshot_ts": snapshot_ts,
+        "city": city,
+        "state": state,
+        "market_city": market_city,
+        "market_state": market_state,
+        "market_key": market_key,
+        "market_source": market_source,
+        "source_scan_id": source_scan_id,
         "feature_scope": feature_scope,
         "feature_version": FEATURE_VERSION,
         "label_version": LABEL_VERSION,
@@ -124,25 +222,21 @@ def _project_row(
     return row
 
 
-def build_dataset_rows(limit: int | None = None, cutoff: str | None = None) -> tuple[list[dict], list[dict]]:
+def build_dataset_rows(
+    limit: int | None = None,
+    cutoff: str | None = None,
+    *,
+    market_values: List[str] | None = None,
+    market_file: str | None = None,
+) -> tuple[list[dict], list[dict], Dict[str, Any]]:
     _ensure_registry_tables()
-    conn = _get_conn()
-    try:
-        sql = "SELECT id, place_id, response_json, created_at FROM diagnostics WHERE response_json IS NOT NULL"
-        params: List[Any] = []
-        if cutoff:
-            sql += " AND created_at <= ?"
-            params.append(cutoff)
-        sql += " ORDER BY created_at ASC"
-        if limit:
-            sql += " LIMIT ?"
-            params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
-    finally:
-        conn.close()
+    market_specs = load_market_specs(market_values, market_file)
+    allowed_market_keys = {item["market_key"] for item in market_specs}
+    rows = _load_diagnostic_rows(limit=limit, cutoff=cutoff)
 
     tier2_rows: list[dict] = []
     tier1_rows: list[dict] = []
+    skipped_for_market = 0
     for row in rows:
         try:
             response = json.loads(row["response_json"])
@@ -150,15 +244,29 @@ def build_dataset_rows(limit: int | None = None, cutoff: str | None = None) -> t
             continue
         if not isinstance(response, dict):
             continue
+        market_context = _resolve_market_context(dict(row), response)
+        market_key = market_context["market_key"]
+        if allowed_market_keys and market_key not in allowed_market_keys:
+            skipped_for_market += 1
+            continue
         features_t2 = build_tier2_feature_vector(response)
         place_id = str(row["place_id"] or response.get("place_id") or f"diagnostic-{row['id']}")
         snapshot_ts = str(row["created_at"])
         diagnostic_id = int(row["id"])
+        city = str(row["city"] or response.get("city") or "")
+        state = str(row["state"] or response.get("state") or "")
         tier2_rows.append(
             _project_row(
                 place_id=place_id,
                 diagnostic_id=diagnostic_id,
                 snapshot_ts=snapshot_ts,
+                city=city,
+                state=state,
+                market_city=market_context["market_city"],
+                market_state=market_context["market_state"],
+                market_key=market_key,
+                market_source=market_context["market_source"],
+                source_scan_id=market_context["source_scan_id"],
                 features=features_t2,
                 feature_columns=DIAGNOSTIC_FEATURE_COLUMNS,
                 feature_scope="tier2",
@@ -169,12 +277,27 @@ def build_dataset_rows(limit: int | None = None, cutoff: str | None = None) -> t
                 place_id=place_id,
                 diagnostic_id=diagnostic_id,
                 snapshot_ts=snapshot_ts,
+                city=city,
+                state=state,
+                market_city=market_context["market_city"],
+                market_state=market_context["market_state"],
+                market_key=market_key,
+                market_source=market_context["market_source"],
+                source_scan_id=market_context["source_scan_id"],
                 features=features_t2,
                 feature_columns=TERRITORY_FEATURE_COLUMNS,
                 feature_scope="tier1",
             )
         )
-    return tier1_rows, tier2_rows
+    market_summary = _summarize_market_rows(tier2_rows)
+    filter_summary = {
+        "market_filters": [item["raw"] for item in market_specs],
+        "market_filter_count": len(market_specs),
+        "skipped_for_market_filter": skipped_for_market,
+        "market_counts": market_summary["market_counts"],
+        "market_source_counts": market_summary["market_source_counts"],
+    }
+    return tier1_rows, tier2_rows, filter_summary
 
 
 def register_dataset(dataset_version: str, task_name: str, feature_scope: str, row_count: int, source_cutoff_ts: str | None, manifest: Dict[str, Any]) -> None:
@@ -202,18 +325,25 @@ def register_dataset(dataset_version: str, task_name: str, feature_scope: str, r
         conn.close()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build Neyma lead-quality datasets.")
-    parser.add_argument("--output-dir", default=os.path.join("output", "ml_datasets"), help="Dataset output root")
-    parser.add_argument("--limit", type=int, default=None, help="Optional max diagnostics to export")
-    parser.add_argument("--cutoff", default=None, help="Optional ISO timestamp cutoff")
-    args = parser.parse_args()
-
-    built_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dataset_root = os.path.join(args.output_dir, built_at)
+def build_dataset_snapshot(
+    *,
+    output_dir: str,
+    limit: int | None = None,
+    cutoff: str | None = None,
+    market_values: List[str] | None = None,
+    market_file: str | None = None,
+    built_at: str | None = None,
+) -> Dict[str, Any]:
+    built_at = built_at or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dataset_root = os.path.join(output_dir, built_at)
     os.makedirs(dataset_root, exist_ok=True)
 
-    tier1_rows, tier2_rows = build_dataset_rows(limit=args.limit, cutoff=args.cutoff)
+    tier1_rows, tier2_rows, filter_summary = build_dataset_rows(
+        limit=limit,
+        cutoff=cutoff,
+        market_values=market_values,
+        market_file=market_file,
+    )
 
     tier1_version = f"territory_lead_quality_v1__{built_at}"
     tier2_version = f"diagnostic_lead_quality_v1__{built_at}"
@@ -231,8 +361,13 @@ def main() -> None:
         "db_path": _db_path(),
         "feature_version": FEATURE_VERSION,
         "label_version": LABEL_VERSION,
-        "cutoff": args.cutoff,
-        "limit": args.limit,
+        "cutoff": cutoff,
+        "limit": limit,
+        "market_filters": filter_summary["market_filters"],
+        "market_filter_count": filter_summary["market_filter_count"],
+        "skipped_for_market_filter": filter_summary["skipped_for_market_filter"],
+        "market_counts": filter_summary["market_counts"],
+        "market_source_counts": filter_summary["market_source_counts"],
         "territory": {
             "dataset_version": tier1_version,
             "path": tier1_path,
@@ -247,9 +382,27 @@ def main() -> None:
     with open(os.path.join(dataset_root, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
 
-    register_dataset(tier1_version, "territory_lead_quality_v1", "tier1", tier1_count, args.cutoff, manifest)
-    register_dataset(tier2_version, "diagnostic_lead_quality_v1", "tier2", tier2_count, args.cutoff, manifest)
+    register_dataset(tier1_version, "territory_lead_quality_v1", "tier1", tier1_count, cutoff, manifest)
+    register_dataset(tier2_version, "diagnostic_lead_quality_v1", "tier2", tier2_count, cutoff, manifest)
+    return manifest
 
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build Neyma lead-quality datasets.")
+    parser.add_argument("--output-dir", default=os.path.join("output", "ml_datasets"), help="Dataset output root")
+    parser.add_argument("--limit", type=int, default=None, help="Optional max diagnostics to export")
+    parser.add_argument("--cutoff", default=None, help="Optional ISO timestamp cutoff")
+    parser.add_argument("--market", action="append", default=[], help="Repeatable market filter in 'City, ST' format")
+    parser.add_argument("--market-file", default=None, help="Optional newline-delimited market filter file")
+    args = parser.parse_args()
+
+    manifest = build_dataset_snapshot(
+        output_dir=args.output_dir,
+        limit=args.limit,
+        cutoff=args.cutoff,
+        market_values=args.market,
+        market_file=args.market_file,
+    )
     print(json.dumps(manifest, indent=2))
 
 

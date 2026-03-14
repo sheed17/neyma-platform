@@ -5,9 +5,12 @@ Polls for pending jobs and executes them sequentially.
 For production, replace with Celery + Redis.
 """
 
+import json
 import logging
 import os
 import random
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -47,7 +50,11 @@ from backend.services.npl_service import (
     review_lightweight_match_with_ai,
     run_lightweight_service_page_check,
 )
-from backend.services.criteria_registry import sanitize_criteria, sanitize_must_not
+from backend.services.criteria_registry import (
+    normalize_accuracy_mode,
+    sanitize_criteria,
+    sanitize_must_not,
+)
 from backend.services.ask_agentic_planner import planner_llm_update
 from backend.services.territory_service import (
     _build_tier1_rows,
@@ -64,6 +71,10 @@ _stop_event = threading.Event()
 POLL_INTERVAL = 2  # seconds
 ASK_PLACES_CACHE_TTL_SECONDS = 15 * 60
 ASK_LIGHT_CACHE_TTL_SECONDS = 10 * 60
+DEEP_BRIEF_DIAGNOSTIC_TIMEOUT_SECONDS = max(
+    60,
+    int(os.getenv("DEEP_BRIEF_DIAGNOSTIC_TIMEOUT_SECONDS") or 12 * 60),
+)
 
 
 def _is_fresh_iso(updated_at: str | None, ttl_seconds: int) -> bool:
@@ -76,6 +87,78 @@ def _is_fresh_iso(updated_at: str | None, ttl_seconds: int) -> bool:
         return False
 
 
+def _run_deep_brief_diagnostic_with_timeout(task: dict, deep_audit: bool, timeout_seconds: int) -> dict:
+    payload = {
+        "business_name": task["business_name"],
+        "city": task["city"],
+        "state": task.get("state"),
+        "website": task.get("website"),
+        "deep_audit": deep_audit,
+    }
+    cmd = [
+        sys.executable,
+        "-c",
+        """
+import json
+import sys
+import traceback
+
+from backend.services.enrichment_service import run_diagnostic
+
+payload = json.loads(sys.stdin.read())
+try:
+    result = run_diagnostic(
+        business_name=str(payload["business_name"]),
+        city=str(payload["city"]),
+        state=str(payload.get("state") or ""),
+        website=payload.get("website"),
+        deep_audit=bool(payload.get("deep_audit", True)),
+    )
+    sys.stdout.write(json.dumps({"ok": True, "result": result}, default=str))
+except Exception as exc:
+    sys.stdout.write(
+        json.dumps(
+            {
+                "ok": False,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+        )
+    )
+    sys.exit(1)
+""",
+    ]
+    try:
+        completed = subprocess.run(
+            cmd,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            cwd=os.getcwd(),
+        )
+    except subprocess.TimeoutExpired:
+        raise TimeoutError(
+            f"Deep brief diagnostic timed out after {timeout_seconds}s for "
+            f"{task.get('business_name')} ({task.get('city')})"
+        )
+    raw = (completed.stdout or "").strip()
+    if not raw:
+        err = (completed.stderr or "").strip()
+        raise RuntimeError(
+            f"Deep brief diagnostic subprocess returned no result for "
+            f"{task.get('business_name')} ({task.get('city')})"
+            + (f": {err}" if err else "")
+        )
+    payload = json.loads(raw)
+    if not payload.get("ok"):
+        tb = payload.get("traceback")
+        if tb:
+            logger.error("Deep brief subprocess failed for %s\n%s", task.get("business_name"), tb)
+        raise RuntimeError(str(payload.get("error") or "Unknown deep brief subprocess failure"))
+    return payload["result"]
+
+
 def _run_deep_brief_job(job: dict) -> dict:
     job_id = job["id"]
     user_id = job.get("user_id", 1)
@@ -86,11 +169,20 @@ def _run_deep_brief_job(job: dict) -> dict:
     concurrency = int(inp.get("concurrency") or 3)
     concurrency = max(1, min(concurrency, 5))
     deep_audit = bool(inp.get("deep_audit", True))
+    timeout_seconds = max(
+        60,
+        int(inp.get("diagnostic_timeout_seconds") or DEEP_BRIEF_DIAGNOSTIC_TIMEOUT_SECONDS),
+    )
 
     tasks: list[dict] = []
     if job_type == "territory_deep_scan":
         scan_id = str(inp.get("scan_id") or "")
+        requested_prospect_ids = [int(item) for item in (inp.get("prospect_ids") or []) if str(item).strip()]
+        requested_order = {prospect_id: idx for idx, prospect_id in enumerate(requested_prospect_ids)}
         rows = list_territory_prospects(scan_id, user_id) if scan_id else []
+        if requested_order:
+            rows = [r for r in rows if int(r.get("id") or 0) in requested_order]
+            rows.sort(key=lambda r: requested_order.get(int(r.get("id") or 0), len(requested_order)))
         for r in rows:
             if r.get("full_brief_ready"):
                 continue
@@ -132,12 +224,10 @@ def _run_deep_brief_job(job: dict) -> dict:
         return {"processed": 0, "created": 0, "failed": 0, "total": 0, "message": "No prospects required deep brief build."}
 
     def _run_one(t: dict) -> dict:
-        result = run_diagnostic(
-            business_name=str(t["business_name"]),
-            city=str(t["city"]),
-            state=str(t.get("state") or ""),
-            website=t.get("website"),
+        result = _run_deep_brief_diagnostic_with_timeout(
+            t,
             deep_audit=deep_audit,
+            timeout_seconds=timeout_seconds,
         )
         diag_id = save_diagnostic(
             user_id=user_id,
@@ -207,8 +297,93 @@ def _run_deep_brief_job(job: dict) -> dict:
     }
 
 
-def _build_npl_payload(row: dict, diagnostic: dict | None) -> dict:
+def _criterion_key_for_payload(criterion: dict) -> str:
+    ctype = str(criterion.get("type") or "").strip()
+    service = str(criterion.get("service") or "").strip()
+    if ctype == "missing_service_page" and service:
+        return f"{ctype}:{service}"
+    return ctype or "unknown"
+
+
+def _build_match_evidence(row: dict, diagnostic: dict | None, criteria: list[dict] | None) -> list[dict]:
+    if not criteria:
+        return []
+
     resp = (diagnostic or {}).get("response") if isinstance(diagnostic, dict) else None
+    light_results = row.get("_light_results") if isinstance(row.get("_light_results"), dict) else {}
+    ai_reviews = row.get("_ai_reviews") if isinstance(row.get("_ai_reviews"), dict) else {}
+    verified_missing = [
+        str(s).strip().lower()
+        for s in ((resp or {}).get("service_intelligence") or {}).get("missing_services", [])
+        if str(s).strip()
+    ]
+    evidence: list[dict] = []
+
+    for criterion in criteria:
+        ctype = str(criterion.get("type") or "").strip()
+        if not ctype:
+            continue
+
+        service = str(criterion.get("service") or "").strip() or None
+        item = {
+            "criterion_key": _criterion_key_for_payload(criterion),
+            "criterion_type": ctype,
+            "service": service,
+        }
+
+        if ctype == "missing_service_page":
+            service_slug = str(service or "").strip().lower()
+            ckey = criterion_cache_key(criterion)
+            lw = light_results.get(ckey) if isinstance(light_results, dict) else {}
+            ai = ai_reviews.get(ckey) if isinstance(ai_reviews, dict) else {}
+
+            if resp is not None:
+                item["source"] = "deep_verified_diagnostic"
+                item["matched"] = bool(service_slug) and any(service_slug in missing for missing in verified_missing)
+                item["details"] = {
+                    "missing_services": verified_missing,
+                }
+            elif lw:
+                item["source"] = "lightweight_check"
+                item["matched"] = bool(lw.get("matches"))
+                details = {
+                    "reason": lw.get("reason"),
+                    "method": lw.get("method"),
+                    "service": lw.get("service"),
+                }
+                if isinstance(lw.get("evidence"), dict):
+                    details["evidence"] = lw.get("evidence")
+                if ai:
+                    details["ai_review"] = {
+                        "verdict": ai.get("verdict"),
+                        "reason": ai.get("reason"),
+                    }
+                item["details"] = details
+            else:
+                item["source"] = "inferred"
+                item["matched"] = bool(row.get("missing_service_page_match"))
+        else:
+            item["source"] = "deterministic_signal"
+            item["matched"] = matches_tier1_criteria([criterion], row)
+
+        evidence.append(item)
+
+    return evidence
+
+
+def _match_evidence_level(match_evidence: list[dict]) -> str:
+    if any(item.get("matched") and item.get("source") == "deep_verified_diagnostic" for item in match_evidence):
+        return "deep_verified"
+    if any(item.get("matched") and item.get("source") == "lightweight_check" for item in match_evidence):
+        return "lightweight_verified"
+    if any(item.get("matched") and item.get("source") == "deterministic_signal" for item in match_evidence):
+        return "deterministic"
+    return "inferred"
+
+
+def _build_npl_payload(row: dict, diagnostic: dict | None, criteria: list[dict] | None = None) -> dict:
+    resp = (diagnostic or {}).get("response") if isinstance(diagnostic, dict) else None
+    match_evidence = _build_match_evidence(row, diagnostic, criteria)
     return {
         "prospect_id": row.get("id"),
         "diagnostic_id": row.get("diagnostic_id"),
@@ -225,6 +400,8 @@ def _build_npl_payload(row: dict, diagnostic: dict | None) -> dict:
         "opportunity_profile": (resp or {}).get("opportunity_profile"),
         "primary_leverage": (resp or {}).get("primary_leverage"),
         "constraint": (resp or {}).get("constraint"),
+        "match_evidence_level": _match_evidence_level(match_evidence),
+        "match_evidence": match_evidence,
         "ai_review": row.get("ai_review"),
         "ai_rerank": row.get("ai_rerank"),
         "ai_explanation": row.get("ai_explanation"),
@@ -235,9 +412,8 @@ def _run_npl_find_job(job: dict) -> dict:
     job_id = job["id"]
     inp = job.get("input", {}) or {}
     intent = inp.get("intent") or {}
-    accuracy_mode = str(inp.get("accuracy_mode") or "verified").strip().lower()
-    if accuracy_mode not in {"fast", "verified"}:
-        accuracy_mode = "verified"
+    accuracy_mode = normalize_accuracy_mode(inp.get("accuracy_mode") or intent.get("accuracy_mode") or "verified")
+    intent["accuracy_mode"] = accuracy_mode
     city = str(intent.get("city") or "").strip()
     state = intent.get("state") or None
     vertical = str(intent.get("vertical") or "dentist").strip()
@@ -447,7 +623,7 @@ def _run_npl_find_job(job: dict) -> dict:
         for row in ranked_rows:
             if _passes_non_missing(row):
                 filtered_rows.append(row)
-                payload = _build_npl_payload(row, diagnostic=None)
+                payload = _build_npl_payload(row, diagnostic=None, criteria=criteria)
                 partial_payload.append(payload)
                 if len(partial_payload) >= limit:
                     break
@@ -488,7 +664,7 @@ def _run_npl_find_job(job: dict) -> dict:
                     if lw.get("matches"):
                         row["missing_service_page_match"] = True
                         filtered_rows.append(row)
-                        partial_payload.append(_build_npl_payload(row, diagnostic=None))
+                        partial_payload.append(_build_npl_payload(row, diagnostic=None, criteria=criteria))
                     else:
                         filtered_out_by_criterion["missing_service_page"] = int(filtered_out_by_criterion.get("missing_service_page") or 0) + 1
                     continue
@@ -508,7 +684,7 @@ def _run_npl_find_job(job: dict) -> dict:
                 if lw.get("matches"):
                     row["missing_service_page_match"] = True
                     filtered_rows.append(row)
-                    partial_payload.append(_build_npl_payload(row, diagnostic=None))
+                    partial_payload.append(_build_npl_payload(row, diagnostic=None, criteria=criteria))
                 else:
                     filtered_out_by_criterion["missing_service_page"] = int(filtered_out_by_criterion.get("missing_service_page") or 0) + 1
                 if checked % 5 == 0 or len(partial_payload) == limit:
@@ -567,6 +743,7 @@ def _run_npl_find_job(job: dict) -> dict:
             out = _build_npl_payload(
                 row,
                 diagnostic={"response": result},
+                criteria=criteria,
             )
             return {"verified_match": True, "payload": out}
 
@@ -652,7 +829,7 @@ def _run_npl_find_job(job: dict) -> dict:
     else:
         filtered_rows = _stable_sort_rows(filtered_rows)
         top_rows = filtered_rows[:limit]
-        prospects = [_build_npl_payload(r, diagnostic=None) for r in top_rows]
+        prospects = [_build_npl_payload(r, diagnostic=None, criteria=criteria) for r in top_rows]
         total_matches = len(filtered_rows)
 
     criterion_that_eliminated_most = None
@@ -703,6 +880,8 @@ def handle_ask_scan(job: dict) -> dict:
     job_id = job["id"]
     inp = job.get("input", {}) or {}
     intent = dict(inp.get("resolved_intent") or inp.get("intent") or {})
+    accuracy_mode = normalize_accuracy_mode(inp.get("accuracy_mode") or intent.get("accuracy_mode") or "fast")
+    intent["accuracy_mode"] = accuracy_mode
 
     update_job_status(
         job_id,
@@ -710,6 +889,7 @@ def handle_ask_scan(job: dict) -> dict:
         result={
             "phase": "moderating",
             "intent": intent,
+            "accuracy_mode": accuracy_mode,
             "progress": {"list_count": 0},
             "partial_results": [],
         },
@@ -720,6 +900,7 @@ def handle_ask_scan(job: dict) -> dict:
         result={
             "phase": "resolving_intent",
             "intent": intent,
+            "accuracy_mode": accuracy_mode,
             "progress": {"list_count": 0},
             "partial_results": [],
         },
@@ -767,7 +948,10 @@ def handle_ask_scan(job: dict) -> dict:
     min_results = max(1, min(int(adaptive_cfg.get("min_results") or limit), 20))
     ask_ai_review_enabled = str(os.getenv("ASK_AI_REVIEW_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
     ask_ai_review_max_per_job = max(0, min(int(os.getenv("ASK_AI_REVIEW_MAX_PER_JOB", "20")), 200))
-    ask_ai_rerank_enabled = str(os.getenv("ASK_AI_RERANK_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    ask_ai_rerank_enabled = (
+        accuracy_mode != "verified"
+        and str(os.getenv("ASK_AI_RERANK_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    )
     ask_ai_rerank_top_n = max(0, min(int(os.getenv("ASK_AI_RERANK_TOP_N", "20")), 100))
     ask_ai_explain_enabled = str(os.getenv("ASK_AI_EXPLAIN_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
     ask_ai_explain_top_n = max(0, min(int(os.getenv("ASK_AI_EXPLAIN_TOP_N", "10")), 40))
@@ -775,13 +959,14 @@ def handle_ask_scan(job: dict) -> dict:
     qa_verify_sample_rate = max(0.0, min(float(os.getenv("QA_VERIFY_SAMPLE_RATE", "0.05")), 1.0))
     qa_verify_max_per_job = max(0, min(int(os.getenv("QA_VERIFY_MAX_PER_JOB", "25")), 200))
 
-    if "require_deep_verification" in inp:
-        require_deep_verification = bool(inp.get("require_deep_verification"))
-    else:
-        require_deep_verification = any(str(c.get("type") or "") == "missing_service_page" for c in criteria)
-
     missing_service_criteria = [c for c in criteria if str(c.get("type") or "") == "missing_service_page"]
+    requested_deep_verification = bool(inp.get("require_deep_verification"))
+    require_deep_verification = requested_deep_verification or (
+        accuracy_mode == "verified" and bool(missing_service_criteria)
+    )
     lightweight_required = bool(missing_service_criteria) or needs_lightweight_check(criteria)
+    if accuracy_mode == "verified" and missing_service_criteria:
+        deep_top_k = max(deep_top_k, min(60, max(limit * 3, 20)))
 
     soft_filters: list[dict] = []
     relaxed_soft = False
@@ -803,7 +988,7 @@ def handle_ask_scan(job: dict) -> dict:
         return rows_to_sort
 
     def _preview_payload(rows_src: list[dict]) -> list[dict]:
-        return [_build_npl_payload(r, diagnostic=None) for r in rows_src[:limit]]
+        return [_build_npl_payload(r, diagnostic=None, criteria=criteria) for r in rows_src[:limit]]
 
     for idx in range(1, max_iterations + 1):
         elapsed_minutes = (time.time() - started_at) / 60.0
@@ -818,6 +1003,7 @@ def handle_ask_scan(job: dict) -> dict:
             result={
                 "phase": "discovering_candidates",
                 "intent": intent,
+                "accuracy_mode": accuracy_mode,
                 "progress": {
                     "iteration": idx,
                     "max_iterations": max_iterations,
@@ -883,6 +1069,7 @@ def handle_ask_scan(job: dict) -> dict:
             result={
                 "phase": "lightweight_checks",
                 "intent": intent,
+                "accuracy_mode": accuracy_mode,
                 "progress": {
                     "iteration": idx,
                     "max_iterations": max_iterations,
@@ -966,6 +1153,7 @@ def handle_ask_scan(job: dict) -> dict:
                                 result={
                                     "phase": "lightweight_checks",
                                     "intent": intent,
+                                    "accuracy_mode": accuracy_mode,
                                     "progress": {
                                         "iteration": idx,
                                         "max_iterations": max_iterations,
@@ -1037,6 +1225,7 @@ def handle_ask_scan(job: dict) -> dict:
                                     result={
                                         "phase": "lightweight_checks",
                                         "intent": intent,
+                                        "accuracy_mode": accuracy_mode,
                                         "progress": {
                                             "iteration": idx,
                                             "max_iterations": max_iterations,
@@ -1113,6 +1302,7 @@ def handle_ask_scan(job: dict) -> dict:
                         result={
                             "phase": "lightweight_checks",
                             "intent": intent,
+                            "accuracy_mode": accuracy_mode,
                             "progress": {
                                 "iteration": idx,
                                 "max_iterations": max_iterations,
@@ -1145,6 +1335,7 @@ def handle_ask_scan(job: dict) -> dict:
                 result={
                     "phase": "deep_verification",
                     "intent": intent,
+                    "accuracy_mode": accuracy_mode,
                     "progress": {
                         "iteration": idx,
                         "max_iterations": max_iterations,
@@ -1170,7 +1361,7 @@ def handle_ask_scan(job: dict) -> dict:
                 verified_match = all(any(req in vm for vm in verified_missing) for req in required_missing if req)
                 if not verified_match:
                     return {"verified_match": False}
-                payload = _build_npl_payload(row, diagnostic={"response": result})
+                payload = _build_npl_payload(row, diagnostic={"response": result}, criteria=criteria)
                 return {"verified_match": True, "payload": payload}
 
             target_needed = max(1, min_results - len(best_payload))
@@ -1202,6 +1393,7 @@ def handle_ask_scan(job: dict) -> dict:
                             result={
                                 "phase": "deep_verification",
                                 "intent": intent,
+                                "accuracy_mode": accuracy_mode,
                                 "progress": {
                                     "iteration": idx,
                                     "max_iterations": max_iterations,
@@ -1226,7 +1418,7 @@ def handle_ask_scan(job: dict) -> dict:
                 stop_reason = "max_minutes_reached"
             deep_verified_count = len(verified_payload)
         else:
-            verified_payload = [_build_npl_payload(row, diagnostic=None) for row in shortlist]
+            verified_payload = [_build_npl_payload(row, diagnostic=None, criteria=criteria) for row in shortlist]
 
         for payload in verified_payload:
             pkey = str(payload.get("place_id") or payload.get("business_name") or "")
@@ -1260,6 +1452,7 @@ def handle_ask_scan(job: dict) -> dict:
             result={
                 "phase": "ranking",
                 "intent": intent,
+                "accuracy_mode": accuracy_mode,
                 "iterations": iterations,
                 "progress": {
                     "iteration": idx,
@@ -1296,6 +1489,7 @@ def handle_ask_scan(job: dict) -> dict:
             result={
                 "phase": "expanding_search",
                 "intent": intent,
+                "accuracy_mode": accuracy_mode,
                 "iterations": iterations,
                 "progress": {
                     "iteration": idx,
@@ -1371,6 +1565,7 @@ def handle_ask_scan(job: dict) -> dict:
     return {
         "phase": "done",
         "intent": intent,
+        "accuracy_mode": accuracy_mode,
         "criteria": criteria,
         "must_not": must_not,
         "applied_criteria": [

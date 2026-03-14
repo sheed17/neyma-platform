@@ -101,3 +101,115 @@ def test_agentic_scan_fallback_reaches_min_results_without_planner_llm():
         job_worker._run_npl_find_job = original_run_npl
         job_worker.update_job_status = original_update
         job_worker.planner_llm_update = original_planner
+
+
+def test_deep_brief_job_continues_after_item_timeout():
+    original_list = job_worker.list_territory_prospects
+    original_runner = job_worker._run_deep_brief_diagnostic_with_timeout
+    original_save = job_worker.save_diagnostic
+    original_persist = job_worker.persist_saved_diagnostic_response
+    original_link = job_worker.link_territory_prospect_diagnostic
+    original_update = job_worker.update_job_status
+
+    status_updates = []
+    persisted = []
+    linked = []
+
+    rows = [
+        {
+            "id": 1,
+            "place_id": "place-1",
+            "business_name": "Alpha Dental",
+            "city": "Charlotte",
+            "state": "NC",
+            "website": "https://alpha.example",
+            "full_brief_ready": 0,
+        },
+        {
+            "id": 2,
+            "place_id": "place-2",
+            "business_name": "Beta Dental",
+            "city": "Charlotte",
+            "state": "NC",
+            "website": "https://beta.example",
+            "full_brief_ready": 0,
+        },
+    ]
+
+    def fake_runner(task: dict, deep_audit: bool, timeout_seconds: int) -> dict:
+        assert deep_audit is True
+        assert timeout_seconds >= 60
+        if task["business_name"] == "Beta Dental":
+            raise TimeoutError("timed out")
+        return {
+            "place_id": task["place_id"],
+            "business_name": task["business_name"],
+            "city": task["city"],
+            "state": task["state"],
+            "brief": {"summary": "ok"},
+        }
+
+    def fake_save_diagnostic(**kwargs):
+        persisted.append(kwargs)
+        return 101
+
+    def fake_persist_saved_diagnostic_response(diagnostic_id: int, place_id: str, response: dict):
+        persisted.append(
+            {
+                "diagnostic_id": diagnostic_id,
+                "place_id": place_id,
+                "response": response,
+            }
+        )
+
+    def fake_link_territory_prospect_diagnostic(prospect_id: int, diagnostic_id: int, full_brief_ready: bool):
+        linked.append(
+            {
+                "prospect_id": prospect_id,
+                "diagnostic_id": diagnostic_id,
+                "full_brief_ready": full_brief_ready,
+            }
+        )
+
+    def fake_update_job_status(job_id: str, status: str, result=None, **kwargs):
+        status_updates.append({"job_id": job_id, "status": status, "result": result or {}})
+
+    try:
+        job_worker.list_territory_prospects = lambda scan_id, user_id: rows
+        job_worker._run_deep_brief_diagnostic_with_timeout = fake_runner
+        job_worker.save_diagnostic = fake_save_diagnostic
+        job_worker.persist_saved_diagnostic_response = fake_persist_saved_diagnostic_response
+        job_worker.link_territory_prospect_diagnostic = fake_link_territory_prospect_diagnostic
+        job_worker.update_job_status = fake_update_job_status
+
+        out = job_worker._run_deep_brief_job(
+            {
+                "id": "job-deep-1",
+                "user_id": 1,
+                "type": "territory_deep_scan",
+                "input": {
+                    "scan_id": "scan-1",
+                    "max_prospects": 2,
+                    "concurrency": 2,
+                    "deep_audit": True,
+                    "prospect_ids": [1, 2],
+                    "diagnostic_timeout_seconds": 60,
+                },
+            }
+        )
+
+        assert out["processed"] == 2
+        assert out["created"] == 1
+        assert out["failed"] == 1
+        assert out["total"] == 2
+        assert out["diagnostic_ids"] == [101]
+        assert len(linked) == 1
+        assert linked[0]["prospect_id"] == 1
+        assert any(u["result"].get("processed") == 2 for u in status_updates)
+    finally:
+        job_worker.list_territory_prospects = original_list
+        job_worker._run_deep_brief_diagnostic_with_timeout = original_runner
+        job_worker.save_diagnostic = original_save
+        job_worker.persist_saved_diagnostic_response = original_persist
+        job_worker.link_territory_prospect_diagnostic = original_link
+        job_worker.update_job_status = original_update

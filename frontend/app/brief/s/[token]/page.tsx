@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getPublicSharedBrief } from "@/lib/api";
 import type { DiagnosticResponse } from "@/lib/types";
+import { generateOpportunityFocus, generateWhyNow } from "@/lib/pitch";
+import { getModeledUpsideDisplay } from "@/lib/revenueDisplay";
 
 export default function SharedBriefPage() {
   const params = useParams();
@@ -30,6 +32,12 @@ export default function SharedBriefPage() {
   const b = result.brief;
   const ed = b?.executive_diagnosis;
   const mp = b?.market_position;
+  const modeledUpside = getModeledUpsideDisplay(result);
+  const preferredFocus = modeledUpside.serviceContext && modeledUpside.serviceContext !== "Primary gap"
+    ? modeledUpside.serviceContext
+    : "";
+  const focus = generateOpportunityFocus(result, preferredFocus);
+  const whyNow = generateWhyNow(result, focus);
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
@@ -39,11 +47,15 @@ export default function SharedBriefPage() {
       </p>
 
       <section className="mt-6 space-y-2 rounded-xl border border-zinc-200 bg-white p-5 text-sm">
-        <h2 className="font-medium text-zinc-800">Executive Diagnosis</h2>
+        <h2 className="font-medium text-zinc-800">Lead Summary</h2>
+        <p><strong>Signal:</strong> {typeof ed?.opportunity_profile === "string" ? ed.opportunity_profile : ed?.opportunity_profile?.label ?? result.opportunity_profile}</p>
+        <p><strong>Focus:</strong> {focus}</p>
+        <p><strong>Why now:</strong> {whyNow}</p>
+        {modeledUpside.mode === "range" ? (
+          <p><strong>Annual Upside:</strong> {modeledUpside.value} <span className="text-zinc-500">{modeledUpside.context}</span></p>
+        ) : null}
         <p><strong>Constraint:</strong> {ed?.constraint ?? result.constraint}</p>
         <p><strong>Primary Leverage:</strong> {ed?.primary_leverage ?? result.primary_leverage}</p>
-        <p><strong>Opportunity Profile:</strong> {typeof ed?.opportunity_profile === "string" ? ed.opportunity_profile : ed?.opportunity_profile?.label ?? result.opportunity_profile}</p>
-        {ed?.modeled_revenue_upside && <p><strong>Modeled Revenue Upside:</strong> {ed.modeled_revenue_upside}</p>}
       </section>
 
       <section className="mt-4 space-y-2 rounded-xl border border-zinc-200 bg-white p-5 text-sm">

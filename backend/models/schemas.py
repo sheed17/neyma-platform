@@ -60,9 +60,38 @@ class RevenueBreakdown(BaseModel):
     annual_revenue_range: str
 
 
+class CaptureVerificationSignal(BaseModel):
+    status: Optional[str] = None
+    value: Optional[str] = None
+    confidence: Optional[str] = None
+    observed_pages: List[str] = []
+    evidence: List[str] = []
+
+
+class CaptureVerificationMethod(BaseModel):
+    page: str
+    method: str
+    source: str
+
+
+class CaptureVerification(BaseModel):
+    homepage_page: Optional[str] = None
+    followup_pages_checked: List[str] = []
+    verification_methods: List[CaptureVerificationMethod] = []
+    scheduling_cta: Optional[CaptureVerificationSignal] = None
+    booking_flow: Optional[CaptureVerificationSignal] = None
+    contact_form: Optional[CaptureVerificationSignal] = None
+
+
 class ConversionInfrastructure(BaseModel):
     online_booking: Optional[bool] = None
     contact_form: Optional[bool] = None
+    booking_flow_type: Optional[str] = None
+    booking_flow_confidence: Optional[str] = None
+    scheduling_cta_detected: Optional[bool] = None
+    contact_form_confidence: Optional[str] = None
+    contact_form_cta_detected: Optional[bool] = None
+    capture_verification: Optional[CaptureVerification] = None
     phone_prominent: Optional[bool] = None
     mobile_optimized: Optional[bool] = None
     page_load_ms: Optional[int] = None

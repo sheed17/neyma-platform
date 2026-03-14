@@ -8,6 +8,8 @@ optional paid_intelligence. No LLM; no new numeric derivation. Deterministic.
 
 from typing import Dict, Any, List, Optional
 
+from pipeline.consistency import normalize_service_intelligence
+
 
 def _compute_worth_pursuing(
     lead: Dict,
@@ -89,7 +91,7 @@ def _confidence_notes(
         rev_count = 0
     if rev_count < 15:
         notes.append("Very low review count; revenue band is indicative.")
-    svc = service_intelligence or {}
+    svc = normalize_service_intelligence(service_intelligence or {})
     crawl_conf = str(svc.get("crawl_confidence") or "").strip().lower()
     if crawl_conf == "low":
         notes.append("Low crawl confidence; service and conversion gaps were not fully evaluated.")
@@ -207,10 +209,14 @@ def _build_supporting_evidence(
             if label:
                 out["digital_signals"].append(f"Missing dedicated {label} page")
     booking_path = lead.get("signal_booking_conversion_path")
-    has_online_booking = booking_path in ("Online booking (limited)", "Online booking (full)")
-    if booking_path is None:
-        has_online_booking = lead.get("signal_has_automated_scheduling") is True
-    if (not suppress_conversion_absence_claims) and (not has_online_booking) and (missing or lead.get("signal_runs_paid_ads")):
+    if booking_path in ("Online booking (limited)", "Online booking (full)"):
+        has_online_booking = True
+    elif booking_path in ("Phone-only", "Request form"):
+        has_online_booking = False
+    else:
+        booking_flag = lead.get("signal_has_automated_scheduling")
+        has_online_booking = True if booking_flag is True else (False if booking_flag is False else None)
+    if (not suppress_conversion_absence_claims) and (has_online_booking is False) and (missing or lead.get("signal_runs_paid_ads")):
         out["digital_signals"].append("No online booking detected")
     if suppress_conversion_absence_claims:
         out["digital_signals"].append("Conversion infrastructure not fully evaluated (limited crawl depth)")

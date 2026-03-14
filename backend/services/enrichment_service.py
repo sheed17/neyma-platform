@@ -14,6 +14,12 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from pipeline.consistency import (
+    normalize_conversion_infrastructure,
+    normalize_diagnostic_payload,
+    normalize_service_intelligence,
+)
+
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
@@ -214,9 +220,10 @@ def _build_deterministic_intervention_plan(
     review_gap_pct = ((avg_reviews - lead_reviews) / avg_reviews) if avg_reviews > 0 else 0.0
 
     has_website = bool(signals.get("signal_has_website") or signals.get("signal_website_url"))
-    has_ssl = bool(signals.get("signal_has_ssl"))
-    has_form = bool(signals.get("signal_has_contact_form"))
-    has_phone = bool(signals.get("signal_has_phone"))
+    has_ssl = signals.get("signal_has_ssl") is True
+    has_form = bool(svc.get("contact_form_detected_sitewide")) or signals.get("signal_has_contact_form") is True
+    has_phone = signals.get("signal_has_phone") is True
+    phone_missing = signals.get("signal_has_phone") is False
     missing_pages = svc.get("missing_high_value_pages") if isinstance(svc.get("missing_high_value_pages"), list) else []
     demand_level = _derive_demand_level(merged)
     root = _parse_root_constraint_label(constraint_label)
@@ -283,7 +290,7 @@ def _build_deterministic_intervention_plan(
         selected.extend(["A1", "A2", "A4"])
     if not has_ssl:
         selected.append("A2")
-    if (not has_form) or (not has_phone):
+    if (not has_form) or phone_missing:
         selected.append("A1")
     if review_gap_pct >= 0.25:
         selected.append("A3")
@@ -328,6 +335,8 @@ def _build_diagnostic_response(
     state: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build UI-ready diagnostic response from enriched lead."""
+    merged = dict(merged or {})
+    merged["service_intelligence"] = normalize_service_intelligence(merged.get("service_intelligence") or {})
     oi = merged.get("objective_intelligence") or {}
     comp = merged.get("competitive_snapshot") or (oi.get("competitive_profile") or {})
     ed = {}
@@ -515,22 +524,27 @@ def _build_diagnostic_response(
         })
 
     contact_form_sitewide = bool(service_intel.get("contact_form_detected_sitewide"))
-    if low_confidence:
-        conversion_block = {
-            "online_booking": None,
-            "contact_form": None,
-            "phone_prominent": signals.get("signal_has_phone"),
-            "mobile_optimized": signals.get("signal_mobile_friendly"),
-            "page_load_ms": signals.get("signal_page_load_time_ms"),
-        }
-    else:
-        conversion_block = {
-            "online_booking": signals.get("signal_has_automated_scheduling"),
-            "contact_form": True if contact_form_sitewide else signals.get("signal_has_contact_form"),
-            "phone_prominent": signals.get("signal_has_phone"),
-            "mobile_optimized": signals.get("signal_mobile_friendly"),
-            "page_load_ms": signals.get("signal_page_load_time_ms"),
-        }
+    contact_form_value = True if contact_form_sitewide else signals.get("signal_has_contact_form")
+    if low_confidence and contact_form_value is None:
+        contact_form_value = None
+    conversion_block = {
+        "online_booking": signals.get("signal_has_automated_scheduling"),
+        "contact_form": contact_form_value,
+        "booking_flow_type": signals.get("signal_booking_flow_type"),
+        "booking_flow_confidence": signals.get("signal_booking_flow_confidence"),
+        "scheduling_cta_detected": signals.get("signal_scheduling_cta_detected"),
+        "contact_form_confidence": "high" if contact_form_sitewide else signals.get("signal_contact_form_confidence"),
+        "contact_form_cta_detected": signals.get("signal_contact_form_cta_detected"),
+        "capture_verification": signals.get("signal_capture_verification"),
+        "phone_prominent": signals.get("signal_has_phone"),
+        "mobile_optimized": signals.get("signal_mobile_friendly"),
+        "page_load_ms": signals.get("signal_page_load_time_ms"),
+    }
+    conversion_block = normalize_conversion_infrastructure(
+        conversion_block,
+        service_intel=service_intel,
+        signals=signals,
+    )
 
     evidence: List[Dict[str, str]] = []
     lead_reviews = snapshot.get("lead_review_count")
@@ -573,7 +587,7 @@ def _build_diagnostic_response(
     except Exception as e:
         logger.warning("Could not run diagnostic consistency enforcement: %s", e)
 
-    return out
+    return normalize_diagnostic_payload(out)
 
 
 def run_diagnostic(

@@ -26,6 +26,7 @@ TERRITORY_FEATURE_COLUMNS = [
     "has_website",
     "has_ssl",
     "has_contact_form",
+    "has_contact_form_known",
     "has_phone",
     "has_viewport",
     "has_schema",
@@ -46,6 +47,7 @@ TERRITORY_FEATURE_COLUMNS = [
 
 DIAGNOSTIC_FEATURE_COLUMNS = TERRITORY_FEATURE_COLUMNS + [
     "has_online_booking",
+    "has_online_booking_known",
     "phone_prominent",
     "mobile_optimized",
     "page_load_ms",

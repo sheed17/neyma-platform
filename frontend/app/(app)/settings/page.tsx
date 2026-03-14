@@ -11,7 +11,8 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <p className="section-kicker">Workspace</p>
+        <h1 className="page-title">Settings</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">Manage account and workspace defaults.</p>
       </div>
 
@@ -26,7 +27,7 @@ export default function SettingsPage() {
       <Card>
         <CardHeader title="API Keys" subtitle="API key management will be available in a future update." />
         <CardBody>
-          <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border-default)] bg-slate-50 px-4 py-8 text-center text-sm text-[var(--text-muted)]">
+          <div className="rounded-[var(--radius)] border border-dashed border-[var(--border-default)] bg-[var(--muted)] px-4 py-8 text-center text-sm text-[var(--text-muted)]">
             No API keys yet
           </div>
         </CardBody>

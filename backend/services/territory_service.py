@@ -38,6 +38,7 @@ from pipeline.enrich import PlaceDetailsEnricher
 from pipeline.fetch import PlacesFetcher, get_keywords_for_niche
 from pipeline.geo import generate_geo_grid
 from pipeline.normalize import deduplicate_places, filter_practices_only, normalize_place
+from pipeline.signals import analyze_website
 
 logger = logging.getLogger(__name__)
 
@@ -473,11 +474,14 @@ def _build_tier1_rows(
                 "rating": rating,
                 "user_ratings_total": reviews,
                 "has_website": bool(website),
-                "ssl": False,
-                "has_contact_form": False,
+                "ssl": None,
+                "has_contact_form": None,
+                "has_automated_scheduling": None,
+                "booking_conversion_path": None,
+                "capture_verification": None,
                 "has_phone": bool(phone),
-                "has_viewport": False,
-                "has_schema": False,
+                "has_viewport": None,
+                "has_schema": None,
                 "phone": phone or None,
                 "email": None,
             }
@@ -492,11 +496,14 @@ def _build_tier1_rows(
         cache = get_tier1_cache(str(r["place_id"]))
         ws = cache.get("website_signals") if cache else None
         if cache and _is_cache_fresh(cache.get("updated_at")) and isinstance(ws, dict):
-            r["ssl"] = bool(ws.get("ssl"))
-            r["has_contact_form"] = bool(ws.get("has_contact_form"))
+            r["ssl"] = ws.get("ssl")
+            r["has_contact_form"] = ws.get("has_contact_form")
+            r["has_automated_scheduling"] = ws.get("has_automated_scheduling")
+            r["booking_conversion_path"] = ws.get("booking_conversion_path")
+            r["capture_verification"] = ws.get("capture_verification")
             r["has_phone"] = bool(r.get("has_phone") or ws.get("has_phone"))
-            r["has_viewport"] = bool(ws.get("has_viewport"))
-            r["has_schema"] = bool(ws.get("has_schema"))
+            r["has_viewport"] = ws.get("has_viewport")
+            r["has_schema"] = ws.get("has_schema")
             r["email"] = ws.get("email")
         else:
             website_rows.append(r)
@@ -509,11 +516,14 @@ def _build_tier1_rows(
                 sig = fut.result()
             except Exception:
                 sig = {}
-            row["ssl"] = bool(sig.get("ssl"))
-            row["has_contact_form"] = bool(sig.get("has_contact_form"))
+            row["ssl"] = sig.get("ssl")
+            row["has_contact_form"] = sig.get("has_contact_form")
+            row["has_automated_scheduling"] = sig.get("has_automated_scheduling")
+            row["booking_conversion_path"] = sig.get("booking_conversion_path")
+            row["capture_verification"] = sig.get("capture_verification")
             row["has_phone"] = bool(row.get("has_phone") or sig.get("has_phone"))
-            row["has_viewport"] = bool(sig.get("has_viewport"))
-            row["has_schema"] = bool(sig.get("has_schema"))
+            row["has_viewport"] = sig.get("has_viewport")
+            row["has_schema"] = sig.get("has_schema")
             row["email"] = sig.get("email")
             upsert_tier1_cache(str(row["place_id"]), details=None, website_signals=sig)
 
@@ -564,15 +574,15 @@ def _compute_tier1_rank_key(row: Dict[str, Any], avg_reviews: float) -> float:
     else:
         score += 12.0
 
-    if not row.get("ssl") and row.get("has_website"):
+    if row.get("ssl") is False and row.get("has_website"):
         score += 8.0
-    if not row.get("has_contact_form") and row.get("has_website"):
+    if row.get("has_contact_form") is False and row.get("has_website"):
         score += 8.0
     if not row.get("has_phone"):
         score += 6.0
-    if not row.get("has_viewport") and row.get("has_website"):
+    if row.get("has_viewport") is False and row.get("has_website"):
         score += 3.0
-    if not row.get("has_schema") and row.get("has_website"):
+    if row.get("has_schema") is False and row.get("has_website"):
         score += 3.0
 
     if rating is not None:
@@ -585,36 +595,18 @@ def _compute_tier1_rank_key(row: Dict[str, Any], avg_reviews: float) -> float:
 
 
 def _fetch_lightweight_website_signals(url: str) -> Dict[str, Any]:
-    request_url = url
-    if not request_url.startswith(("http://", "https://")):
-        request_url = f"https://{request_url}"
-
-    headers = {"User-Agent": "Mozilla/5.0 (Neyma Tier1 Scan)"}
-    resp = requests.get(request_url, headers=headers, timeout=(3, 8), allow_redirects=True)
-    html = (resp.text or "")[:300000]
-    lower = html.lower()
-    final_url = str(resp.url or request_url)
-
-    has_contact_form = ("<form" in lower) or ("contact" in lower)
-    has_phone = bool(PHONE_RE.search(html))
-    has_viewport = "name=\"viewport\"" in lower or "name='viewport'" in lower
-    has_schema = ("application/ld+json" in lower) or ("itemscope" in lower)
-    email = None
-    mailto_match = re.search(r"mailto:([^\s\"'>]+)", html, flags=re.IGNORECASE)
-    if mailto_match:
-        email = mailto_match.group(1).strip()
-    else:
-        m = EMAIL_RE.search(html)
-        if m:
-            email = m.group(1).strip()
-
+    sig = analyze_website(url)
     return {
-        "ssl": final_url.startswith("https://"),
-        "has_contact_form": has_contact_form,
-        "has_phone": has_phone,
-        "has_viewport": has_viewport,
-        "has_schema": has_schema,
-        "email": email,
+        "ssl": sig.get("has_ssl"),
+        "has_contact_form": sig.get("has_contact_form"),
+        "has_automated_scheduling": sig.get("has_automated_scheduling"),
+        "booking_conversion_path": sig.get("booking_conversion_path"),
+        "capture_verification": sig.get("capture_verification"),
+        "has_phone": sig.get("has_phone_in_html"),
+        "has_viewport": sig.get("mobile_friendly"),
+        "has_schema": sig.get("has_schema_microdata"),
+        "email": sig.get("email_address"),
+        "extraction_method": sig.get("extraction_method"),
     }
 
 

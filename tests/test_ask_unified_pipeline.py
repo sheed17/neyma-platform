@@ -90,6 +90,44 @@ def test_low_confidence_requires_confirmation_without_job(monkeypatch):
     assert create_calls["count"] == 0
 
 
+def test_ask_queues_verified_mode_with_deep_verification_for_missing_service(monkeypatch):
+    create_kwargs = {}
+
+    monkeypatch.setattr(ask_route, "moderate_text", lambda _text: (True, None))
+    monkeypatch.setattr(
+        ask_route,
+        "resolve_ask_intent",
+        lambda _q: {
+            "city": "Phoenix",
+            "state": "AZ",
+            "vertical": "dentist",
+            "limit": 4,
+            "accuracy_mode": "verified",
+            "criteria": [{"type": "missing_service_page", "service": "implants"}],
+            "must_not": [],
+            "intent_confidence": "high",
+            "unsupported_parts": [],
+        },
+    )
+
+    def _fake_create_job(**kwargs):
+        create_kwargs.update(kwargs)
+        return "job-verified-1"
+
+    monkeypatch.setattr(ask_route, "create_job", _fake_create_job)
+
+    out = ask_route.ask_find(
+        ask_route.AskRequest(query="Find 4 dentists in Phoenix AZ missing implants page with verified accuracy"),
+        _FakeRequest(),
+    )
+
+    assert out["job_id"] == "job-verified-1"
+    queued = create_kwargs["input_data"]
+    assert queued["accuracy_mode"] == "verified"
+    assert queued["require_deep_verification"] is True
+    assert int(queued["adaptive_limits"]["deep_top_k"]) >= 20
+
+
 def test_deep_verification_only_for_required_criteria(monkeypatch):
     deep_calls = {"count": 0}
 
@@ -232,3 +270,76 @@ def test_ask_queues_qa_signal_verification_sample(monkeypatch):
     qa = out.get("qa_verification") or {}
     assert int(qa.get("sampled") or 0) >= 1
     assert qa.get("job_id") == "qa-job-1"
+
+
+def test_verified_mode_skips_ai_rerank_and_returns_deep_evidence(monkeypatch):
+    monkeypatch.setenv("ASK_AI_REVIEW_ENABLED", "0")
+    monkeypatch.setenv("ASK_AI_RERANK_ENABLED", "1")
+    monkeypatch.setenv("ASK_AI_EXPLAIN_ENABLED", "0")
+    monkeypatch.setattr(job_worker, "update_job_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(job_worker, "get_ask_places_cache", lambda _key: None)
+    monkeypatch.setattr(job_worker, "upsert_ask_places_cache", lambda _key, _data: None)
+    monkeypatch.setattr(job_worker, "get_ask_lightweight_cache", lambda _pid, _ckey: None)
+    monkeypatch.setattr(job_worker, "upsert_ask_lightweight_cache", lambda _pid, _ckey, _res: None)
+    monkeypatch.setattr(job_worker, "_fetch_territory_candidates", lambda **_kwargs: [_base_row()])
+    monkeypatch.setattr(job_worker, "_build_tier1_rows", lambda *_args, **_kwargs: ([_base_row()], 0))
+    monkeypatch.setattr(
+        job_worker,
+        "run_lightweight_service_page_check",
+        lambda *_args, **_kwargs: {
+            "matches": True,
+            "reason": "fast_homepage_match",
+            "method": "fast_homepage",
+            "service": "implants",
+            "evidence": {"title": "Implants"},
+        },
+    )
+    monkeypatch.setattr(
+        job_worker,
+        "run_diagnostic",
+        lambda **_kwargs: {
+            "service_intelligence": {"missing_services": ["implants"]},
+            "opportunity_profile": "service gap",
+            "primary_leverage": "implants",
+            "constraint": "service_depth",
+        },
+    )
+
+    rerank_calls = {"count": 0}
+
+    def _fake_rerank(**_kwargs):
+        rerank_calls["count"] += 1
+        return {"p1": {"delta": 4.0}}
+
+    monkeypatch.setattr(job_worker, "ai_batch_rerank_candidates", _fake_rerank)
+
+    out = job_worker.handle_ask_scan(
+        {
+            "id": "job-verified-evidence",
+            "input": {
+                "resolved_intent": {
+                    "city": "Austin",
+                    "state": "TX",
+                    "vertical": "dentist",
+                    "limit": 1,
+                    "accuracy_mode": "verified",
+                },
+                "accuracy_mode": "verified",
+                "criteria": [{"type": "missing_service_page", "service": "implants"}],
+                "must_not": [],
+                "limit": 1,
+                "require_deep_verification": True,
+                "adaptive_limits": {"max_iterations": 1, "max_minutes": 1.5, "min_results": 1},
+            },
+        }
+    )
+
+    assert out["accuracy_mode"] == "verified"
+    assert out["require_deep_verification"] is True
+    assert rerank_calls["count"] == 0
+    prospect = (out.get("prospects") or [])[0]
+    assert prospect["match_evidence_level"] == "deep_verified"
+    assert any(
+        item.get("source") == "deep_verified_diagnostic" and item.get("matched") is True
+        for item in (prospect.get("match_evidence") or [])
+    )

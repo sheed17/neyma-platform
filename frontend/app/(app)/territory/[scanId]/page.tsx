@@ -20,6 +20,10 @@ import { Table, THead, TH, TR, TD } from "@/app/components/ui/Table";
 import ListPickerModal from "@/app/components/ListPickerModal";
 import BriefBuildProgress, { type BriefBuildProgressState } from "@/app/components/BriefBuildProgress";
 
+function territoryBriefReady(row: Pick<ProspectRow, "diagnostic_id" | "full_brief_ready">): boolean {
+  return Boolean(row.diagnostic_id && row.full_brief_ready);
+}
+
 export default function TerritoryResultsPage() {
   const params = useParams();
   const router = useRouter();
@@ -132,6 +136,11 @@ export default function TerritoryResultsPage() {
     if (!scanTimestamp) return null;
     return Math.max(0, Math.floor((Date.now() - new Date(scanTimestamp).getTime()) / 86400000));
   }, [scanTimestamp]);
+  const readyBriefCount = useMemo(
+    () => prospects.filter((row) => territoryBriefReady(row)).length,
+    [prospects],
+  );
+  const pendingBriefCount = Math.max(0, prospects.length - readyBriefCount);
 
   const outcomeLabel = (status?: string) => {
     if (!status) return "Not contacted";
@@ -141,10 +150,30 @@ export default function TerritoryResultsPage() {
     return "Not contacted";
   };
 
+  function markProspectBriefReady(prospectId: number | null | undefined, diagnosticId: number) {
+    if (!prospectId) return;
+    setData((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        prospects: (prev.prospects || []).map((row) => (
+          row.prospect_id === prospectId
+            ? { ...row, diagnostic_id: diagnosticId, full_brief_ready: true }
+            : row
+        )),
+      };
+      sessionStorage.setItem(cacheKey, JSON.stringify(next));
+      return next;
+    });
+  }
+
   async function ensureBrief(row: ProspectRow): Promise<number> {
     if (!row.prospect_id) throw new Error("Prospect id missing");
     const ensured = await ensureTerritoryProspectBrief(row.prospect_id);
-    if (ensured.status === "ready" && ensured.diagnostic_id) return ensured.diagnostic_id;
+    if (ensured.status === "ready" && ensured.diagnostic_id) {
+      markProspectBriefReady(row.prospect_id, ensured.diagnostic_id);
+      return ensured.diagnostic_id;
+    }
     if (!ensured.job_id) throw new Error("No job id returned");
     setBriefProgress({
       phase: "preparing_brief",
@@ -157,6 +186,7 @@ export default function TerritoryResultsPage() {
       const st = await getJobStatus(ensured.job_id);
       if (st.status === "completed" && st.diagnostic_id) {
         setBriefProgress(null);
+        markProspectBriefReady(row.prospect_id, st.diagnostic_id);
         return st.diagnostic_id;
       }
       if (st.status === "failed") throw new Error(st.error || "Failed to build brief");
@@ -264,6 +294,9 @@ export default function TerritoryResultsPage() {
           <p className="text-xs text-[var(--text-muted)]">Territory</p>
           <h1 className="text-2xl font-semibold tracking-tight">Market Scan: {data?.city || "Market"}{data?.state ? `, ${data.state}` : ""}</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">{prospects.length} prospects · {data?.status === "running" ? progress.label : "Scan complete"}</p>
+          {prospects.length > 0 && (
+            <p className="mt-1 text-xs text-[var(--text-muted)]">{readyBriefCount} briefs ready · {pendingBriefCount} not built yet</p>
+          )}
           {scanTimestamp && (
             <p className="mt-1 text-xs text-[var(--text-muted)]">
               {scanAgeDays && scanAgeDays > 0 ? `Last updated ${scanAgeDays} days ago` : "Just updated"} · {new Date(scanTimestamp).toLocaleDateString("en-US")}
@@ -279,8 +312,8 @@ export default function TerritoryResultsPage() {
       </div>
 
       {scanAgeDays != null && scanAgeDays > 30 && (
-        <Card className="mb-4 border-amber-200 bg-amber-50">
-          <CardBody className="text-sm text-amber-900">
+        <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]">
+          <CardBody className="text-sm text-[var(--text-secondary)]">
             This list is {scanAgeDays} days old. Refresh to see latest review counts and competitors.{" "}
             <Link href={`/territory/new?city=${encodeURIComponent(data?.city || "")}&state=${encodeURIComponent(data?.state || "")}&vertical=${encodeURIComponent(data?.vertical || "")}`} className="app-link font-medium">
               Run new scan
@@ -289,13 +322,13 @@ export default function TerritoryResultsPage() {
         </Card>
       )}
 
-      {error && <Card className="mb-4 border-rose-200 bg-rose-50"><CardBody className="text-sm text-rose-800">{error}</CardBody></Card>}
-      {actionLabel && <Card className="mb-4 border-sky-200 bg-sky-50"><CardBody className="text-sm text-sky-800">{actionLabel}</CardBody></Card>}
+      {error && <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]"><CardBody className="text-sm text-[var(--text-secondary)]">{error}</CardBody></Card>}
+      {actionLabel && <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]"><CardBody className="text-sm text-[var(--text-secondary)]">{actionLabel}</CardBody></Card>}
       {data?.status === "running" && <TerritoryScanProgressPanel progress={territoryProgress} className="mb-4" />}
       {briefProgress && <BriefBuildProgress progress={briefProgress} className="mb-4" />}
       {successMessage && (
-        <Card className="mb-4 border-emerald-200 bg-emerald-50">
-          <CardBody className="flex flex-wrap items-center gap-2 text-sm text-emerald-800">
+        <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]">
+          <CardBody className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
             <span>{successMessage}</span>
             {successHref && successCta ? <Link href={successHref} className="app-link font-medium">{successCta}</Link> : null}
           </CardBody>
@@ -305,7 +338,7 @@ export default function TerritoryResultsPage() {
       <Card>
         <CardHeader
           title="Ranked Market Prospects"
-          subtitle={`Showing top ${Number(data?.summary?.accepted || prospects.length)} of ${Number(data?.summary?.scored_candidates || 0)} scored prospects.`}
+          subtitle={`Showing top ${Number(data?.summary?.accepted || prospects.length)} of ${Number(data?.summary?.scored_candidates || 0)} scored prospects. ${readyBriefCount} ready, ${pendingBriefCount} not built yet.`}
           action={
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value as "rank" | "name" | "reviews")} className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-default)] px-2 text-xs">
               <option value="rank">Sort: Rank</option>
@@ -323,10 +356,20 @@ export default function TerritoryResultsPage() {
           <tbody>
             {prospects.map((row) => {
               const busy = actionProspectId != null && actionProspectId === row.prospect_id;
+              const briefReady = territoryBriefReady(row);
               return (
                 <TR key={`${row.prospect_id || row.place_id}`}>
                   <TD className="font-medium text-[var(--text-primary)]">#{row.rank || "-"}</TD>
-                  <TD className="font-medium text-[var(--text-primary)]">{row.business_name}</TD>
+                  <TD className="font-medium text-[var(--text-primary)]">
+                    <div className="flex flex-col gap-1">
+                      <span>{row.business_name}</span>
+                      <span>
+                        <Badge tone={busy ? "default" : briefReady ? "success" : "muted"}>
+                          {busy ? "Building brief" : briefReady ? "Brief ready" : "Brief not built"}
+                        </Badge>
+                      </span>
+                    </div>
+                  </TD>
                   <TD>{row.city}{row.state ? `, ${row.state}` : ""}</TD>
                   <TD>{row.rating ?? "-"}</TD>
                   <TD>{row.user_ratings_total ?? "-"}</TD>
@@ -338,9 +381,9 @@ export default function TerritoryResultsPage() {
                     <button
                       onClick={() => void handleViewBrief(row)}
                       disabled={busy}
-                      className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-black px-4 text-sm font-medium text-white transition hover:bg-[#4f79c7] disabled:opacity-60"
+                      className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-foreground)] transition hover:opacity-95 disabled:opacity-60"
                     >
-                      {busy ? "Building..." : "Open brief"}
+                      {busy ? "Building..." : briefReady ? "Open brief" : "Build brief"}
                     </button>
                     <button onClick={() => void handleAddToList(row)} disabled={busy} className="text-[var(--text-secondary)] hover:underline disabled:opacity-60">Add to list</button>
                     <button onClick={() => void handleOutcome(row, "contacted")} disabled={!row.diagnostic_id} className="ml-2 text-[var(--text-secondary)] hover:underline disabled:opacity-50">Contacted</button>
@@ -499,19 +542,19 @@ function TerritoryScanProgressPanel({
   }, [subevents.length]);
 
   return (
-    <div className={`rounded-[32px] border border-[#4f79c7]/10 bg-[linear-gradient(135deg,rgba(79,121,199,0.08)_0%,rgba(242,191,47,0.08)_58%,rgba(0,0,0,0.03)_100%)] p-4 shadow-[0_24px_60px_rgba(23,20,17,0.08)] sm:p-5 ${className}`}>
-      <div className="rounded-[26px] border border-white/70 bg-[rgba(255,255,255,0.88)] p-4 backdrop-blur-sm sm:p-5">
+    <div className={`rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4 shadow-[0_24px_60px_rgba(10,10,10,0.04)] sm:p-5 ${className}`}>
+      <div className="rounded-[20px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4 sm:p-5">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
           <div className="flex items-center gap-4 sm:w-[260px] sm:flex-col sm:items-start">
-            <div className="relative flex h-18 w-18 items-center justify-center rounded-full border border-black/10 bg-[radial-gradient(circle_at_30%_30%,rgba(79,121,199,0.18),transparent_45%),radial-gradient(circle_at_70%_70%,rgba(242,191,47,0.18),transparent_48%),#fcfbf8] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(23,20,17,0.08)]">
-              <span className="absolute inline-flex h-14 w-14 animate-ping rounded-full border border-black/10" />
-              <span className="absolute inline-flex h-10 w-10 animate-spin rounded-full border-2 border-black/15 border-t-[#4f79c7]" />
-              <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-black shadow-[0_0_0_6px_rgba(0,0,0,0.06)]" />
+            <div className="relative flex h-18 w-18 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(10,10,10,0.04)]">
+              <span className="absolute inline-flex h-14 w-14 animate-ping rounded-full border border-[var(--border-default)]" />
+              <span className="absolute inline-flex h-10 w-10 animate-spin rounded-full border-2 border-[var(--border-default)] border-t-[var(--primary)]" />
+              <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-[var(--primary)] shadow-[0_0_0_6px_rgba(0,0,0,0.04)]" />
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold text-[var(--text-primary)]">Running territory scan</p>
-                <span className="rounded-full border border-black/6 bg-white px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
+                <span className="rounded-full border border-[var(--border-default)] bg-[var(--secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
                   {progress.percent}%
                 </span>
               </div>
@@ -533,18 +576,18 @@ function TerritoryScanProgressPanel({
               <ProgressChip label="Shortlist" value={String(progress.accepted)} />
             </div>
 
-            <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-black/6">
-              <div className="h-full rounded-full bg-[linear-gradient(90deg,#171411_0%,#4f79c7_52%,#f2bf2f_100%)] transition-[width] duration-500" style={{ width: `${Math.max(10, progress.percent)}%` }} />
+            <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-[var(--muted)]">
+              <div className="h-full rounded-full bg-[var(--primary)] transition-[width] duration-500" style={{ width: `${Math.max(10, progress.percent)}%` }} />
             </div>
 
-            <div className="mt-3 space-y-2 rounded-[24px] border border-black/6 bg-[#fbfaf7] p-3.5">
+            <div className="mt-3 space-y-2 rounded-[20px] border border-[var(--border-default)] bg-[var(--muted)] p-3.5">
               {steps.map((step) => (
-                <div key={step.label} className="flex items-start gap-3 rounded-2xl border border-black/6 bg-white px-3 py-3">
-                  <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-black/8 bg-[#fcfbf8]">
+                <div key={step.label} className="flex items-start gap-3 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                  <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--muted)]">
                     {step.done ? (
-                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-black" />
+                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-[var(--primary)]" />
                     ) : step.active ? (
-                      <span className="inline-flex h-2.5 w-2.5 animate-pulse rounded-full bg-[#4f79c7]" />
+                      <span className="inline-flex h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--primary)]" />
                     ) : (
                       <span className="inline-flex h-2.5 w-2.5 rounded-full bg-black/15" />
                     )}
@@ -568,7 +611,7 @@ function TerritoryScanProgressPanel({
 
 function ProgressChip({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[22px] border border-black/6 bg-white px-3 py-3">
+    <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
       <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</p>
       <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">{value}</p>
     </div>

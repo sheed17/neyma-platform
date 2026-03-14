@@ -90,7 +90,7 @@ export default function ListDetailPage() {
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-xs text-[var(--text-muted)]"><Link href="/lists" className="app-link">&larr; Lists</Link></p>
-          <h1 className="text-2xl font-semibold tracking-tight">{data.list.name}</h1>
+          <h1 className="text-[28px] font-semibold tracking-[-0.04em]">{data.list.name}</h1>
           <p className="text-sm text-[var(--text-muted)]">{rows.length} members</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -102,9 +102,9 @@ export default function ListDetailPage() {
         </div>
       </div>
 
-      {changeSummary && <Card className="mb-4 border-sky-200 bg-sky-50"><CardBody className="text-sm text-sky-800">Refresh summary: {changeSummary}</CardBody></Card>}
+      {changeSummary && <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]"><CardBody className="text-sm text-[var(--text-secondary)]">Refresh summary: {changeSummary}</CardBody></Card>}
 
-      <Card>
+      <Card className="border border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_18px_40px_rgba(10,10,10,0.04)]">
         <CardHeader title="List Pipeline" />
         <Table>
           <THead><tr><TH>Business</TH><TH>City</TH><TH>Revenue Band</TH><TH>Leverage / Constraint</TH><TH>Status</TH><TH>Updated</TH><TH className="text-right">Actions</TH></tr></THead>
@@ -123,7 +123,7 @@ export default function ListDetailPage() {
                 <TD className="text-right">
                   <Link
                     href={`/diagnostic/${row.diagnostic_id}?from=list&listId=${listId}`}
-                    className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-black px-4 text-sm font-medium text-white transition hover:bg-[#4f79c7]"
+                    className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-foreground)] transition hover:opacity-95"
                   >
                     Open brief
                   </Link>

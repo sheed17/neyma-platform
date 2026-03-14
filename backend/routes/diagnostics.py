@@ -31,6 +31,7 @@ from pipeline.db import (
     list_diagnostics,
     list_outcomes_for_user,
 )
+from pipeline.consistency import normalize_diagnostic_payload
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
@@ -47,6 +48,7 @@ def _pick_string(*values: Any) -> str | None:
 
 def _response_from_saved(resp: dict) -> DiagnosticResponse:
     """Build a DiagnosticResponse from the stored response_json dict."""
+    resp = normalize_diagnostic_payload(resp)
     plan = [
         InterventionPlanItem(step=p["step"], category=p["category"], action=p["action"])
         for p in resp.get("intervention_plan", [])
@@ -163,6 +165,7 @@ def _render_pdf_from_lines(title: str, lines: List[str]) -> bytes:
 
 
 def _brief_pdf_lines(resp: Dict[str, Any]) -> List[str]:
+    resp = normalize_diagnostic_payload(resp)
     brief = resp.get("brief") or {}
     ed = brief.get("executive_diagnosis") or {}
     mp = brief.get("market_position") or {}

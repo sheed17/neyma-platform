@@ -1081,16 +1081,22 @@ def _depth_score(word_count: int) -> str:
 def _tiered_service_status(
     *,
     url_match: bool,
+    title_match: bool,
     h1_match: bool,
     keyword_count: int,
     word_count: int,
     cta_count: int,
 ) -> str:
-    # Dedicated requires strong semantic/URL alignment and substantial content.
-    if word_count >= SUBSTANTIAL_PAGE_LENGTH and (url_match or h1_match):
+    # A service-specific URL plus matching title/H1 is enough to treat the page
+    # as dedicated, even when extracted body copy is thin. Depth is tracked
+    # separately via word_count/page_strength.
+    if (url_match and (title_match or h1_match)) or (title_match and h1_match):
+        return ServiceStatus.DEDICATED_PAGE
+    # Otherwise require substantial content plus strong alignment.
+    if word_count >= SUBSTANTIAL_PAGE_LENGTH and (url_match or title_match or h1_match):
         return ServiceStatus.DEDICATED_PAGE
     # Any keyword/nav/call-to-action presence is mention-only, never dedicated.
-    if keyword_count > 0 or cta_count > 0 or h1_match or url_match:
+    if keyword_count > 0 or cta_count > 0 or h1_match or title_match or url_match:
         return ServiceStatus.STRONG_UMBRELLA
     return ServiceStatus.MISSING
 
@@ -1874,6 +1880,7 @@ def build_service_intelligence(
             service_conf_level = _confidence_level(service_conf)
             tiered_status = _tiered_service_status(
                 url_match=bool(rule1_path),
+                title_match=bool(title_match),
                 h1_match=bool(h1_match),
                 keyword_count=int(mention_count),
                 word_count=int(wc),
@@ -1889,10 +1896,13 @@ def build_service_intelligence(
             booking_link = bool(conversion.get("booking_link"))
 
             # Keep strict agent output as metadata only; canonical service presence is deterministic.
-            if status != ServiceStatus.MISSING and prediction_status in {"rejected_non_service", "umbrella_only", "missing"}:
+            if status != ServiceStatus.MISSING and prediction_status in {"rejected_non_service", "umbrella_only", "missing", "weak_stub_page"}:
                 prediction_status = tiered_status
                 if tiered_status == ServiceStatus.DEDICATED_PAGE:
-                    detection_reason = "Dedicated service page detected by URL/title/H1 and substantial content."
+                    if int(wc) >= SUBSTANTIAL_PAGE_LENGTH:
+                        detection_reason = "Dedicated service page detected by service-specific URL/title/H1."
+                    else:
+                        detection_reason = "Dedicated service page detected by service-specific URL/title/H1; content depth appears limited."
                 elif tiered_status == ServiceStatus.STRONG_UMBRELLA:
                     detection_reason = "Service mention detected, but no dedicated page evidence."
                 elif tiered_status == ServiceStatus.NOT_EVALUATED:

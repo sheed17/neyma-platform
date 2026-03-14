@@ -80,25 +80,33 @@ def _score_market_viability(market_density_ord: int) -> float:
     return 0.40
 
 
+def _tri_score(features: Mapping[str, Any], key: str, known_key: str | None = None, fallback_key: str | None = None) -> float:
+    if known_key and _get_int(features, known_key, 1) == 0:
+        return 0.5
+    if fallback_key:
+        return float(_get_int(features, key, _get_int(features, fallback_key)))
+    return float(_get_int(features, key))
+
+
 def _score_digital_maturity(features: Mapping[str, Any]) -> float:
     vals = [
-        _get_int(features, "has_website"),
-        _get_int(features, "has_ssl"),
-        _get_int(features, "mobile_optimized"),
-        _get_int(features, "has_contact_form"),
-        _get_int(features, "phone_prominent", _get_int(features, "has_phone")),
-        _get_int(features, "has_online_booking"),
-        _get_int(features, "has_schema"),
+        _tri_score(features, "has_website"),
+        _tri_score(features, "has_ssl"),
+        _tri_score(features, "mobile_optimized"),
+        _tri_score(features, "has_contact_form", known_key="has_contact_form_known"),
+        _tri_score(features, "phone_prominent", fallback_key="has_phone"),
+        _tri_score(features, "has_online_booking", known_key="has_online_booking_known"),
+        _tri_score(features, "has_schema"),
     ]
     return sum(vals) / max(len(vals), 1)
 
 
 def _score_trust_baseline(features: Mapping[str, Any]) -> float:
     vals = [
-        _get_int(features, "has_website"),
-        _get_int(features, "has_ssl"),
-        _get_int(features, "has_contact_form"),
-        _get_int(features, "phone_prominent", _get_int(features, "has_phone")),
+        _tri_score(features, "has_website"),
+        _tri_score(features, "has_ssl"),
+        _tri_score(features, "has_contact_form", known_key="has_contact_form_known"),
+        _tri_score(features, "phone_prominent", fallback_key="has_phone"),
     ]
     return sum(vals) / max(len(vals), 1)
 
@@ -112,7 +120,8 @@ def generate_lead_quality_label(features: Mapping[str, Any]) -> Dict[str, Any]:
     website_deficit = _clip((100.0 - website_quality) / 100.0, 0.0, 1.0)
 
     has_online_booking = _get_int(features, "has_online_booking")
-    booking_gap = 1.0 if has_online_booking == 0 else 0.0
+    booking_known = _get_int(features, "has_online_booking_known", 1)
+    booking_gap = 1.0 if booking_known == 1 and has_online_booking == 0 else 0.0
 
     service_gap = _clip(_get_float(features, "service_gap_weighted_score"), 0.0, 1.0)
     if _get_int(features, "service_scan_observed_flag", 1) == 0:

@@ -93,6 +93,8 @@ def test_runtime_scoring_returns_payload():
     assert territory_score["class"] in {"bad", "decent", "good"}
     assert territory_score["feature_scope"] == "tier1"
     assert isinstance(territory_score["reasons"], list)
+    assert "decision_threshold" in territory_score
+    assert "is_priority_prospect_predicted" in territory_score
 
     diagnostic_score = score_diagnostic_response(
         {
@@ -109,3 +111,5 @@ def test_runtime_scoring_returns_payload():
     )
     assert diagnostic_score["feature_scope"] == "tier2"
     assert "components" in diagnostic_score
+    assert "decision_threshold" in diagnostic_score
+    assert "is_priority_prospect_predicted" in diagnostic_score

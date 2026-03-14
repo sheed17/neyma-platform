@@ -39,7 +39,7 @@ STATE_NAME_PATTERN = "|".join(sorted((re.escape(k) for k in STATE_NAME_TO_ABBR.k
 STATE_ABBR_PATTERN = "|".join(sorted((re.escape(x) for x in STATE_ABBRS), key=len, reverse=True))
 STATE_TOKEN_PATTERN = rf"(?:{STATE_ABBR_PATTERN}|{STATE_NAME_PATTERN})"
 
-INTENT_NORMALIZER_PROMPT = """You are NeymaIntentNormalizer.Your ONLY job is to convert a user's natural-language SEO prospecting query into a STRICT JSON object that matches the schema below. You must follow these rules:NON-NEGOTIABLE RULES1) Output MUST be valid JSON only. No prose, no markdown, no comments.2) You may ONLY use criteria types from ALLOWED_CRITERIA. Never invent new criteria.3) If the user requests something outside ALLOWED_CRITERIA, you must include it under \"unsupported_parts\" and continue with the closest supported interpretation when safe.4) City and state are REQUIRED. If missing, set \"missing_required\" with items describing what's missing; still return JSON.5) Limit must be an integer between 1 and 20. Default 10.6) Vertical must be one of ALLOWED_VERTICALS. If user asks for something else, map to closest or set \"vertical\" to null and add to unsupported_parts.7) Do NOT claim you verified anything. You are not executing the scan. You are only interpreting.8) Do NOT include any data about actual businesses. No browsing. No guessing.ALLOWED_VERTICALS:[\"dentist\",\"orthodontist\",\"med_spa\",\"chiropractor\",\"hvac\",\"plumber\",\"roofer\",\"law_firm\",\"restaurant\",\"gym\",\"general_local_business\"]ALLOWED_CRITERIA (types):[\"below_review_avg\",\"low_review_count\",\"high_review_gap\",\"runs_paid_ads\",\"no_paid_ads\",\"has_website\",\"no_website\",\"slow_website\",\"no_ssl\",\"mobile_unfriendly\",\"no_contact_form\",\"no_booking\",\"has_booking\",\"missing_service_page\",\"weak_service_depth\",\"no_trust_badges\",\"no_financing_option\",\"high_competition_density\",\"low_competition_density\",\"primary_constraint_visibility\",\"primary_constraint_conversion\",\"primary_constraint_authority\",\"primary_constraint_service_depth\",\"high_modeled_revenue_upside\",\"low_modeled_revenue_upside\"]SERVICES (for missing_service_page): Return a service slug if user names one. Examples: [\"implants\",\"invisalign\",\"orthodontics\",\"veneers\",\"whitening\",\"botox\",\"fillers\",\"iv_therapy\",\"acupuncture\",\"emergency\",\"pediatric\",\"root_canal\",\"crowns\"]ACCURACY MODE: If user mentions \"verified\", \"extreme accuracy\", \"validate\", \"confirm\", set \"accuracy_mode\" to \"verified\". Otherwise \"fast\".CONFIDENCE: Return intent_confidence as:- \"high\" if city+state+vertical+criteria are clearly specified.- \"medium\" if one element is inferred but reasonable (e.g. \"dentists\" implies dentist).- \"low\" if city/state missing or criteria unclear/contradictory.STRICT OUTPUT SCHEMA:{  \"query_raw\": string,  \"city\": string|null,  \"state\": string|null,  \"vertical\": string|null,  \"limit\": number,  \"accuracy_mode\": \"fast\"|\"verified\",  \"criteria\": [ { \"type\": string, \"service\": string|null } ],  \"must_not\": [ { \"type\": string, \"service\": string|null } ],  \"notes_for_executor\": { \"radius_miles_hint\": number|null, \"prioritize\": [string], \"sort_hint\": string|null },  \"unsupported_parts\": [string],  \"missing_required\": [string],  \"intent_confidence\": \"high\"|\"medium\"|\"low\"}MAPPING GUIDELINES:- \"missing implants page\" -> criteria: [{type:\"missing_service_page\", service:\"implants\"}]- \"poor visibility\" / \"low local presence\" -> include below_review_avg or high_review_gap- \"technical SEO issues\" -> include slow_website, no_ssl, mobile_unfriendly when requested- \"conversion issues\" -> include no_booking, no_contact_form, no_trust_badges- \"wasting ad spend\" -> runs_paid_ads + below_review_avg (and optionally high_competition_density)- \"high competition\" -> high_competition_density- If user says \"NOT X\", put it in must_not.Return the JSON now."""
+INTENT_NORMALIZER_PROMPT = """You are NeymaIntentNormalizer.Your ONLY job is to convert a user's natural-language SEO prospecting query into a STRICT JSON object that matches the schema below. You must follow these rules:NON-NEGOTIABLE RULES1) Output MUST be valid JSON only. No prose, no markdown, no comments.2) You may ONLY use criteria types from ALLOWED_CRITERIA. Never invent new criteria.3) If the user requests something outside ALLOWED_CRITERIA, you must include it under \"unsupported_parts\" and continue with the closest supported interpretation when safe.4) City and state are REQUIRED. If missing, set \"missing_required\" with items describing what's missing; still return JSON.5) Limit must be an integer between 1 and 20. Default 10.6) Vertical must be one of ALLOWED_VERTICALS. If user asks for something else, map to closest or set \"vertical\" to null and add to unsupported_parts.7) Do NOT claim you verified anything. You are not executing the scan. You are only interpreting.8) Do NOT include any data about actual businesses. No browsing. No guessing.ALLOWED_VERTICALS:[\"dentist\",\"orthodontist\",\"med_spa\",\"chiropractor\",\"hvac\",\"plumber\",\"roofer\",\"law_firm\",\"restaurant\",\"gym\",\"general_local_business\"]ALLOWED_CRITERIA (types):[\"below_review_avg\",\"low_review_count\",\"high_review_gap\",\"runs_paid_ads\",\"no_paid_ads\",\"has_website\",\"no_website\",\"slow_website\",\"no_ssl\",\"mobile_unfriendly\",\"no_contact_form\",\"no_booking\",\"has_booking\",\"missing_service_page\",\"weak_service_depth\",\"no_trust_badges\",\"no_financing_option\",\"high_competition_density\",\"low_competition_density\",\"primary_constraint_visibility\",\"primary_constraint_conversion\",\"primary_constraint_authority\",\"primary_constraint_service_depth\",\"high_modeled_revenue_upside\",\"low_modeled_revenue_upside\"]SERVICES (for missing_service_page): Return a service slug if user names one. Examples: [\"implants\",\"invisalign\",\"orthodontics\",\"veneers\",\"whitening\",\"botox\",\"fillers\",\"iv_therapy\",\"acupuncture\",\"emergency\",\"pediatric\",\"root_canal\",\"crowns\"]ACCURACY MODE: If user mentions \"verified\", \"extreme accuracy\", \"validate\", \"confirm\", set \"accuracy_mode\" to \"verified\". Otherwise \"fast\".CONFIDENCE: Return intent_confidence as:- \"high\" if city+state+vertical+criteria are clearly specified.- \"medium\" if one element is inferred but reasonable (e.g. \"dentists\" implies dentist).- \"low\" if city/state missing or criteria unclear/contradictory.STRICT OUTPUT SCHEMA:{  \"query_raw\": string,  \"city\": string|null,  \"state\": string|null,  \"vertical\": string|null,  \"limit\": number,  \"accuracy_mode\": \"fast\"|\"verified\",  \"criteria\": [ { \"type\": string, \"service\": string|null } ],  \"must_not\": [ { \"type\": string, \"service\": string|null } ],  \"notes_for_executor\": { \"radius_miles_hint\": number|null, \"prioritize\": [string], \"sort_hint\": string|null },  \"unsupported_parts\": [string],  \"missing_required\": [string],  \"intent_confidence\": \"high\"|\"medium\"|\"low\"}MAPPING GUIDELINES:- \"missing implants page\" -> criteria: [{type:\"missing_service_page\", service:\"implants\"}]- \"no website\", \"without a website\", \"don't have a website\" -> criteria: [{type:\"no_website\", service:null}]- \"poor visibility\" / \"low local presence\" -> include below_review_avg or high_review_gap- \"technical SEO issues\" -> include slow_website, no_ssl, mobile_unfriendly when requested- \"conversion issues\" -> include no_booking, no_contact_form, no_trust_badges- \"wasting ad spend\" -> runs_paid_ads + below_review_avg (and optionally high_competition_density)- \"high competition\" -> high_competition_density- If user says \"NOT X\", put it in must_not.Return the JSON now."""
 
 SERVICE_ALIASES = {
     "implants": ["implant", "implants", "dental implant", "dental implants"],
@@ -163,7 +163,7 @@ def _extract_service_slug(ql: str) -> str | None:
             alias_re = re.escape(alias)
             if (
                 re.search(rf"\b(?:missing|no|without)\s+{alias_re}\s+(?:service\s+)?(?:page|landing page|web ?page)\b", ql)
-                or re.search(rf"\b(?:don\'t have|do not have|dont have)\s+(?:an?\s+)?{alias_re}\s+(?:service\s+)?(?:page|landing page|web ?page)\b", ql)
+                or re.search(rf"\b(?:don\'t have|don t have|do not have|dont have)\s+(?:an?\s+)?{alias_re}\s+(?:service\s+)?(?:page|landing page|web ?page)\b", ql)
                 or re.search(rf"\b{alias_re}\s+page\s+(?:missing|absent)\b", ql)
                 or re.search(rf"\bmissing\s+{alias_re}\b", ql)
             ):
@@ -210,7 +210,12 @@ def _deterministic_criteria(ql: str) -> list[dict[str, Any]]:
     if any(phrase in ql for phrase in ("no paid ads", "not running ads", "without ads", "no ads")):
         criteria.append({"type": "no_paid_ads", "service": None})
 
-    if any(phrase in ql for phrase in ("no website", "without website", "without a website", "no site", "missing website", "no web presence")):
+    if (
+        any(phrase in ql for phrase in ("no website", "without website", "without a website", "no site", "missing website", "no web presence"))
+        or "without a site" in ql
+        or re.search(r"\b(?:do not|don t|dont|don't)\s+have\s+(?:a\s+)?(?:website|site|web presence)\b", ql)
+        or re.search(r"\b(?:has|have)\s+no\s+(?:website|site|web presence)\b", ql)
+    ):
         criteria.append({"type": "no_website", "service": None})
     elif any(phrase in ql for phrase in ("has website", "with website", "with a website", "have a website", "has a site", "with site")):
         criteria.append({"type": "has_website", "service": None})
@@ -482,15 +487,23 @@ def parse_npl_query(query: str) -> Dict[str, Any]:
     return resolve_ask_intent(query)
 
 
+def _is_true(value: Any) -> bool:
+    return value is True
+
+
+def _is_false(value: Any) -> bool:
+    return value is False
+
+
 def classify_constraint(signals: Dict[str, Any]) -> str:
     """Deterministic primary-constraint classifier from available row signals."""
     reviews = float(signals.get("user_ratings_total") or 0)
     below_review_avg = bool(signals.get("below_review_avg"))
     has_website = bool(signals.get("has_website"))
-    no_contact_form = not bool(signals.get("has_contact_form"))
-    no_ssl = not bool(signals.get("ssl"))
-    no_schema = not bool(signals.get("has_schema"))
-    mobile_unfriendly = not bool(signals.get("has_viewport"))
+    no_contact_form = _is_false(signals.get("has_contact_form"))
+    no_ssl = _is_false(signals.get("ssl"))
+    no_schema = _is_false(signals.get("has_schema"))
+    mobile_unfriendly = _is_false(signals.get("has_viewport"))
 
     visibility_score = 1.0 if below_review_avg else 0.0
     conversion_score = (1.2 if no_contact_form else 0.0) + (0.8 if not has_website else 0.0)
@@ -515,6 +528,7 @@ def _matches_one_criterion(criterion: Dict[str, Any], row: Dict[str, Any]) -> bo
     avg_reviews = float(row.get("avg_market_reviews") or 0)
     rank_key = float(row.get("rank_key") or 0)
     primary_constraint = str(row.get("primary_constraint") or "").strip().lower()
+    booking_path = str(row.get("booking_conversion_path") or "").strip()
 
     if ctype == "below_review_avg":
         return bool(row.get("below_review_avg"))
@@ -537,15 +551,15 @@ def _matches_one_criterion(criterion: Dict[str, Any], row: Dict[str, Any]) -> bo
         except (TypeError, ValueError):
             return False
     if ctype == "no_ssl":
-        return not bool(row.get("ssl"))
+        return _is_false(row.get("ssl"))
     if ctype == "mobile_unfriendly":
-        return not bool(row.get("has_viewport"))
+        return _is_false(row.get("has_viewport"))
     if ctype == "no_contact_form":
-        return not bool(row.get("has_contact_form"))
+        return _is_false(row.get("has_contact_form"))
     if ctype == "no_booking":
-        return not bool(row.get("has_booking"))
+        return _is_false(row.get("has_booking")) or booking_path in {"Phone-only", "Request form"}
     if ctype == "has_booking":
-        return bool(row.get("has_booking"))
+        return _is_true(row.get("has_booking")) or booking_path in {"Online booking (limited)", "Online booking (full)"}
     if ctype == "missing_service_page":
         # This one is handled by lightweight/verified checks upstream.
         return bool(row.get("missing_service_page_match"))
@@ -927,9 +941,9 @@ def ai_batch_rerank_candidates(
                 "rating": r.get("rating"),
                 "reviews": int(r.get("user_ratings_total") or 0),
                 "has_website": bool(r.get("has_website")),
-                "has_contact_form": bool(r.get("has_contact_form")),
-                "ssl": bool(r.get("ssl")),
-                "has_schema": bool(r.get("has_schema")),
+                "has_contact_form": r.get("has_contact_form"),
+                "ssl": r.get("ssl"),
+                "has_schema": r.get("has_schema"),
                 "lightweight_reason": lightweight_reason,
             }
         )
@@ -1019,8 +1033,8 @@ def ai_batch_explain_matches(
                 "reviews": int(r.get("user_ratings_total") or 0),
                 "rank_key": float(r.get("rank_key") or 0.0),
                 "has_website": bool(r.get("has_website")),
-                "has_contact_form": bool(r.get("has_contact_form")),
-                "ssl": bool(r.get("ssl")),
+                "has_contact_form": r.get("has_contact_form"),
+                "ssl": r.get("ssl"),
             }
         )
     if not slim_rows:

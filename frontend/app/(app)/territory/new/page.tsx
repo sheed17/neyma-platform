@@ -41,32 +41,32 @@ export default function NewTerritoryPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <section className="rounded-[36px] border border-black/6 bg-[linear-gradient(135deg,#f7f3ea_0%,#ffffff_60%,#f2f7ff_100%)] p-5 shadow-[0_18px_50px_rgba(23,20,17,0.05)] sm:p-7">
+      <section className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)] p-5 shadow-[0_18px_50px_rgba(10,10,10,0.04)] sm:p-7">
         <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">Territory Scan</p>
-            <h1 className="display-title mt-3 max-w-[11ch] text-4xl font-black tracking-tight text-[var(--text-primary)] sm:text-6xl">
+            <p className="section-kicker">Territory Scan</p>
+            <h1 className="display-title mt-3 max-w-[11ch] text-4xl text-[var(--text-primary)] sm:text-6xl">
               Start with the market, not the lead.
             </h1>
             <p className="mt-4 max-w-[42ch] text-sm leading-relaxed text-[var(--text-secondary)] sm:text-base">
-              Build a ranked shortlist first. Then use Ask Neyma for more nuanced filtering only after the territory has been mapped.
+              Build an ML-ranked shortlist first. Then use Ask Neyma for AI-assisted filtering only after the territory has been mapped.
             </p>
 
             <div className="mt-6 space-y-3">
               {[
                 "Scan one local market at a time",
-                "Return up to 20 ranked prospects",
-                "Use deterministic market and site signals before opening any brief",
+                "Return up to 20 ML-ranked prospects",
+                "Use model-driven market and site signals before opening any brief",
               ].map((line) => (
-                <div key={line} className="rounded-[22px] border border-black/6 bg-white px-4 py-3 text-sm text-[var(--text-secondary)]">
+                <div key={line} className="rounded-[18px] border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-sm text-[var(--text-secondary)]">
                   {line}
                 </div>
               ))}
             </div>
           </div>
 
-          <Card className="overflow-hidden border border-black/8 bg-white shadow-[0_18px_40px_rgba(23,20,17,0.05)]">
-            <CardHeader title="Scan Parameters" subtitle="Set market, vertical, and shortlist size. Territory scans currently return up to 20 ranked prospects." />
+          <Card className="overflow-hidden border border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_18px_40px_rgba(10,10,10,0.04)]">
+            <CardHeader title="Scan Parameters" subtitle="Set market, vertical, and shortlist size. Territory scans currently return up to 20 ML-ranked prospects." />
             <CardBody className="p-4 sm:p-5">
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -79,7 +79,7 @@ export default function NewTerritoryPage() {
                     <select
                       value={vertical}
                       onChange={(e) => setVertical(e.target.value)}
-                      className="h-11 w-full rounded-[18px] border border-[var(--border-default)] bg-[#fbfaf7] px-3 text-sm focus:border-[var(--accent)] focus:outline-none"
+                      className="h-11 w-full rounded-[var(--radius)] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 text-sm focus:border-[var(--ring)] focus:outline-none"
                     >
                       <option value="dentist">Dentist</option>
                       <option value="dental">Dental</option>
@@ -93,15 +93,15 @@ export default function NewTerritoryPage() {
                     max={20}
                     value={limit}
                     onChange={(e) => setLimit(Math.max(1, Math.min(20, Number(e.target.value || 20))))}
-                    className="h-11 rounded-[18px] bg-[#fbfaf7]"
+                    className="h-11"
                   />
                 </div>
-                <label className="flex items-center gap-2 rounded-[18px] border border-black/6 bg-[#fbfaf7] px-3 py-3 text-sm text-[var(--text-secondary)]">
+                <label className="flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border-default)] bg-[var(--muted)] px-3 py-3 text-sm text-[var(--text-secondary)]">
                   <input type="checkbox" checked={belowReviewAvg} onChange={(e) => setBelowReviewAvg(e.target.checked)} />
                   Below review average
                 </label>
-                <div className="rounded-[20px] border border-black/6 bg-[#fbfaf7] px-4 py-3 text-xs leading-5 text-[var(--text-muted)]">
-                  For service-gap and more nuanced criteria, continue in Ask Neyma after the territory scan finishes.
+                <div className="rounded-[16px] border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-xs leading-5 text-[var(--text-muted)]">
+                  For service-gap and more nuanced criteria, continue in Ask Neyma after the territory scan finishes and the AI narrowing flow takes over.
                 </div>
                 <div className="pt-1">
                   <Button type="submit" variant="primary" disabled={running} className="h-11 rounded-full px-5">
@@ -114,24 +114,24 @@ export default function NewTerritoryPage() {
         </div>
       </section>
 
-      <Card className="mt-5 border border-black/8 bg-white shadow-[0_16px_38px_rgba(23,20,17,0.04)]">
-        <CardHeader title="How Territory Ranking Works" subtitle="The shortlist is not random. We rank practices using lightweight, deterministic signals before any deeper brief is generated." />
+      <Card className="mt-5 border border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_16px_38px_rgba(10,10,10,0.04)]">
+        <CardHeader title="How Territory Ranking Works" subtitle="The shortlist is not random. We rank practices using lightweight signals, feature engineering, and ML scoring before any deeper brief is generated." />
         <CardBody className="space-y-4 p-4 sm:p-5">
-          <div className="rounded-[24px] border border-black/6 bg-[linear-gradient(135deg,#fbfaf7_0%,#f3f7ff_100%)] p-4 text-sm leading-relaxed text-[var(--text-secondary)]">
-            Territory ranking looks first at local market position and basic website quality, then returns the strongest candidates for deeper review.
+          <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--muted)] p-4 text-sm leading-relaxed text-[var(--text-secondary)]">
+            Territory ranking looks first at local market position and basic website quality, then uses ML scoring to return the strongest candidates for deeper review.
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
-            <div className="rounded-[24px] border border-black/6 bg-white p-4">
+            <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Market position</p>
               <p className="mt-2 text-sm text-[var(--text-secondary)]">We compare review count and rating against the local field to surface practices that appear weaker than nearby competitors.</p>
             </div>
-            <div className="rounded-[24px] border border-black/6 bg-white p-4">
+            <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Website basics</p>
               <p className="mt-2 text-sm text-[var(--text-secondary)]">We look for lightweight infrastructure signals such as SSL, contact paths, phone presence, viewport coverage, and basic site readiness.</p>
             </div>
-            <div className="rounded-[24px] border border-black/6 bg-white p-4">
+            <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">What comes later</p>
-              <p className="mt-2 text-sm text-[var(--text-secondary)]">Full service-page analysis, richer evidence, and revenue framing happen only after you open a brief or continue with Ask Neyma.</p>
+              <p className="mt-2 text-sm text-[var(--text-secondary)]">Full service-page analysis, richer evidence, AI reasoning, and revenue framing happen only after you open a brief or continue with Ask Neyma.</p>
             </div>
           </div>
         </CardBody>

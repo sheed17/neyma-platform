@@ -77,11 +77,14 @@ def collect_evidence_ids(
         ids.append(EVID_REVIEW_COUNT_LOW)
     booking_path = signals.get("signal_booking_conversion_path")
     has_booking = booking_path in ("Online booking (limited)", "Online booking (full)")
+    booking_absent = booking_path in ("Phone-only", "Request form")
     if not has_booking and signals.get("signal_has_automated_scheduling") is True:
         has_booking = True
+    if not booking_absent and signals.get("signal_has_automated_scheduling") is False:
+        booking_absent = True
     if has_booking:
         ids.append(EVID_BOOKING_PRESENT)
-    else:
+    elif booking_absent:
         ids.append(EVID_BOOKING_ABSENT)
     schema = bool(signals.get("signal_has_schema_microdata")) or bool(signals.get("signal_schema_types") or [])
     if schema:

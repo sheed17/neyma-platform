@@ -62,10 +62,20 @@ def _predict_from_bundle(bundle: Dict[str, Any], features: Mapping[str, Any], fe
     return None
 
 
-def _class_from_score(score: float) -> str:
-    if score >= 0.70:
+def _decision_threshold(bundle: Optional[Dict[str, Any]]) -> float:
+    if not bundle:
+        return 0.5
+    try:
+        threshold = float((bundle.get("metadata") or {}).get("calibration", {}).get("decision_threshold") or 0.5)
+    except Exception:
+        return 0.5
+    return max(0.0, min(1.0, threshold))
+
+
+def _class_from_score(score: float, *, decision_threshold: float) -> str:
+    if score >= decision_threshold:
         return "good"
-    if score >= 0.40:
+    if score >= max(0.4, decision_threshold * 0.7):
         return "decent"
     return "bad"
 
@@ -82,6 +92,7 @@ def _score_common(features: Mapping[str, Any], *, model_name: str, feature_scope
     reasons, caveats = build_reason_payload(features, heuristic, feature_scope=feature_scope)
 
     bundle = _load_bundle(model_name)
+    decision_threshold = _decision_threshold(bundle)
     if bundle is not None:
         score = _predict_from_bundle(bundle, features, feature_columns)
     else:
@@ -91,15 +102,18 @@ def _score_common(features: Mapping[str, Any], *, model_name: str, feature_scope
         score = float(heuristic["lead_quality_score_heuristic_v1"])
         resolved_class = str(heuristic["lead_quality_class_heuristic_v1"])
         model_version = HEURISTIC_MODEL_VERSION
+        decision_threshold = 0.5
     else:
         score = max(0.0, min(1.0, score))
-        resolved_class = _class_from_score(score)
+        resolved_class = _class_from_score(score, decision_threshold=decision_threshold)
         model_version = str(bundle.get("metadata", {}).get("model_version") or "artifact_v1")
 
     return {
         "class": resolved_class,
         "score": round(score * 100.0, 2),
         "prob_high_value": round(score, 6),
+        "decision_threshold": round(decision_threshold, 6),
+        "is_priority_prospect_predicted": bool(score >= decision_threshold),
         "data_confidence": round(float(features.get("data_confidence") or 0.0), 6),
         "feature_scope": feature_scope,
         "model_name": model_name,
