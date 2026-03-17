@@ -50,13 +50,6 @@ const verificationItems = [
   "Phone prominent",
 ];
 
-const landingMenuItems = [
-  { name: "Run Territory Scan", href: "/territory/new" },
-  { name: "Open Workspace", href: "/dashboard" },
-  { name: "Build Brief", href: "/diagnostic/new" },
-  { name: "Ask Neyma", href: "/ask" },
-];
-
 const askSteps = [
   "Start with a city and a state.",
   "Describe the type of practice or gap you want.",
@@ -88,6 +81,13 @@ const landingFaqs = [
 
 export default function LandingPage() {
   const { user } = useAuth();
+  const workspaceHref = user ? "/dashboard" : "/login";
+  const landingMenuItems = [
+    { name: "Run Territory Scan", href: "/territory/new" },
+    { name: "Open Workspace", href: workspaceHref },
+    { name: "Build Brief", href: "/diagnostic/new" },
+    { name: "Ask Neyma", href: "/ask" },
+  ];
 
   return (
     <div className="theme-light min-h-screen bg-[radial-gradient(circle_at_top,rgba(139,80,212,0.14)_0%,#ffffff_34%,#ffffff_100%)] text-[#0a0a0a]">
@@ -116,7 +116,7 @@ export default function LandingPage() {
             }}
             secondaryCta={{
               label: "Open Workspace",
-              href: user ? "/dashboard" : "/login",
+              href: workspaceHref,
             }}
           >
             <TerritoryHeroPreview />
@@ -196,7 +196,7 @@ export default function LandingPage() {
           contactInfo={{
             title: "Still have questions?",
             description: "Reach out directly and we’ll help.",
-            buttonText: "Contact",
+            buttonText: "Email us",
             onContact: () => {
               window.location.href = "mailto:rasheed@tryneyma.com";
             },
@@ -247,7 +247,7 @@ export default function LandingPage() {
               ]}
               mainLinks={[
                 { href: "/territory/new", label: "Run Territory Scan" },
-                { href: "/dashboard", label: "Open Workspace" },
+                { href: workspaceHref, label: "Open Workspace" },
                 { href: "/diagnostic/new", label: "Build Brief" },
                 { href: "/ask", label: "Ask Neyma" },
               ]}
