@@ -348,7 +348,7 @@ export default function TerritoryResultsPage() {
           <h1 className="mt-1 text-[20px] font-medium tracking-[-0.01em] text-[var(--text-primary)]">Market Scan: {data?.city || "Market"}{data?.state ? `, ${data.state}` : ""}</h1>
           <p className="mt-1 text-[12px] leading-[1.8] text-[var(--text-muted)]">
             {data?.status === "running"
-              ? `${progress.label}${progress.supportingLabel ? ` · ${progress.supportingLabel}` : ""}`
+              ? `${territoryProgress.label}${territoryProgress.supportingLabel ? ` · ${territoryProgress.supportingLabel}` : ""}`
               : `${prospects.length} prospects ready`}
           </p>
           {prospects.length > 0 && (
