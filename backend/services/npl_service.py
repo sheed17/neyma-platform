@@ -974,10 +974,12 @@ def ai_batch_rerank_candidates(
     try:
         client = OpenAI()
         model = os.getenv("ASK_AI_REVIEW_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        timeout_seconds = max(5, int(os.getenv("TERRITORY_AI_TIMEOUT_SECONDS", "20")))
         r = client.chat.completions.create(
             model=model,
             temperature=0,
             response_format={"type": "json_object"},
+            timeout=timeout_seconds,
             messages=[{"role": "system", "content": "Output valid JSON only."}, {"role": "user", "content": prompt}],
         )
         txt = (r.choices[0].message.content or "") if getattr(r, "choices", None) else ""
@@ -1054,10 +1056,12 @@ def ai_batch_explain_matches(
     try:
         client = OpenAI()
         model = os.getenv("ASK_AI_REVIEW_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        timeout_seconds = max(5, int(os.getenv("TERRITORY_AI_TIMEOUT_SECONDS", "20")))
         r = client.chat.completions.create(
             model=model,
             temperature=0,
             response_format={"type": "json_object"},
+            timeout=timeout_seconds,
             messages=[{"role": "system", "content": "Output valid JSON only."}, {"role": "user", "content": prompt}],
         )
         txt = (r.choices[0].message.content or "") if getattr(r, "choices", None) else ""

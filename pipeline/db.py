@@ -1170,7 +1170,7 @@ def feature_limit_map(plan_tier: str) -> Dict[str, Optional[int]]:
         return {
             "territory_scan": 5,
             "diagnostic": 5,
-            "ask": 20,
+            "ask": 3,
         }
     return {
         "territory_scan": None,

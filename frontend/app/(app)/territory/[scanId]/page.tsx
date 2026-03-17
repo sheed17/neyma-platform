@@ -50,6 +50,7 @@ function territoryPhaseLabel(phase: string) {
   const normalized = phase.toLowerCase();
   if (normalized.includes("candidate")) return "Discovering";
   if (normalized.includes("complete")) return "Complete";
+  if (normalized.includes("ai")) return "Refining";
   if (normalized.includes("rank")) return "Ranking";
   return "In progress";
 }
@@ -553,6 +554,8 @@ function buildTerritoryProgressState({
   const label =
     phase === "candidate_fetch" && queryTotal > 0
       ? `Discovering candidates across ${queryDone}/${queryTotal} areas`
+      : phase.includes("ai")
+        ? `Refining the shortlist from ${total || accepted || currentCount} ranked candidates`
       : total > 0
         ? `Ranking ${processed}/${total} candidates`
         : status === "completed"
@@ -585,6 +588,12 @@ function TerritoryScanProgressPanel({
         "Expanding the search across nearby listings",
         "Pulling the first candidate set into the scan",
       ]
+    : phase.includes("ai")
+      ? [
+          "Refining the strongest candidates before the final shortlist",
+          "Checking which ranked practices deserve the top spots",
+          "Finalizing the ordered shortlist for review",
+        ]
     : [
         "Comparing reviews and local position",
         "Checking website basics and contact readiness",
@@ -600,7 +609,11 @@ function TerritoryScanProgressPanel({
     },
     {
       label: "Rank the market",
-      meta: progress.total > 0 ? `${progress.processed}/${progress.total} ranked` : "queued",
+      meta: phase.includes("ai")
+        ? `${progress.total || progress.accepted} ranked`
+        : progress.total > 0
+          ? `${progress.processed}/${progress.total} ranked`
+          : "queued",
       description: "Review local position, review gaps, and site readiness.",
       done: progress.processed > 0 && !phase.includes("candidate") && progress.accepted > 0,
       active: !phase.includes("candidate") && (progress.processed < progress.total || progress.total === 0),

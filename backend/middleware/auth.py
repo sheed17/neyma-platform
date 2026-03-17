@@ -23,6 +23,7 @@ from pipeline.db import get_or_create_guest_user, get_or_create_user
 AUTH_EMAIL_COOKIE = "neyma_auth_email"
 AUTH_NAME_COOKIE = "neyma_auth_name"
 GUEST_COOKIE = "neyma_guest_session"
+GUEST_HEADER = "x-neyma-guest-session"
 
 
 def _test_identity(request: Request) -> tuple[str | None, str | None]:
@@ -43,6 +44,12 @@ def _bearer_token(request: Request) -> str | None:
         return None
     token = auth_header[7:].strip()
     return token or None
+
+
+def _guest_session_id(request: Request) -> str | None:
+    header_value = (request.headers.get(GUEST_HEADER) or "").strip()
+    cookie_value = (request.cookies.get(GUEST_COOKIE) or "").strip()
+    return header_value or cookie_value or None
 
 
 @lru_cache(maxsize=1)
@@ -82,6 +89,7 @@ class LocalIdentityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         created_guest_session: str | None = None
         user = None
+        guest_session_id: str | None = None
 
         token = _bearer_token(request)
         if token:
@@ -101,13 +109,14 @@ class LocalIdentityMiddleware(BaseHTTPMiddleware):
                 user = get_or_create_user(email=email, name=name or email.split("@")[0])
 
         if not user:
-            guest_session_id = (request.cookies.get(GUEST_COOKIE) or "").strip() or str(uuid4())
-            created_guest_session = None if request.cookies.get(GUEST_COOKIE) else guest_session_id
+            guest_session_id = _guest_session_id(request) or str(uuid4())
+            created_guest_session = None if _guest_session_id(request) else guest_session_id
             user = get_or_create_guest_user(guest_session_id)
 
         request.state.user_id = int(user["id"])
         request.state.plan_tier = str(user.get("plan_tier") or "guest")
         request.state.is_guest = bool(int(user.get("is_guest") or 0))
+        request.state.guest_session_id = guest_session_id if bool(int(user.get("is_guest") or 0)) else None
 
         response = await call_next(request)
 
@@ -117,7 +126,7 @@ class LocalIdentityMiddleware(BaseHTTPMiddleware):
                 value=created_guest_session,
                 httponly=True,
                 samesite="lax",
-                secure=False,
+                secure=str(request.url.scheme).lower() == "https",
                 max_age=60 * 60 * 24 * 365,
                 path="/",
             )

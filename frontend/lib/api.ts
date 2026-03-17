@@ -25,6 +25,7 @@ export const getBaseUrl = () =>
 
 const STORAGE_KEY = "neyma_user";
 const ACCESS_TOKEN_KEY = "neyma_access_token";
+const GUEST_SESSION_KEY = "neyma_guest_session";
 
 type StoredUser = {
   email: string;
@@ -71,6 +72,11 @@ function authHeaders(headers?: HeadersInit): Headers {
   if (token) {
     next.set("Authorization", `Bearer ${token}`);
   }
+  const guestSessionId =
+    typeof window !== "undefined" ? window.localStorage.getItem(GUEST_SESSION_KEY) : null;
+  if (!token && guestSessionId) {
+    next.set("X-Neyma-Guest-Session", guestSessionId);
+  }
   const user = getStoredUser();
   if (user?.email && user.email.endsWith("@neyma.local")) {
     next.set("X-Neyma-User-Email", user.email);
@@ -99,6 +105,15 @@ async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
     ...init,
     headers: authHeaders(init?.headers),
   });
+}
+
+function maybePersistGuestSession(payload: unknown) {
+  if (typeof window === "undefined" || !payload || typeof payload !== "object") return;
+  const guestSessionId =
+    "guest_session_id" in payload ? String((payload as { guest_session_id?: string | null }).guest_session_id || "").trim() : "";
+  if (guestSessionId) {
+    window.localStorage.setItem(GUEST_SESSION_KEY, guestSessionId);
+  }
 }
 
 function timeoutSignal(ms: number): AbortSignal {
@@ -405,7 +420,9 @@ export async function getAccessState(): Promise<AccessState> {
   if (!res.ok) {
     throw await parseError(res);
   }
-  return res.json();
+  const payload = await res.json();
+  maybePersistGuestSession(payload);
+  return payload;
 }
 
 export async function bootstrapGuestSession(): Promise<AccessState> {
@@ -413,7 +430,9 @@ export async function bootstrapGuestSession(): Promise<AccessState> {
   if (!res.ok) {
     throw await parseError(res);
   }
-  return res.json();
+  const payload = await res.json();
+  maybePersistGuestSession(payload);
+  return payload;
 }
 
 export async function getWorkspaceMembers(): Promise<{ items: Array<Record<string, unknown>> }> {

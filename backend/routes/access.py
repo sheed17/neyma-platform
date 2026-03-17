@@ -21,12 +21,18 @@ class InviteMemberRequest(BaseModel):
 
 @router.post("/guest-session")
 def bootstrap_guest_session(request: Request):
-    return access_state_for_request(request)
+    payload = access_state_for_request(request)
+    if getattr(request.state, "is_guest", False):
+        payload["guest_session_id"] = getattr(request.state, "guest_session_id", None)
+    return payload
 
 
 @router.get("/me")
 def get_access_me(request: Request):
-    return access_state_for_request(request)
+    payload = access_state_for_request(request)
+    if getattr(request.state, "is_guest", False):
+        payload["guest_session_id"] = getattr(request.state, "guest_session_id", None)
+    return payload
 
 
 @router.get("/workspace/members")
