@@ -31,13 +31,22 @@ from backend.routes.qa import router as qa_router
 from backend.services.job_worker import start_worker, stop_worker
 from pipeline.db import init_db
 
+RUN_EMBEDDED_WORKER = os.getenv("RUN_EMBEDDED_WORKER", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    start_worker()
+    if RUN_EMBEDDED_WORKER:
+        start_worker()
     yield
-    stop_worker()
+    if RUN_EMBEDDED_WORKER:
+        stop_worker()
 
 
 app = FastAPI(
