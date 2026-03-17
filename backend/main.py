@@ -37,6 +37,16 @@ RUN_EMBEDDED_WORKER = os.getenv("RUN_EMBEDDED_WORKER", "").strip().lower() in {
     "yes",
     "on",
 }
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+
+def _get_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "")
+    extra = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return list(dict.fromkeys([*DEFAULT_CORS_ORIGINS, *extra]))
 
 
 @asynccontextmanager
@@ -59,7 +69,7 @@ app = FastAPI(
 app.add_middleware(LocalIdentityMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
