@@ -18,7 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 
 type AuthMode = "login" | "signup" | "reset";
-type RegistrationStep = "details" | "verification" | "complete";
+type RegistrationStep = "details" | "complete";
 
 type AuthSuccessData = {
   email: string;
@@ -33,6 +33,9 @@ interface AuthFormProps {
   onLogin?: (payload: { email: string; password: string; rememberMe: boolean }) => Promise<void>;
   onSignup?: (payload: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
   onResetPassword?: (payload: { email: string }) => Promise<void>;
+  onUseTestAccount?: () => Promise<void>;
+  testAccountLabel?: string;
+  testAccountHint?: string;
 }
 
 interface FormData {
@@ -149,6 +152,9 @@ export function AuthForm({
   onLogin,
   onSignup,
   onResetPassword,
+  onUseTestAccount,
+  testAccountLabel = "Use test account",
+  testAccountHint = "Local shortcut for workspace access",
 }: AuthFormProps) {
   const [authMode, setAuthMode] = useState<AuthMode>(initialMode);
   const [registrationStep, setRegistrationStep] = useState<RegistrationStep>("details");
@@ -238,16 +244,6 @@ export function AuthForm({
             error = "Please enter a valid phone number";
           }
           break;
-        case "verificationCode":
-          if (
-            typeof value === "string" &&
-            authMode === "signup" &&
-            registrationStep === "verification" &&
-            !/^\d{6}$/.test(value)
-          ) {
-            error = "Verification code must be 6 digits";
-          }
-          break;
         case "agreeToTerms":
           if (authMode === "signup" && !value) {
             error = "You must agree to the terms and conditions";
@@ -259,7 +255,7 @@ export function AuthForm({
 
       return error;
     },
-    [authMode, formData.password, registrationStep]
+    [authMode, formData.password]
   );
 
   const handleInputChange = useCallback(
@@ -293,10 +289,6 @@ export function AuthForm({
     if (authMode === "signup") {
       fieldsToValidate.push("name", "confirmPassword", "agreeToTerms");
     }
-    if (registrationStep === "verification") {
-      fieldsToValidate.push("verificationCode");
-    }
-
     fieldsToValidate.forEach((field) => {
       const error = validateField(field, formData[field]);
       if (error) newErrors[field] = error;
@@ -304,7 +296,7 @@ export function AuthForm({
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  }, [authMode, formData, registrationStep, validateField]);
+  }, [authMode, formData, validateField]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -336,25 +328,20 @@ export function AuthForm({
         setSuccessMessage("Login successful");
         onSuccess?.({ email: formData.email.trim() });
       } else if (authMode === "signup") {
-        if (registrationStep === "details") {
-          setRegistrationStep("verification");
-          setSuccessMessage("Account details saved. Enter the verification code to continue.");
-        } else if (registrationStep === "verification") {
-          if (onSignup) {
-            await onSignup({
-              name: formData.name.trim(),
-              email: formData.email.trim(),
-              password: formData.password,
-              phone: formData.phone.trim() || undefined,
-            });
-          } else {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-
-          setRegistrationStep("complete");
-          setSuccessMessage("Account created successfully");
-          onSuccess?.({ email: formData.email.trim(), name: formData.name.trim() });
+        if (onSignup) {
+          await onSignup({
+            name: formData.name.trim(),
+            email: formData.email.trim(),
+            password: formData.password,
+            phone: formData.phone.trim() || undefined,
+          });
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
         }
+
+        setRegistrationStep("complete");
+        setSuccessMessage("Account created successfully");
+        onSuccess?.({ email: formData.email.trim(), name: formData.name.trim() });
       } else if (authMode === "reset") {
         if (onResetPassword) {
           await onResetPassword({ email: formData.email.trim() });
@@ -369,6 +356,25 @@ export function AuthForm({
         error instanceof Error && error.message
           ? error.message
           : "Authentication failed. Please try again.";
+      setErrors({ general: message });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleUseTestAccount = async () => {
+    if (!onUseTestAccount) return;
+    resetMessages();
+    setIsLoading(true);
+    try {
+      await onUseTestAccount();
+      setSuccessMessage("Test account ready");
+      onSuccess?.({ email: "test@neyma.local", name: "Neyma Test" });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Couldn't open the test account right now.";
       setErrors({ general: message });
     } finally {
       setIsLoading(false);
@@ -452,66 +458,6 @@ export function AuthForm({
       );
     }
 
-    if (authMode === "signup" && registrationStep === "verification") {
-      return (
-        <div className="space-y-4">
-          <div className="mb-6 text-center">
-            <Mail className="mx-auto mb-3 h-12 w-12 text-primary" />
-            <h3 className="mb-2 text-xl font-semibold">Verify Your Email</h3>
-            <p className="text-sm text-muted-foreground">
-              We&apos;ve sent a 6-digit code to <span className="font-medium">{formData.email}</span>
-            </p>
-          </div>
-
-          <div className="relative">
-            <input
-              type="text"
-              placeholder="Enter 6-digit code"
-              value={formData.verificationCode}
-              onChange={(e) => {
-                const value = e.target.value.replace(/\D/g, "").slice(0, 6);
-                handleInputChange("verificationCode", value);
-              }}
-              onBlur={() => handleFieldBlur("verificationCode")}
-              className={cn(
-                "w-full rounded-xl border bg-muted/50 px-4 py-3 text-center font-mono text-2xl tracking-widest placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20",
-                errors.verificationCode ? "border-destructive" : "border-input"
-              )}
-              maxLength={6}
-              aria-label="Verification Code"
-              aria-describedby={errors.verificationCode ? "code-error" : undefined}
-            />
-            {renderFieldError("code-error", errors.verificationCode, true)}
-          </div>
-
-          <button
-            type="submit"
-            disabled={isLoading || formData.verificationCode.length !== 6}
-            className={cn(
-              "w-full rounded-xl bg-primary px-6 py-3 font-medium text-primary-foreground transition-all hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
-            )}
-          >
-            <span className="flex items-center justify-center gap-2">
-              {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : "Verify Email"}
-            </span>
-          </button>
-
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={() => {
-                setRegistrationStep("details");
-                resetMessages();
-              }}
-              className="text-sm text-primary transition-colors hover:text-primary/80"
-            >
-              Back to Details
-            </button>
-          </div>
-        </div>
-      );
-    }
-
     if (authMode === "signup" && registrationStep === "complete") {
       return (
         <div className="space-y-6 text-center">
@@ -534,7 +480,7 @@ export function AuthForm({
 
           <div>
             <h3 className="mb-2 text-2xl font-bold">Welcome Aboard</h3>
-            <p className="text-muted-foreground">Your account has been created successfully.</p>
+            <p className="text-muted-foreground">Your account is set up. Check your email to confirm it, then log in to open the workspace.</p>
           </div>
 
           <button
@@ -544,7 +490,7 @@ export function AuthForm({
               "w-full rounded-xl bg-primary px-6 py-3 font-medium text-primary-foreground hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-primary/20"
             )}
           >
-            Get Started
+            Go to Login
           </button>
         </div>
       );
@@ -744,6 +690,25 @@ export function AuthForm({
             )}
           </span>
         </button>
+
+        {onUseTestAccount ? (
+          <div className="rounded-xl border border-border bg-muted/40 px-4 py-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-foreground">{testAccountLabel}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{testAccountHint}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleUseTestAccount()}
+                disabled={isLoading}
+                className="inline-flex w-full items-center justify-center rounded-xl border border-input bg-background px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-muted/60 disabled:opacity-50 sm:w-auto"
+              >
+                Open test account
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   };

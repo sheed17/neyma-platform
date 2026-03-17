@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
+from backend.access import require_signed_in
 from backend.models.schemas import (
     DiagnosticListItem,
     DiagnosticListResponse,
@@ -43,6 +44,17 @@ def _pick_string(*values: Any) -> str | None:
         txt = str(val).strip()
         if txt:
             return txt
+    return None
+
+
+def _pick_float(*values: Any) -> float | None:
+    for val in values:
+        if val is None or val == "":
+            continue
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            continue
     return None
 
 
@@ -493,18 +505,21 @@ def _brief_pdf_lines(resp: Dict[str, Any]) -> List[str]:
 
 @router.get("/outcomes/summary")
 def outcomes_summary(request: Request):
+    require_signed_in(request, message="Create a free account to view workspace outcomes.")
     user_id = getattr(request.state, "user_id", 1)
     return get_outcome_summary_for_user(user_id)
 
 
 @router.get("/outcomes")
 def outcomes_list(request: Request, limit: int = Query(default=200, ge=1, le=1000)):
+    require_signed_in(request, message="Create a free account to view workspace outcomes.")
     user_id = getattr(request.state, "user_id", 1)
     return {"items": list_outcomes_for_user(user_id, limit=limit)}
 
 
 @router.post("/{diagnostic_id}/share")
 def create_share_link(diagnostic_id: int, request: Request):
+    require_signed_in(request, message="Create a free account to share briefs.")
     user_id = getattr(request.state, "user_id", 1)
     row = get_diagnostic(diagnostic_id, user_id)
     if not row:
@@ -527,6 +542,7 @@ def create_share_link(diagnostic_id: int, request: Request):
 
 @router.get("/{diagnostic_id}/brief.pdf")
 def diagnostic_brief_pdf(diagnostic_id: int, request: Request):
+    require_signed_in(request, message="Create a free account to export briefs.")
     user_id = getattr(request.state, "user_id", 1)
     row = get_diagnostic(diagnostic_id, user_id)
     if not row:
@@ -549,6 +565,7 @@ def list_all(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
+    require_signed_in(request, message="Create a free account to reopen saved briefs.")
     user_id = getattr(request.state, "user_id", 1)
     rows = list_diagnostics(user_id, limit=limit, offset=offset)
     total = count_diagnostics(user_id)
@@ -558,6 +575,19 @@ def list_all(
         resp = row.get("response", {})
         brief = resp.get("brief", {}) or {}
         ed = brief.get("executive_diagnosis", {}) or {}
+        signals = resp.get("signals", {}) if isinstance(resp.get("signals"), dict) else {}
+        brief_snapshot = brief.get("competitive_snapshot", {}) if isinstance(brief.get("competitive_snapshot"), dict) else {}
+        rating = _pick_float(
+            resp.get("rating"),
+            resp.get("signal_rating"),
+            signals.get("signal_rating"),
+            signals.get("rating"),
+        )
+        local_avg_rating = _pick_float(
+            resp.get("local_avg_rating"),
+            signals.get("local_avg_rating"),
+            brief_snapshot.get("local_avg_rating"),
+        )
 
         items.append(DiagnosticListItem(
             id=row["id"],
@@ -566,6 +596,8 @@ def list_all(
             state=row.get("state"),
             place_id=row.get("place_id"),
             created_at=row["created_at"],
+            rating=rating,
+            local_avg_rating=local_avg_rating,
             opportunity_profile=resp.get("opportunity_profile"),
             constraint=resp.get("constraint"),
             modeled_revenue_upside=ed.get("modeled_revenue_upside"),
@@ -592,6 +624,7 @@ def get_one(diagnostic_id: int, request: Request):
 
 @router.delete("/{diagnostic_id}")
 def remove(diagnostic_id: int, request: Request):
+    require_signed_in(request, message="Create a free account to manage saved briefs.")
     user_id = getattr(request.state, "user_id", 1)
     deleted = delete_diagnostic(diagnostic_id, user_id)
     if not deleted:

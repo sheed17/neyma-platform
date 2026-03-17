@@ -15,6 +15,7 @@ import {
   recordOutcome,
   submitDiagnostic,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import type { DiagnosticResponse, ProspectList } from "@/lib/types";
 import { computeVerdict } from "@/lib/verdict";
 import { generateObservationBullets, generateOpportunityFocus, generateWhyNow } from "@/lib/pitch";
@@ -26,6 +27,7 @@ import ListPickerModal from "@/app/components/ListPickerModal";
 
 type SignalTab = "overview" | "competitors" | "siteGaps" | "fullAudit";
 type OutreachAction = "Called" | "Left VM" | "Emailed" | "No Answer";
+const OUTREACH_ACTIONS: OutreachAction[] = ["Called", "Left VM", "Emailed", "No Answer"];
 
 type CompetitorRow = {
   name: string;
@@ -275,11 +277,54 @@ function contactFormState(
 
 function crawlMethodLabel(raw: unknown): string {
   const v = String(raw || "").trim().toLowerCase();
-  if (v === "hybrid_playwright_landing_only") return "Rendered homepage check";
-  if (v === "playwright") return "Rendered page check";
-  if (v === "requests") return "Page source check";
-  if (v === "requests_fallback_playwright_unavailable") return "Page source check";
+  if (v === "hybrid_playwright_landing_only") return "Enhanced homepage review";
+  if (v === "playwright") return "Enhanced page review";
+  if (v === "requests") return "Standard page review";
+  if (v === "requests_fallback_playwright_unavailable") return "Standard page review";
   return "Page check";
+}
+
+function coverageWarningLabel(raw: unknown): string {
+  const text = String(raw || "").trim();
+  if (!text) return "Some page checks were limited during this review.";
+  return text
+    .replace(/playwright/gi, "enhanced page checks")
+    .replace(/static-only/gi, "standard")
+    .replace(/crawling/gi, "checking pages")
+    .replace(/crawl/gi, "page check")
+    .replace(/rendered page/gi, "enhanced page")
+    .replace(/scanned pages/gi, "pages checked");
+}
+
+function formatMarketContextValue(label: "density" | "visibility" | "servicePages" | "form" | "website", value: unknown): string {
+  if (label === "density") {
+    const text = String(value || "—").trim();
+    if (!text || text === "—") return "—";
+    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+  }
+  if (label === "visibility") {
+    const text = String(value || "—").trim().toLowerCase();
+    if (!text || text === "—") return "—";
+    if (text === "low") return "Limited";
+    if (text === "medium") return "Moderate";
+    if (text === "high") return "Strong";
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+  if (label === "servicePages") {
+    const count = Number(value || 0);
+    return Number.isFinite(count) ? `${count}` : "—";
+  }
+  if (label === "form") {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text || text === "unknown") return "Not confirmed";
+    if (text === "single_step") return "Single-step form";
+    if (text === "multi_step") return "Multi-step form";
+    return text.replace(/[_-]+/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  }
+  if (label === "website") {
+    return value ? "Website available" : "No website";
+  }
+  return String(value || "—");
 }
 
 function urlTitle(url: string): string {
@@ -368,6 +413,7 @@ export default function DiagnosticDetailPage() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { access } = useAuth();
   const id = Number(params.id);
   const invalidId = !id || Number.isNaN(id);
   const from = String(searchParams.get("from") || "").toLowerCase();
@@ -398,6 +444,10 @@ export default function DiagnosticDetailPage() {
   const [loggingOutreach, setLoggingOutreach] = useState(false);
   const [activeCtaType, setActiveCtaType] = useState<CtaTypeRow["type"] | null>(null);
   const [ctaDrawerOpen, setCtaDrawerOpen] = useState(false);
+  const canUseWorkspace = access?.can_use.workspace !== false;
+  const canSave = access?.can_use.save !== false;
+  const canShare = access?.can_use.share !== false;
+  const canExport = access?.can_use.export !== false;
 
   const headerRef = useRef<HTMLDivElement | null>(null);
 
@@ -410,6 +460,10 @@ export default function DiagnosticDetailPage() {
   }, [id, invalidId]);
 
   useEffect(() => {
+    if (!canSave) {
+      setLists([]);
+      return;
+    }
     let cancelled = false;
     async function loadLists() {
       const data = await getProspectLists().catch(() => ({ items: [] }));
@@ -419,7 +473,7 @@ export default function DiagnosticDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canSave]);
 
   useEffect(() => {
     function onScrollOrResize() {
@@ -817,16 +871,16 @@ export default function DiagnosticDetailPage() {
   const activeCtaPageCount = activeCtaPages.length;
 
   return (
-    <div className="mx-auto max-w-7xl px-2 pb-24 md:px-4">
-      <main className="space-y-4">
-        <p className="text-sm text-[var(--text-muted)]">
+    <div className="mx-auto max-w-[var(--max-content)] px-3 pb-24 sm:px-4 lg:px-6">
+      <main className="space-y-5 lg:space-y-6">
+        <p className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--text-muted)] sm:text-sm sm:normal-case sm:tracking-normal">
           <Link href={navContext.backHref} className="app-link">{navContext.crumbLabel}</Link>
           <span> → </span>
           <span>{result.business_name}</span>
         </p>
 
         {(notice || error) && (
-          <Card className="p-3">
+          <Card className="rounded-[22px] border border-[var(--border-default)] p-4">
             {notice && (
               <div className="flex flex-wrap items-center gap-2 text-sm text-emerald-700">
                 <span>{notice}</span>
@@ -838,10 +892,10 @@ export default function DiagnosticDetailPage() {
         )}
 
         <div ref={headerRef}>
-          <Card className="border border-[var(--border-default)] bg-[var(--bg-card)] p-4 md:p-5">
-            <div className="space-y-4 md:space-y-5">
+          <Card className="rounded-[28px] border border-[var(--border-default)] bg-[var(--bg-card)] p-5 sm:p-6 lg:p-7">
+            <div className="space-y-5 lg:space-y-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0 flex-1 space-y-3">
+                <div className="min-w-0 flex-1 space-y-4">
                   <button
                     type="button"
                     onClick={handleBack}
@@ -856,9 +910,9 @@ export default function DiagnosticDetailPage() {
                     <HeroPill tone="neutral">{opportunitySignal}</HeroPill>
                   </div>
 
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     <h1 className="page-title text-[clamp(2rem,4vw,2.75rem)]">{result.business_name}</h1>
-                    <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--text-secondary)]">
                       <span>{result.city}{result.state ? `, ${result.state}` : ""}</span>
                       {(websiteHref || phoneHref) ? <span>•</span> : null}
                       {websiteHref ? (
@@ -878,13 +932,23 @@ export default function DiagnosticDetailPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="primary" onClick={() => setAddListOpen(true)}>Add to Pipeline</Button>
-                  <Button onClick={() => setOutreachOpen(true)} className="border-[var(--border-default)]">Log Outreach</Button>
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+                  {canSave ? (
+                    <Button variant="primary" onClick={() => setAddListOpen(true)} className="w-full sm:w-auto">Add to Pipeline</Button>
+                  ) : null}
+                  {canUseWorkspace ? (
+                    <Button onClick={() => setOutreachOpen(true)} className="w-full border-[var(--border-default)] sm:w-auto">Log Outreach</Button>
+                  ) : null}
                 </div>
               </div>
 
-              <div className="grid gap-2 lg:grid-cols-5">
+              {!canUseWorkspace ? (
+                <div className="rounded-[20px] border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                  Create a free account to save this brief, log outreach, share it, or export the PDF.
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                 <HeroSignalCell label="Reviews count" value={reviewCount ? String(reviewCount) : "—"} />
                 <HeroSignalCell
                   label="Review delta vs nearest"
@@ -895,18 +959,18 @@ export default function DiagnosticDetailPage() {
                 <HeroSignalCell label="Geo intent coverage" value={geoCoverage} />
               </div>
 
-              <div className="flex flex-col gap-3 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-col gap-3 rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="space-y-1">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">Top Gap</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Top Gap</p>
                   <p className="text-base font-medium text-[var(--text-primary)]">{topGap}</p>
                 </div>
-                <span className="inline-flex items-center rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-medium text-amber-700">
+                <span className="inline-flex items-center rounded-full border border-[var(--border-default)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)]">
                   {summaryFocus}
                 </span>
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
-                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                <section className="rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] p-5">
                   <div className="flex items-center justify-between gap-3">
                     <p className="section-kicker">Why now</p>
                     <span className="text-xs text-[var(--text-secondary)]">{whyNow}</span>
@@ -921,7 +985,7 @@ export default function DiagnosticDetailPage() {
                   </ul>
                 </section>
 
-                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                <section className="rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] p-5">
                   <div className="flex items-center justify-between gap-3">
                     <p className="section-kicker">Competitors nearby</p>
                     <span className="text-xs text-[var(--text-secondary)]">
@@ -955,7 +1019,7 @@ export default function DiagnosticDetailPage() {
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
-                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                <section className="rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] p-5">
                   <p className="section-kicker">Capture verification</p>
                   <div className="mt-3 space-y-3">
                     {heroVerificationItems.map((item) => (
@@ -964,7 +1028,7 @@ export default function DiagnosticDetailPage() {
                   </div>
                 </section>
 
-                <section className="rounded-[16px] bg-[var(--surface)] p-4">
+                <section className="rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] p-5">
                   <p className="section-kicker">Recommendation</p>
                   <p className="mt-3 text-sm leading-6 text-[var(--text-primary)]">{recommendationSummary}</p>
                   <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">{recommendationDetail}</p>
@@ -980,17 +1044,17 @@ export default function DiagnosticDetailPage() {
           </Card>
         </div>
 
-        <Card className="p-4">
-          <div className="mb-3 flex flex-wrap gap-2">
+        <Card className="rounded-[28px] border border-[var(--border-default)] p-4 sm:p-5 lg:p-6">
+          <div className="mb-4 flex flex-wrap gap-2">
             <TabButton active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>Overview</TabButton>
             <TabButton active={activeTab === "competitors"} onClick={() => setActiveTab("competitors")}>Competitors</TabButton>
             <TabButton active={activeTab === "siteGaps"} onClick={() => setActiveTab("siteGaps")}>Site Gaps</TabButton>
             <TabButton active={activeTab === "fullAudit"} onClick={() => setActiveTab("fullAudit")}>Full Audit</TabButton>
           </div>
           {activeCtaRow && (
-            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-[20px] border border-[#4f79c7]/16 bg-[linear-gradient(135deg,rgba(79,121,199,0.08)_0%,rgba(242,191,47,0.08)_100%)] px-3 py-3">
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] px-4 py-3">
               <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Active filter</span>
-              <span className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-3 py-1.5 text-xs font-medium text-[var(--text-primary)]">
+              <span className="inline-flex items-center gap-2 rounded-full border border-[var(--border-default)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--text-primary)]">
                 CTA: {activeCtaRow.type}
                 <button
                   type="button"
@@ -1011,22 +1075,22 @@ export default function DiagnosticDetailPage() {
           )}
 
           {activeTab === "overview" && (
-            <div className="space-y-3 text-sm">
-              <Card className="border border-slate-200 p-4">
+            <div className="space-y-4 text-sm">
+              <Card className="rounded-[22px] border border-[var(--border-default)] p-5">
                 <p className="section-kicker">Overview</p>
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">
                   Core lead context now lives above the fold. Use the tabs to go deeper into nearby competitors, verified site gaps, and the full audit trail.
                 </p>
                 {modeledUpside.mode === "range" ? (
-                  <div className="mt-4 rounded-xl border border-[#4f79c7]/20 bg-[#4f79c7]/6 px-3 py-3 text-xs text-slate-700">
-                    <p><span className="text-slate-500">Annual upside:</span> <span className="font-semibold">{modeledUpside.value}</span></p>
-                    <p className="mt-1 text-slate-600">{modeledUpside.context}</p>
+                  <div className="mt-4 rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] px-4 py-4 text-xs text-[var(--text-secondary)]">
+                    <p><span className="text-[var(--text-muted)]">Annual upside:</span> <span className="font-semibold text-[var(--text-primary)]">{modeledUpside.value}</span></p>
+                    <p className="mt-1">{modeledUpside.context}</p>
                   </div>
                 ) : null}
                 {!hasWebsite ? (
-                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-                    <h3 className="text-sm font-semibold text-slate-900">What Neyma can confirm without a website</h3>
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-700">
+                  <div className="mt-4 rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] px-4 py-4">
+                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">What Neyma can confirm without a website</h3>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-[var(--text-secondary)]">
                       {noWebsiteConfirmed.map((item, i) => <li key={i}>{item}</li>)}
                     </ul>
                   </div>
@@ -1036,16 +1100,16 @@ export default function DiagnosticDetailPage() {
           )}
 
           {activeTab === "competitors" && (
-            <div className="space-y-3 text-sm">
+            <div className="space-y-4 text-sm">
               <div className="grid gap-3 md:grid-cols-3">
                 <MetricCard label="Market Density" value={String(mp?.market_density || result.market_density || "—")} />
                 <MetricCard label="Review Delta vs Nearest" value={nearestReviews > 0 ? `${reviewDelta >= 0 ? "+" : ""}${reviewDelta}` : "—"} />
                 <MetricCard label="Local Avg Reviews" value={localAvgReviews ? String(localAvgReviews) : "—"} />
               </div>
 
-              <div className="overflow-x-auto rounded-md border border-slate-200">
+              <div className="overflow-x-auto rounded-[22px] border border-[var(--border-default)]">
                 <table className="min-w-full text-left text-xs sm:text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
+                  <thead className="bg-[var(--surface)] text-[var(--text-secondary)]">
                     <tr>
                       <th className="px-3 py-2 font-medium">Practice</th>
                       <th className="px-3 py-2 font-medium">Reviews</th>
@@ -1055,50 +1119,50 @@ export default function DiagnosticDetailPage() {
                   </thead>
                   <tbody>
                     {competitorRows.map((row, idx) => (
-                      <tr key={`${row.name}-${idx}`} className={`border-t border-slate-200 ${row.isYou ? "bg-zinc-100/70" : "bg-white"}`}>
-                        <td className="px-3 py-2 font-medium text-slate-900">{row.name}{row.isYou ? " (You)" : ""}</td>
+                      <tr key={`${row.name}-${idx}`} className={`border-t border-[var(--border-default)] ${row.isYou ? "bg-[var(--surface)]" : "bg-white"}`}>
+                        <td className="px-3 py-2 font-medium text-[var(--text-primary)]">{row.name}{row.isYou ? " (You)" : ""}</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-2">
                             <span className="w-10 text-right tabular-nums">{row.reviews || "—"}</span>
                             <div className="h-2 w-28 rounded bg-slate-100">
-                              <div className={`h-2 rounded ${row.isYou ? "bg-zinc-700" : "bg-slate-400"}`} style={{ width: `${pct(row.reviews, maxReviews)}%` }} />
+                              <div className={`h-2 rounded ${row.isYou ? "bg-[var(--text-primary)]" : "bg-[var(--primary)]/45"}`} style={{ width: `${pct(row.reviews, maxReviews)}%` }} />
                             </div>
                           </div>
                         </td>
                         <td className="px-3 py-2">{row.distance}</td>
-                        <td className="px-3 py-2 text-slate-700">{row.note}</td>
+                        <td className="px-3 py-2 text-[var(--text-secondary)]">{row.note}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
 
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-slate-700">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Key Insight</p>
+              <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] p-4 text-[var(--text-secondary)]">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Key Insight</p>
                 <p className="mt-1">{verdict.reasons[0] || "Competitive pressure appears moderate; prioritize converting existing demand."}</p>
               </div>
             </div>
           )}
 
           {activeTab === "siteGaps" && (
-            <div className="space-y-3 text-sm">
+            <div className="space-y-4 text-sm">
               <div className="grid gap-3 md:grid-cols-4">
-                <MetricCard label="Pages Crawled" value={String(pagesCrawled || "—")} />
+                <MetricCard label="Pages Checked" value={String(pagesCrawled || "—")} />
                 <MetricCard label="Geo Intent Pages" value={String(geoIntentPages || 0)} />
                 <MetricCard label="Service Pages" value={String(servicePages || 0)} tone={servicePages < 3 ? "danger" : "default"} />
                 <MetricCard label="CTA Elements" value={String(ctaCount || 0)} />
               </div>
 
-              <Card className="border border-slate-200 p-3">
+              <Card className="rounded-[22px] border border-[var(--border-default)] p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-900">Capture Verification</h3>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Neyma shows only what it verified in rendered page content and first-hop booking/contact pages.
+                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">Capture Verification</h3>
+                    <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                      Neyma shows only what it verified in the pages checked and the first booking or contact step it could confirm.
                     </p>
                   </div>
                   {followupPagesChecked.length ? (
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                    <span className="rounded-full border border-[var(--border-default)] bg-[var(--surface)] px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">
                       {followupPagesChecked.length} follow-up page{followupPagesChecked.length === 1 ? "" : "s"} checked
                     </span>
                   ) : null}
@@ -1129,20 +1193,20 @@ export default function DiagnosticDetailPage() {
                     note="Homepage tap-to-call detection."
                   />
                   <CaptureReadinessRow
-                    label="Rendered Page Check"
+                    label="Enhanced Page Review"
                     status={usesPlaywrightPath ? "Used in this scan" : "Not used in this scan"}
                     icon={usesPlaywrightPath ? "✓" : "✕"}
                     note={usesPlaywrightPath
-                      ? "Neyma used a rendered page check where needed during capture verification."
-                      : "This scan relied on page-source checks only."}
+                      ? "Neyma used enhanced page verification where needed during this review."
+                      : "This review relied on standard page verification only."}
                   />
                 </div>
-                <div className="mt-3 rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-3">
+                <div className="mt-3 rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] px-4 py-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Verification path</p>
-                    <span className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-slate-700">
-                      {verificationSummary}
-                    </span>
+                      <span className="rounded-full border border-[var(--border-default)] bg-white px-2 py-1 text-[10px] font-medium text-[var(--text-secondary)]">
+                        {verificationSummary}
+                      </span>
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     <CapturePagePill page={homepagePage} tone="primary" />
@@ -1159,7 +1223,7 @@ export default function DiagnosticDetailPage() {
                           .filter((value) => value && value !== "Not verified in this scan")
                           .slice(0, 3)
                           .map((value) => (
-                            <span key={value} className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700">
+                            <span key={value} className="rounded-full border border-[var(--border-default)] bg-white px-2.5 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
                               {flowOutcomeLabel(value)}
                             </span>
                           ))}
@@ -1170,9 +1234,9 @@ export default function DiagnosticDetailPage() {
               </Card>
 
               {!usesPlaywrightPath ? (
-                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900">
-                  <p className="text-xs font-semibold uppercase tracking-wide">Accuracy Note</p>
-                  <p className="mt-1 text-sm">{crawlWarning || "Playwright was unavailable; this run used static crawl signals only."}</p>
+                <div className="rounded-[18px] border border-amber-200 bg-amber-50 p-4 text-amber-900">
+                  <p className="text-xs font-semibold uppercase tracking-wide">Coverage Note</p>
+                  <p className="mt-1 text-sm">{coverageWarningLabel(crawlWarning)}</p>
                 </div>
               ) : null}
             </div>
@@ -1180,64 +1244,64 @@ export default function DiagnosticDetailPage() {
 
           {activeTab === "fullAudit" && (
             <div className="space-y-4 text-sm">
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div className="rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] p-4">
                 <div className="flex flex-wrap items-center gap-3">
                   <MetaChip label="Pages" value={String(pagesCrawled || 0)} />
                   <MetaChip label="JS Detected" value={jsDetected ? "Yes" : "No"} tone="badge" />
                   <MetaChip label="Method" value={crawlMethodLabel(svc.crawl_method)} />
                 </div>
                 {!usesPlaywrightPath ? (
-                  <p className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900">
-                    Static-only crawl warning: {crawlWarning || "Playwright unavailable for this run."}
+                  <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+                    Verification note: {coverageWarningLabel(crawlWarning)}
                   </p>
                 ) : null}
               </div>
 
               <section className="grid gap-3 lg:grid-cols-2">
-                <Card className="border border-slate-200 p-3">
-                  <h3 className="text-sm font-semibold text-slate-900">Reviews & Reputation</h3>
-                  <ul className="mt-2 space-y-1 text-slate-700">
+                <Card className="rounded-[22px] border border-[var(--border-default)] p-4">
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">Reviews & Reputation</h3>
+                  <ul className="mt-2 space-y-1 text-[var(--text-secondary)]">
                     <li>Your reviews vs avg: <strong>{reviewCount || "—"} vs {localAvgReviews || "—"}</strong></li>
                     <li>Last review date: <strong>{(ds as Record<string, unknown>).last_review_days_ago != null ? `${String((ds as Record<string, unknown>).last_review_days_ago)} days ago` : "—"}</strong></li>
                     <li>Competitors sampled: <strong>{String((result.evidence || []).find((e) => String(e.label || "").toLowerCase().includes("reviews vs market")) ? competitorRows.length - 1 : competitorRows.length - 1)}</strong></li>
                   </ul>
-                  <div className="mt-2 rounded border border-slate-200 bg-slate-50 p-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Review Summary</p>
-                    <p className="mt-1 text-xs text-slate-700">
+                  <div className="mt-3 rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Review Summary</p>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
                       {String((reviewIntel as Record<string, unknown>).summary || "No review-theme summary available for this lead yet.")}
                     </p>
                   </div>
                 </Card>
 
-                <Card className="border border-slate-200 p-3">
-                  <h3 className="text-sm font-semibold text-slate-900">Market Context</h3>
-                  <ul className="mt-2 space-y-1 text-slate-700">
-                    <li>Density: <strong>{String(mp?.market_density || result.market_density || "—")}</strong></li>
-                    <li>Visibility gap: <strong>{String(svc.visibility_gap || svc.high_value_service_leverage || "—")}</strong></li>
-                    <li>Service pages found: <strong>{servicePages}</strong></li>
-                    <li>Form structure: <strong>{String(convStruct.form_single_or_multi_step || "unknown")}</strong></li>
-                    <li>Visibility channel: <strong>{result.website ? "Website present" : "No website"}</strong></li>
+                <Card className="rounded-[22px] border border-[var(--border-default)] p-4">
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">Market Context</h3>
+                  <ul className="mt-2 space-y-1 text-[var(--text-secondary)]">
+                    <li>Market density: <strong>{formatMarketContextValue("density", mp?.market_density || result.market_density || "—")}</strong></li>
+                    <li>Review position: <strong>{formatMarketContextValue("visibility", svc.visibility_gap || svc.high_value_service_leverage || "—")}</strong></li>
+                    <li>Service coverage: <strong>{formatMarketContextValue("servicePages", servicePages)} page{servicePages === 1 ? "" : "s"} found</strong></li>
+                    <li>Contact path: <strong>{formatMarketContextValue("form", convStruct.form_single_or_multi_step || "unknown")}</strong></li>
+                    <li>Website: <strong>{formatMarketContextValue("website", result.website)}</strong></li>
                   </ul>
                 </Card>
               </section>
 
               <section className="space-y-2">
-                <h3 className="text-sm font-semibold text-slate-900">Geo Intent Coverage</h3>
-                <div className="rounded-md border border-slate-200 p-3">
-                  <div className="mb-2 flex items-center justify-between text-xs text-slate-600">
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Geo Intent Coverage</h3>
+                <div className="rounded-[22px] border border-[var(--border-default)] p-4">
+                  <div className="mb-2 flex items-center justify-between text-xs text-[var(--text-secondary)]">
                     <span>{geoIntentPages} of 30 pages</span>
                     <span>{pct(geoIntentPages, 30)}%</span>
                   </div>
-                  <div className="h-2 rounded bg-slate-100">
-                    <div className="h-2 rounded bg-zinc-700" style={{ width: `${pct(geoIntentPages, 30)}%` }} />
+                  <div className="h-2 rounded bg-[var(--surface)]">
+                    <div className="h-2 rounded bg-[var(--text-primary)]" style={{ width: `${pct(geoIntentPages, 30)}%` }} />
                   </div>
                 </div>
 
-                <Card className="border border-slate-200 p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Detected</p>
+                <Card className="rounded-[22px] border border-[var(--border-default)] p-4">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Detected</p>
                   <div className="overflow-x-auto">
                     <table className="min-w-full text-left text-xs sm:text-sm">
-                      <thead className="bg-slate-50 text-slate-600">
+                      <thead className="bg-[var(--surface)] text-[var(--text-secondary)]">
                         <tr>
                           <th className="px-2 py-1.5">Page Title</th>
                           <th className="px-2 py-1.5">URL</th>
@@ -1249,22 +1313,22 @@ export default function DiagnosticDetailPage() {
                         {detectedGeoPages.length ? detectedGeoPages.map((row, idx) => {
                           const highlighted = activeCtaPages.some((page) => urlsMatch(page, row.url));
                           return (
-                          <tr key={`${row.url}-${idx}`} className={`border-t border-slate-200 ${highlighted ? "bg-amber-50/70" : ""}`}>
-                            <td className="px-2 py-1.5 text-slate-900">{row.title}</td>
-                            <td className={`px-2 py-1.5 font-mono text-[11px] ${highlighted ? "text-amber-900" : "text-slate-700"}`}>{row.url}</td>
+                          <tr key={`${row.url}-${idx}`} className={`border-t border-[var(--border-default)] ${highlighted ? "bg-amber-50/70" : ""}`}>
+                            <td className="px-2 py-1.5 text-[var(--text-primary)]">{row.title}</td>
+                            <td className={`px-2 py-1.5 font-mono text-[11px] ${highlighted ? "text-amber-900" : "text-[var(--text-secondary)]"}`}>{row.url}</td>
                             <td className="px-2 py-1.5">
                               <div className="flex flex-wrap gap-1">
                                 {row.signals.includes("city") ? <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] text-zinc-800">📍 city</span> : null}
                                 {row.signals.includes("near-me") ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700">🔍 near-me</span> : null}
                                 {row.signals.includes("schema") ? <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] text-violet-700">🏷 schema</span> : null}
                                 {row.signals.includes("meta") ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800">📝 meta</span> : null}
-                                {!row.signals.length ? <span className="text-slate-400">—</span> : null}
+                                {!row.signals.length ? <span className="text-[var(--text-muted)]">—</span> : null}
                               </div>
                             </td>
                             <td className="px-2 py-1.5">{row.hasCTA ? "Yes" : "No"}</td>
                           </tr>
                         );}) : (
-                          <tr><td className="px-2 py-2 text-slate-500" colSpan={4}>No geo-intent pages captured.</td></tr>
+                          <tr><td className="px-2 py-2 text-[var(--text-muted)]" colSpan={4}>No geo-intent pages captured.</td></tr>
                         )}
                       </tbody>
                     </table>
@@ -1287,8 +1351,8 @@ export default function DiagnosticDetailPage() {
                 </Card>
 
                 {verifiedServiceSignals.length ? (
-                  <Card className="border border-slate-200 p-3">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Service Signal Verification</p>
+                  <Card className="rounded-[22px] border border-[var(--border-default)] p-4">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Service Signal Verification</p>
                     <div className="space-y-1.5">
                       {verifiedServiceSignals.slice(0, 8).map((row, idx) => {
                         const verdictLabel = row.verdict === "missing" ? "Missing" : row.verdict === "present" ? "Present" : "Not evaluated";
@@ -1315,11 +1379,11 @@ export default function DiagnosticDetailPage() {
               </section>
 
               <section className="space-y-2">
-                <h3 className="text-sm font-semibold text-slate-900">CTA Elements</h3>
-                <Card className="border border-slate-200 p-3">
-                  <p className="text-xs text-slate-500">Total CTA elements detected</p>
-                  <p className="text-2xl font-semibold text-slate-900">{ctaCount}</p>
-                  <p className="mt-1 text-xs text-slate-500">Of these, {clickableCtaCount} are clickable links/buttons.</p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">CTA Elements</h3>
+                <Card className="rounded-[22px] border border-[var(--border-default)] p-4">
+                  <p className="text-xs text-[var(--text-muted)]">Total CTA elements detected</p>
+                  <p className="text-2xl font-semibold text-[var(--text-primary)]">{ctaCount}</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">Of these, {clickableCtaCount} are clickable links/buttons.</p>
                   <div className="mt-3 space-y-2">
                     {ctaRows.map((row) => (
                       <button
@@ -1351,8 +1415,8 @@ export default function DiagnosticDetailPage() {
               </section>
 
               <section>
-                <h3 className="mb-2 text-sm font-semibold text-slate-900">Risk Flags</h3>
-                <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+                <h3 className="mb-2 text-sm font-semibold text-[var(--text-primary)]">Risk Flags</h3>
+                <div className="rounded-[22px] border border-amber-200 bg-amber-50 p-4">
                   <div className="flex flex-wrap gap-2">
                     {rawRisks.length ? rawRisks.map((flag, idx) => (
                       <span key={idx} className="rounded border border-amber-300 bg-white px-2 py-1 text-xs text-amber-900">{flag}</span>
@@ -1364,20 +1428,24 @@ export default function DiagnosticDetailPage() {
           )}
         </Card>
 
-        <Card className="p-3 text-xs text-[var(--text-secondary)]">
+        <Card className="rounded-[22px] border border-[var(--border-default)] p-4 text-xs text-[var(--text-secondary)]">
           <div className="flex flex-wrap gap-2">
             <Link href={navContext.backHref} className="app-link">{navContext.backLabel}</Link>
-            <Button onClick={handleShare} disabled={sharing}>{sharing ? "Sharing..." : "Share"}</Button>
-            <a
-              href={getDiagnosticBriefPdfUrl(id)}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-9 items-center rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:bg-slate-50"
-            >
-              Download PDF
-            </a>
+            {canShare ? <Button onClick={handleShare} disabled={sharing}>{sharing ? "Sharing..." : "Share"}</Button> : null}
+            {canExport ? (
+              <a
+                href={getDiagnosticBriefPdfUrl(id)}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-9 items-center rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:bg-slate-50"
+              >
+                Download PDF
+              </a>
+            ) : null}
             <Button onClick={() => handleRerun(false)} disabled={rerunning}>{rerunning ? "Refreshing..." : "Refresh brief"}</Button>
-            <Button onClick={handleDelete} disabled={deleting} className="border-rose-200 text-rose-600 hover:bg-rose-50">Delete</Button>
+            {canUseWorkspace ? (
+              <Button onClick={handleDelete} disabled={deleting} className="border-rose-200 text-rose-600 hover:bg-rose-50">Delete</Button>
+            ) : null}
           </div>
           {shareUrl ? <p className="mt-2 break-all">Share URL: {shareUrl}</p> : null}
         </Card>
@@ -1391,14 +1459,14 @@ export default function DiagnosticDetailPage() {
               <p className="truncate text-[11px] text-[var(--text-muted)]">{opportunitySignal || "Opportunity signal: —"}</p>
             </div>
             <div className="flex gap-2">
-              <Button onClick={() => setAddListOpen(true)}>Add to Pipeline</Button>
-              <Button onClick={() => setOutreachOpen(true)} className="border-[var(--border-default)]">Log Outreach</Button>
+              {canSave ? <Button onClick={() => setAddListOpen(true)}>Add to Pipeline</Button> : null}
+              {canUseWorkspace ? <Button onClick={() => setOutreachOpen(true)} className="border-[var(--border-default)]">Log Outreach</Button> : null}
             </div>
           </div>
         </div>
       )}
 
-      {addListOpen && (
+      {addListOpen && canSave && (
         <ListPickerModal
           open={addListOpen}
           title="Add this prospect to pipeline"
@@ -1412,32 +1480,49 @@ export default function DiagnosticDetailPage() {
         />
       )}
 
-      {outreachOpen && (
+      {outreachOpen && canUseWorkspace && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
-            <h3 className="text-sm font-semibold">Log Outreach</h3>
-            <p className="mt-1 text-xs text-[var(--text-muted)]">Record latest rep action and outcome.</p>
+          <div className="w-full max-w-md rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4 sm:p-5">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Log Outreach</h3>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Record the latest rep action and any quick notes.</p>
 
-            <div className="mt-3 space-y-2">
-              <label className="text-xs font-medium text-[var(--text-muted)]">Outcome</label>
-              <select
-                className="w-full rounded-md border border-[var(--border-default)] bg-white px-2 py-2 text-sm"
-                value={outreachAction}
-                onChange={(e) => setOutreachAction(e.target.value as OutreachAction)}
-              >
-                <option>Called</option>
-                <option>Left VM</option>
-                <option>Emailed</option>
-                <option>No Answer</option>
-              </select>
+            <div className="mt-4 space-y-3">
+              <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] p-3">
+                <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                  Outcome
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {OUTREACH_ACTIONS.map((option) => {
+                    const active = outreachAction === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => setOutreachAction(option)}
+                        className={`rounded-[12px] border px-3 py-2 text-left text-sm transition ${
+                          active
+                            ? "border-[var(--primary)] bg-white font-medium text-[var(--text-primary)]"
+                            : "border-[var(--border-default)] bg-white text-[var(--text-secondary)] hover:border-[var(--ring)]"
+                        }`}
+                      >
+                        {option}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
-              <label className="text-xs font-medium text-[var(--text-muted)]">Notes</label>
-              <textarea
-                className="h-24 w-full rounded-md border border-[var(--border-default)] bg-white px-2 py-2 text-sm"
-                value={outreachNote}
-                onChange={(e) => setOutreachNote(e.target.value)}
-                placeholder="Optional call notes"
-              />
+              <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] p-3">
+                <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                  Notes
+                </label>
+                <textarea
+                  className="h-24 w-full rounded-[12px] border border-[var(--border-default)] bg-white px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--ring)]"
+                  value={outreachNote}
+                  onChange={(e) => setOutreachNote(e.target.value)}
+                  placeholder="Optional notes"
+                />
+              </div>
             </div>
 
             <div className="mt-4 flex justify-end gap-2">

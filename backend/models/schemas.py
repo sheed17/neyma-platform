@@ -199,6 +199,8 @@ class DiagnosticListItem(BaseModel):
     state: Optional[str] = None
     place_id: Optional[str] = None
     created_at: str
+    rating: Optional[float] = None
+    local_avg_rating: Optional[float] = None
     opportunity_profile: Optional[str] = None
     constraint: Optional[str] = None
     modeled_revenue_upside: Optional[str] = None

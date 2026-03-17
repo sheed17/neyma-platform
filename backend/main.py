@@ -18,7 +18,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.middleware.auth import FakeAuthMiddleware
+from backend.middleware.auth import LocalIdentityMiddleware
+from backend.routes.access import router as access_router
 from backend.routes.diagnostic import router as diagnostic_router
 from backend.routes.jobs import router as jobs_router
 from backend.routes.diagnostics import router as diagnostics_router
@@ -46,7 +47,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(FakeAuthMiddleware)
+app.add_middleware(LocalIdentityMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -63,6 +64,7 @@ app.include_router(territory_router)
 app.include_router(public_brief_router)
 app.include_router(ask_router)
 app.include_router(qa_router)
+app.include_router(access_router)
 
 
 @app.get("/health")

@@ -59,3 +59,50 @@ export function categoryEvidence(items: string[]): {
   }
   return out;
 }
+
+export function clientFacingBriefError(message: string | null | undefined, fallback = "We couldn't complete the brief right now. Please try again."): string {
+  const raw = String(message || "").trim();
+  if (!raw) return fallback;
+
+  const normalized = raw.toLowerCase();
+  if (normalized.includes("valid 2-letter us state code")) return raw;
+  if (normalized.includes("timed out")) return "The brief took too long to finish. Please try again.";
+  if (normalized.includes("no job id") || normalized.includes("did not start") || normalized.includes("no diagnostic id")) {
+    return "We couldn't start the brief right now. Please try again.";
+  }
+  if (
+    normalized.includes("playwright")
+    || normalized.includes("crawl")
+    || normalized.includes("crawler")
+    || normalized.includes("pages_crawled")
+    || normalized.includes("rendered")
+  ) {
+    return "We couldn't complete the page checks for this brief. Please try again.";
+  }
+  if (
+    normalized.includes("diagnostic failed")
+    || normalized.includes("brief build failed")
+    || normalized.includes("failed to build brief")
+  ) {
+    return fallback;
+  }
+
+  return raw;
+}
+
+export function clientFacingAuditText(text: string | null | undefined): string {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+
+  return raw
+    .replace(/Not Evaluated\s*\(Low Crawl Confidence\)/gi, "Not evaluated in this review")
+    .replace(/Low Crawl Confidence/gi, "limited page coverage")
+    .replace(/crawl confidence/gi, "coverage confidence")
+    .replace(/pages crawled/gi, "pages checked")
+    .replace(/crawled/gi, "checked")
+    .replace(/scanned pages/gi, "pages checked")
+    .replace(/crawl metadata/gi, "verification details")
+    .replace(/playwright/gi, "enhanced page checks")
+    .replace(/crawling/gi, "checking pages")
+    .replace(/crawl/gi, "page check");
+}

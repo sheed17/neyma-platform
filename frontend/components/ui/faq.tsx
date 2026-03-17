@@ -121,11 +121,11 @@ const FaqItem = React.forwardRef<
       <Button
         variant="ghost"
         onClick={() => setIsOpen(!isOpen)}
-        className="h-auto w-full justify-between px-6 py-4 text-left hover:bg-transparent"
+        className="h-auto w-full items-start justify-between gap-3 px-6 py-4 text-left hover:bg-transparent"
       >
         <h3
           className={cn(
-            "text-base font-medium text-[#6B6B6B] transition-colors duration-200",
+            "min-w-0 flex-1 whitespace-normal break-words pr-1 text-base font-medium text-[#6B6B6B] transition-colors duration-200",
             isOpen && "text-[#0A0A0A]"
           )}
         >

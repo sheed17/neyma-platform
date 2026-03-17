@@ -6,7 +6,7 @@ import { AuthForm } from "@/components/ui/premium-auth";
 import { useAuth } from "@/lib/auth";
 
 export default function RegisterPage() {
-  const { register } = useAuth();
+  const { register, loginAsTestUser } = useAuth();
   const router = useRouter();
 
   return (
@@ -29,11 +29,16 @@ export default function RegisterPage() {
             onSignup={async ({ name, email, password }) => {
               await register(name, email, password);
             }}
+            onUseTestAccount={async () => {
+              await loginAsTestUser();
+            }}
+            testAccountLabel="Skip to test account"
+            testAccountHint="Local shortcut for opening the workspace without verification."
             onSuccess={() => {
-              router.push("/dashboard");
+              router.push("/login");
             }}
             onClose={() => {
-              router.push("/dashboard");
+              router.push("/login");
             }}
           />
         </div>

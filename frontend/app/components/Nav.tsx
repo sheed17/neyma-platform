@@ -2,8 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { checkHealth } from "@/lib/api";
+import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 
 const links = [
@@ -18,14 +17,7 @@ const links = [
 export default function Nav() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
-  const [apiStatus, setApiStatus] = useState<"checking" | "up" | "down">("checking");
   const [mobileOpen, setMobileOpen] = useState(false);
-
-  useEffect(() => {
-    checkHealth()
-      .then(() => setApiStatus("up"))
-      .catch(() => setApiStatus("down"));
-  }, []);
 
   return (
     <header className="border-b border-zinc-200 bg-white px-6 py-3">
@@ -57,17 +49,6 @@ export default function Nav() {
 
         {/* Right: status + user + mobile toggle */}
         <div className="flex items-center gap-4">
-          <div className="hidden items-center gap-2 text-sm sm:flex">
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${
-                apiStatus === "up" ? "bg-emerald-500" : apiStatus === "down" ? "bg-red-500" : "animate-pulse bg-amber-500"
-              }`}
-            />
-            <span className="text-zinc-400">
-              {apiStatus === "up" ? "Connected" : apiStatus === "down" ? "Offline" : "…"}
-            </span>
-          </div>
-
           {user && (
             <div className="hidden items-center gap-3 md:flex">
               <span className="text-sm text-zinc-600">{user.name}</span>

@@ -19,10 +19,10 @@ export function statusBadge(status: CanonicalServiceStatus): {
     case "mention_only":
       return { marker: "🟡", label: "Mentioned on Site", color: "yellow" };
     case "missing":
-      return { marker: "⚪", label: "Not Found in Scan", color: "gray" };
+      return { marker: "⚪", label: "Not Found in Review", color: "gray" };
     case "unknown":
     default:
-      return { marker: "⚪", label: "Not Scanned", color: "gray" };
+      return { marker: "⚪", label: "Not Evaluated", color: "gray" };
   }
 }
 
@@ -33,9 +33,9 @@ export function evidenceLabel(status: CanonicalServiceStatus, url?: string): str
     case "mention_only":
       return "Referenced on site — no standalone page found";
     case "missing":
-      return "No dedicated page found in this scan";
+      return "No dedicated page found in the pages checked";
     case "unknown":
-      return "Could not be evaluated (limited scan access)";
+      return "Could not be evaluated with the page coverage available";
   }
 }
 
@@ -47,20 +47,20 @@ export function scanQualityLabel(crawlConfidence: string, pagesCrawled?: number)
   const n = pagesCrawled ?? 0;
   if (c === "high") {
     return {
-      label: "Thorough Scan",
-      note: n ? `${n} pages scanned` : "Comprehensive site access",
+      label: "Thorough Review",
+      note: n ? `${n} pages checked` : "Strong page coverage",
     };
   }
   if (c === "medium") {
     return {
-      label: "Partial Scan",
+      label: "Partial Review",
       note: n
-        ? `${n} pages scanned — some pages may not have been reachable`
-        : "Some pages may not have been reachable",
+        ? `${n} pages checked — some areas may not have been reached`
+        : "Some areas may not have been reached",
     };
   }
   return {
-    label: "Limited Scan",
-    note: "Very limited access — results may be incomplete",
+    label: "Limited Review",
+    note: "Limited page coverage — results may be incomplete",
   };
 }

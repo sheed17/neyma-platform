@@ -33,19 +33,17 @@ export default function ServiceChecklist({
   const notScanned = resolved.filter((s) => s.status === "unknown");
 
   return (
-    <div className="space-y-3">
-      {/* Scan quality badge */}
-      <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
         <span className="inline-flex items-center rounded-full border border-[var(--border-default)] px-2 py-0.5 font-medium">
           {scanQuality.label}
         </span>
         <span>{scanQuality.note}</span>
       </div>
 
-      {/* SECTION 1: Services Found (always visible, provable) */}
       {found.length > 0 && (
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-default)] p-3">
-          <h3 className="text-sm font-semibold">Services Found on Site</h3>
+        <div className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Services Found on Site</h3>
           <p className="mt-1 text-xs text-[var(--text-muted)]">
             {found.filter((s) => s.status === "dedicated").length} dedicated page{found.filter((s) => s.status === "dedicated").length !== 1 ? "s" : ""} found
             {found.some((s) => s.status === "mention_only")
@@ -61,22 +59,21 @@ export default function ServiceChecklist({
       )}
 
       {found.length === 0 && !lowCrawl && !suppressServiceGap && (
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-default)] p-3">
-          <h3 className="text-sm font-semibold">Services Found on Site</h3>
+        <div className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Services Found on Site</h3>
           <p className="mt-2 text-xs text-[var(--text-secondary)]">
-            No dedicated service pages were found during this scan.
+            No dedicated service pages were found during this review.
           </p>
         </div>
       )}
 
-      {/* SECTION 2: Not Found in Scan (collapsed, hedged) */}
       {notFound.length > 0 && (
-        <details className="rounded-[var(--radius-md)] border border-[var(--border-default)] p-3">
+        <details className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)] p-4">
           <summary className="cursor-pointer text-sm font-semibold text-[var(--text-secondary)]">
-            Not Found in This Scan ({notFound.length})
+            Not Found in This Review ({notFound.length})
           </summary>
           <p className="mt-2 text-xs text-[var(--text-muted)]">
-            These services were not found during our scan. This does not necessarily mean pages don&apos;t exist — they may be behind JavaScript rendering or on pages we couldn&apos;t reach.
+            These services were not found in the pages checked. This does not necessarily mean the pages don&apos;t exist — they may sit outside the page coverage used for this review.
           </p>
           <div className="mt-2 grid gap-1.5 md:grid-cols-2">
             {notFound.map((svc, idx) => (
@@ -89,11 +86,10 @@ export default function ServiceChecklist({
         </details>
       )}
 
-      {/* SECTION 3: Not Scanned (only when crawl was limited) */}
       {notScanned.length > 0 && (
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-default)] bg-zinc-50/50 p-3">
+        <div className="rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] p-4">
           <p className="text-xs text-[var(--text-muted)]">
-            {notScanned.length} service{notScanned.length !== 1 ? "s" : ""} could not be evaluated due to limited scan access.
+            {notScanned.length} service{notScanned.length !== 1 ? "s" : ""} could not be evaluated because page coverage was limited.
           </p>
         </div>
       )}
@@ -106,7 +102,7 @@ function ServiceItem({ name, status, url }: { name: string; status: CanonicalSer
   const evidence = evidenceLabel(status, status === "dedicated" && url ? url : undefined);
 
   return (
-    <details className="rounded-[var(--radius-md)] border border-[var(--border-default)] px-3 py-2">
+    <details className="rounded-[18px] border border-[var(--border-default)] bg-[var(--surface)] px-3 py-3">
       <summary className="flex cursor-pointer items-center justify-between gap-2 text-sm">
         <span className="truncate">
           {badge.marker} {name}

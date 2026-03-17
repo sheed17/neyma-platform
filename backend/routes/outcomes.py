@@ -6,6 +6,8 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
+from backend.access import require_signed_in
+
 router = APIRouter(prefix="/outcomes", tags=["outcomes"])
 
 
@@ -23,7 +25,13 @@ class OutcomeResponse(BaseModel):
 @router.post("", response_model=OutcomeResponse)
 def record_outcome(req: RecordOutcomeRequest, request: Request):
     """Record an outcome for a diagnostic."""
+    require_signed_in(request, message="Create a free account to log outcomes.")
     from pipeline.outcome_tracking import record_outcome, ensure_outcome_tables
+    from pipeline.db import get_diagnostic
+
+    user_id = getattr(request.state, "user_id", 0)
+    if not get_diagnostic(req.diagnostic_id, user_id):
+        raise HTTPException(status_code=404, detail="Diagnostic not found")
 
     valid_types = {"user_reported", "revenue_reported", "conversion_reported"}
     if req.outcome_type not in valid_types:
@@ -38,6 +46,7 @@ def record_outcome(req: RecordOutcomeRequest, request: Request):
 @router.get("/calibration")
 def get_calibration(request: Request):
     """Get model calibration statistics from recorded outcomes."""
+    require_signed_in(request, message="Create a free account to view calibration data.")
     from pipeline.outcome_tracking import get_calibration_stats, ensure_outcome_tables
 
     ensure_outcome_tables()
@@ -48,9 +57,14 @@ def get_calibration(request: Request):
 @router.get("/{diagnostic_id}")
 def get_outcomes(diagnostic_id: int, request: Request):
     """Get all recorded outcomes for a specific diagnostic."""
+    require_signed_in(request, message="Create a free account to view outcomes.")
     from pipeline.outcome_tracking import ensure_outcome_tables
-    from pipeline.db import _get_conn
+    from pipeline.db import _get_conn, get_diagnostic
     import json
+
+    user_id = getattr(request.state, "user_id", 0)
+    if not get_diagnostic(diagnostic_id, user_id):
+        raise HTTPException(status_code=404, detail="Diagnostic not found")
 
     ensure_outcome_tables()
     conn = _get_conn()

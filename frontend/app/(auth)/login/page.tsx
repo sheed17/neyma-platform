@@ -6,7 +6,7 @@ import { AuthForm } from "@/components/ui/premium-auth";
 import { useAuth } from "@/lib/auth";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, loginAsTestUser } = useAuth();
   const router = useRouter();
 
   return (
@@ -29,6 +29,11 @@ export default function LoginPage() {
             onLogin={async ({ email, password }) => {
               await login(email, password);
             }}
+            onUseTestAccount={async () => {
+              await loginAsTestUser();
+            }}
+            testAccountLabel="Use test account"
+            testAccountHint="Local shortcut for reviewing the workspace without signup."
             onSuccess={() => {
               router.push("/dashboard");
             }}

@@ -390,6 +390,8 @@ export type DiagnosticListItem = {
   state?: string | null;
   place_id?: string | null;
   created_at: string;
+  rating?: number | null;
+  local_avg_rating?: number | null;
   opportunity_profile?: string | null;
   constraint?: string | null;
   modeled_revenue_upside?: string | null;
@@ -595,4 +597,53 @@ export type OutcomesListItem = {
   status?: "contacted" | "closed_won" | "closed_lost";
   note?: string | null;
   updated_at?: string | null;
+};
+
+export type PlanTier = "guest" | "free" | "pro" | "team";
+
+export type AccessWorkspace = {
+  id: number;
+  name?: string | null;
+  plan_tier?: PlanTier | string | null;
+  seat_limit?: number | null;
+  seat_count?: number | null;
+  role?: "owner" | "admin" | "member" | string | null;
+  status?: "active" | "invited" | "removed" | string | null;
+};
+
+export type AccessState = {
+  viewer: {
+    user_id: number;
+    email?: string | null;
+    name?: string | null;
+    is_guest: boolean;
+  };
+  plan_tier: PlanTier | string;
+  workspace?: AccessWorkspace | null;
+  usage: {
+    territory_scan: number;
+    diagnostic: number;
+    ask: number;
+  };
+  limits: {
+    territory_scan: number | null;
+    diagnostic: number | null;
+    ask: number | null;
+  };
+  remaining: {
+    territory_scan: number | null;
+    diagnostic: number | null;
+    ask: number | null;
+  };
+  period_key?: string;
+  can_use: {
+    territory_scan: boolean;
+    diagnostic: boolean;
+    ask: boolean;
+    workspace: boolean;
+    save: boolean;
+    share: boolean;
+    export: boolean;
+  };
+  recommended_cta?: string | null;
 };

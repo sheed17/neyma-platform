@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from backend.access import consume_feature, ensure_feature_available, require_signed_in
 from pipeline.db import (
     add_list_members,
     create_job,
@@ -77,6 +78,14 @@ class EnsureBriefResponse(BaseModel):
 @router.post("/territory")
 def create_territory_scan_endpoint(body: TerritoryCreateRequest, request: Request):
     user_id = getattr(request.state, "user_id", 1)
+    usage_metadata = {
+        "city": body.city.strip(),
+        "state": (body.state or "").strip() or None,
+        "vertical": body.vertical.strip(),
+        "limit": body.limit,
+        "entrypoint": "territory_scan",
+    }
+    ensure_feature_available(request, "territory_scan")
     scan_id = str(uuid4())
     job_id = create_job(
         user_id=user_id,
@@ -102,6 +111,7 @@ def create_territory_scan_endpoint(body: TerritoryCreateRequest, request: Reques
         filters=body.filters.model_dump(exclude_none=True) if body.filters else {},
         scan_type="territory",
     )
+    consume_feature(request, "territory_scan", metadata=usage_metadata)
 
     return {
         "scan_id": scan_id,
@@ -112,6 +122,7 @@ def create_territory_scan_endpoint(body: TerritoryCreateRequest, request: Reques
 
 @router.get("/territory/scans")
 def get_recent_scans(request: Request, limit: int = 20):
+    require_signed_in(request, message="Create a free account to reopen saved scans.")
     user_id = getattr(request.state, "user_id", 1)
     clamped = max(1, min(limit, 100))
     return {"items": list_territory_scans(user_id=user_id, limit=clamped)}
@@ -203,6 +214,16 @@ def ensure_full_brief(prospect_id: int, request: Request):
     if not business_name or not city:
         raise HTTPException(status_code=400, detail="Prospect is missing business/city for full diagnostic")
 
+    usage_metadata = {
+        "entrypoint": "territory_prospect",
+        "prospect_id": prospect_id,
+        "place_id": place_id or None,
+        "business_name": business_name,
+        "city": city,
+        "state": state,
+    }
+    ensure_feature_available(request, "diagnostic")
+
     job_id = create_job(
         user_id=user_id,
         job_type="diagnostic",
@@ -215,12 +236,14 @@ def ensure_full_brief(prospect_id: int, request: Request):
             "deep_audit": True,
         },
     )
+    consume_feature(request, "diagnostic", metadata=usage_metadata)
     set_territory_prospect_ensure_job(prospect_id, job_id)
     return EnsureBriefResponse(prospect_id=prospect_id, status="building", job_id=job_id)
 
 
 @router.post("/lists")
 def create_list(body: CreateListRequest, request: Request):
+    require_signed_in(request, message="Create a free account to save leads into lists.")
     user_id = getattr(request.state, "user_id", 1)
     name = body.name.strip()
     if not name:
@@ -231,12 +254,14 @@ def create_list(body: CreateListRequest, request: Request):
 
 @router.get("/lists")
 def get_lists(request: Request):
+    require_signed_in(request, message="Create a free account to view saved lists.")
     user_id = getattr(request.state, "user_id", 1)
     return {"items": list_prospect_lists(user_id)}
 
 
 @router.post("/lists/{list_id}/members")
 def add_members(list_id: int, body: AddMembersRequest, request: Request):
+    require_signed_in(request, message="Create a free account to save leads into lists.")
     user_id = getattr(request.state, "user_id", 1)
     lst = get_prospect_list(list_id, user_id)
     if not lst:
@@ -263,6 +288,7 @@ def add_members(list_id: int, body: AddMembersRequest, request: Request):
 
 @router.get("/lists/{list_id}/members")
 def get_members(list_id: int, request: Request):
+    require_signed_in(request, message="Create a free account to view saved leads.")
     user_id = getattr(request.state, "user_id", 1)
     lst = get_prospect_list(list_id, user_id)
     if not lst:
@@ -297,6 +323,7 @@ def get_members(list_id: int, request: Request):
 
 @router.delete("/lists/{list_id}/members/{diagnostic_id}")
 def delete_member(list_id: int, diagnostic_id: int, request: Request):
+    require_signed_in(request, message="Create a free account to manage saved leads.")
     user_id = getattr(request.state, "user_id", 1)
     lst = get_prospect_list(list_id, user_id)
     if not lst:
@@ -309,6 +336,7 @@ def delete_member(list_id: int, diagnostic_id: int, request: Request):
 
 @router.post("/lists/{list_id}/rescan")
 def rescan_list(list_id: int, request: Request):
+    require_signed_in(request, message="Create a free account to rescan saved lists.")
     user_id = getattr(request.state, "user_id", 1)
     lst = get_prospect_list(list_id, user_id)
     if not lst:
@@ -342,6 +370,7 @@ def start_territory_deep_scan(
     body: DeepBriefRequest,
     request: Request,
 ):
+    require_signed_in(request, message="Create a free account to build briefs from a saved scan.")
     user_id = getattr(request.state, "user_id", 1)
     scan = get_territory_scan(scan_id, user_id)
     if not scan:
@@ -370,6 +399,7 @@ def start_list_deep_briefs(
     body: DeepBriefRequest,
     request: Request,
 ):
+    require_signed_in(request, message="Create a free account to build briefs from a saved list.")
     user_id = getattr(request.state, "user_id", 1)
     lst = get_prospect_list(list_id, user_id)
     if not lst:
@@ -394,6 +424,7 @@ def start_list_deep_briefs(
 
 @router.post("/diagnostics/{diagnostic_id}/outcome")
 def mark_outcome(diagnostic_id: int, body: OutcomeStatusRequest, request: Request):
+    require_signed_in(request, message="Create a free account to log outreach and outcomes.")
     user_id = getattr(request.state, "user_id", 1)
     diag = get_diagnostic(diagnostic_id, user_id)
     if not diag:

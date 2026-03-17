@@ -73,45 +73,96 @@ export default function ListPickerModal({
     >
       <div className="space-y-3">
         {hasLists && (
-          <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-            <input
-              type="radio"
-              checked={mode === "existing"}
-              onChange={() => setMode("existing")}
-              disabled={busy}
+          <button
+            type="button"
+            onClick={() => setMode("existing")}
+            disabled={busy}
+            className={`flex w-full items-center justify-between rounded-[16px] border px-3 py-2.5 text-left transition ${
+              mode === "existing"
+                ? "border-[var(--primary)] bg-[var(--surface)]"
+                : "border-[var(--border-default)] bg-[var(--bg-card)] hover:bg-[var(--surface)]"
+            }`}
+          >
+            <div>
+              <p className="text-sm font-medium text-[var(--text-primary)]">Add to existing list</p>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">Choose a saved lead list.</p>
+            </div>
+            <span
+              className={`inline-flex h-4 w-4 rounded-full border ${
+                mode === "existing"
+                  ? "border-[var(--primary)] bg-[var(--primary)] shadow-[inset_0_0_0_3px_white]"
+                  : "border-[var(--border-default)] bg-white"
+              }`}
             />
-            Add to existing list
-          </label>
+          </button>
         )}
         {hasLists && mode === "existing" && (
-          <select
-            className="h-10 w-full rounded-[var(--radius-md)] border border-[var(--border-default)] px-3 text-sm"
-            value={selectedListId ?? ""}
-            onChange={(e) => setSelectedListId(Number(e.target.value))}
-            disabled={busy}
-          >
-            {lists.map((list) => (
-              <option key={list.id} value={list.id}>{list.name}</option>
-            ))}
-          </select>
+          <div className="rounded-[16px] border border-[var(--border-default)] bg-[var(--surface)] p-2.5">
+            <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">
+              Saved lists
+            </label>
+            <div className="max-h-36 space-y-1.5 overflow-y-auto pr-1">
+              {lists.map((list) => {
+                const selected = selectedListId === list.id;
+                return (
+                  <button
+                    key={list.id}
+                    type="button"
+                    onClick={() => setSelectedListId(list.id)}
+                    disabled={busy}
+                    className={`flex w-full items-center justify-between rounded-[12px] border px-3 py-2 text-sm transition ${
+                      selected
+                        ? "border-[var(--primary)] bg-white text-[var(--text-primary)]"
+                        : "border-[var(--border-default)] bg-white text-[var(--text-secondary)] hover:border-[var(--ring)]"
+                    }`}
+                  >
+                    <span className="truncate">{list.name}</span>
+                    <span
+                      className={`ml-3 inline-flex h-4 w-4 shrink-0 rounded-full border ${
+                        selected
+                          ? "border-[var(--primary)] bg-[var(--primary)] shadow-[inset_0_0_0_3px_white]"
+                          : "border-[var(--border-default)] bg-white"
+                      }`}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         )}
 
-        <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <input
-            type="radio"
-            checked={mode === "new"}
-            onChange={() => setMode("new")}
-            disabled={busy}
+        <button
+          type="button"
+          onClick={() => setMode("new")}
+          disabled={busy}
+          className={`flex w-full items-center justify-between rounded-[16px] border px-3 py-2.5 text-left transition ${
+            mode === "new"
+              ? "border-[var(--primary)] bg-[var(--surface)]"
+              : "border-[var(--border-default)] bg-[var(--bg-card)] hover:bg-[var(--surface)]"
+          }`}
+        >
+          <div>
+            <p className="text-sm font-medium text-[var(--text-primary)]">Create new list</p>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Name a new place to save this lead.</p>
+          </div>
+          <span
+            className={`inline-flex h-4 w-4 rounded-full border ${
+              mode === "new"
+                ? "border-[var(--primary)] bg-[var(--primary)] shadow-[inset_0_0_0_3px_white]"
+                : "border-[var(--border-default)] bg-white"
+            }`}
           />
-          Create new list
-        </label>
+        </button>
         {mode === "new" && (
-          <Input
-            value={newListName}
-            onChange={(e) => setNewListName(e.target.value)}
-            placeholder="List name"
-            disabled={busy}
-          />
+          <div className="rounded-[16px] border border-[var(--border-default)] bg-[var(--surface)] p-2.5">
+            <Input
+              value={newListName}
+              onChange={(e) => setNewListName(e.target.value)}
+              placeholder="List name"
+              disabled={busy}
+              className="h-9 rounded-[12px]"
+            />
+          </div>
         )}
         {error && <p className="text-sm text-red-600">{error}</p>}
       </div>

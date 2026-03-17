@@ -12,6 +12,8 @@ import {
   getProspectLists,
   runAskQuery,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { clientFacingBriefError } from "@/lib/present";
 import type { ProspectList } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import Badge from "@/app/components/ui/Badge";
@@ -186,9 +188,21 @@ function formatEvidenceSource(source: string | undefined) {
   }
 }
 
+function askUsageMessage(access: ReturnType<typeof useAuth>["access"]) {
+  if (!access) return null;
+  if (access.viewer.is_guest) {
+    return "Ask Neyma is available after signup so the shortlist can be saved and reopened inside the workspace.";
+  }
+  if (String(access.plan_tier) === "free") {
+    return `${access.remaining.ask ?? 0} of ${access.limits.ask ?? 0} Ask Neyma requests left this month on the free plan.`;
+  }
+  return `${String(access.plan_tier).toUpperCase()} plan: Ask Neyma is available without a usage cap.`;
+}
+
 export default function AskPage() {
   const router = useRouter();
-  const [query, setQuery] = useState("Find 10 dentists in San Jose that have missing implants page");
+  const { access, accessLoading } = useAuth();
+  const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageHref, setMessageHref] = useState<string | null>(null);
@@ -214,6 +228,8 @@ export default function AskPage() {
   const [briefProgress, setBriefProgress] = useState<BriefBuildProgressState | null>(null);
   const readyBriefCount = results.filter((row) => askBriefReady(row)).length;
   const pendingBriefCount = Math.max(0, results.length - readyBriefCount);
+  const askLimitReached = !accessLoading && access?.can_use.ask === false;
+  const usageMessage = askUsageMessage(access);
 
   function applyPrompt(next: string) {
     setQuery(next);
@@ -245,6 +261,10 @@ export default function AskPage() {
   }
 
   useEffect(() => {
+    setQuery("");
+  }, []);
+
+  useEffect(() => {
     try {
       const raw = sessionStorage.getItem(ASK_RESULTS_STORAGE_KEY);
       if (!raw) return;
@@ -263,7 +283,6 @@ export default function AskPage() {
         setNoResultsSummary(parsed.no_results_summary || null);
         setAgenticIterations(Array.isArray(parsed.agentic_iterations) ? parsed.agentic_iterations : []);
       }
-      if (parsed.query) setQuery(parsed.query);
     } catch {
       // ignore malformed cache
     }
@@ -330,6 +349,10 @@ export default function AskPage() {
   }
 
   async function executeRun(confirmedLowConfidence = false) {
+    if (askLimitReached) {
+      setError(access?.viewer.is_guest ? "Ask Neyma requires a free account." : "Free plan Ask Neyma limit reached for this month.");
+      return;
+    }
     setError(null);
     setResults([]);
     setHeadline(null);
@@ -506,14 +529,14 @@ export default function AskPage() {
           markAskBriefReady(row, st.diagnostic_id);
           return st.diagnostic_id;
         }
-        if (st.status === "failed") throw new Error(st.error || "Brief build failed");
+        if (st.status === "failed") throw new Error(clientFacingBriefError(st.error));
         setBriefProgress(buildBriefProgressState(st.progress, i + 1, row));
         await new Promise((r) => setTimeout(r, 2000));
       }
-      throw new Error("Brief build timed out");
+      throw new Error(clientFacingBriefError("Brief build timed out"));
     } catch (err) {
       const e = err instanceof Error ? err : new Error("Failed to build brief");
-      setError(e.message);
+      setError(clientFacingBriefError(e.message));
       throw e;
     } finally {
       setBriefProgress(null);
@@ -526,7 +549,7 @@ export default function AskPage() {
       const id = await ensureDiagnosticId(row);
       router.push(`/diagnostic/${id}?from=ask`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to open brief");
+      setError(clientFacingBriefError(err instanceof Error ? err.message : "Failed to open brief"));
     }
   }
 
@@ -537,7 +560,7 @@ export default function AskPage() {
       setListTargetBusinessName(row.business_name || "");
       setListModalOpen(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to prepare add to list");
+      setError(clientFacingBriefError(err instanceof Error ? err.message : "Failed to prepare add to list"));
     }
   }
 
@@ -577,6 +600,9 @@ export default function AskPage() {
         <p className="mx-auto mt-4 max-w-2xl text-sm text-[var(--text-secondary)] sm:text-base">
           Describe the target in plain English. Neyma uses AI reasoning and ML ranking to turn that request into a shortlist with reasons, not just names.
         </p>
+        {usageMessage ? (
+          <p className="mx-auto mt-3 max-w-2xl text-xs leading-6 text-[var(--text-secondary)]">{usageMessage}</p>
+        ) : null}
       </div>
 
       <Card className="relative mx-auto mt-6 max-w-4xl overflow-hidden border border-[var(--border-default)] bg-[var(--bg-card)] shadow-[0_20px_50px_rgba(10,10,10,0.04)]">
@@ -608,7 +634,7 @@ export default function AskPage() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 rows={4}
-                placeholder="Find dentists in San Jose with strong demand but weak service depth"
+                placeholder=""
                 className="resize-none border-0 bg-transparent px-1 py-1 text-base leading-relaxed focus:border-transparent"
               />
               <div className="mt-3 flex flex-col gap-3 border-t border-[var(--border-default)] pt-3 sm:flex-row sm:items-center sm:justify-between">
@@ -621,16 +647,16 @@ export default function AskPage() {
                 </div>
                 <Button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || askLimitReached}
                   variant="primary"
-                  className="h-11 rounded-full px-5"
+                  className="h-11 w-full rounded-full px-5 sm:w-auto"
                 >
                   {loading ? (
                     <span className="inline-flex items-center gap-2">
                       <span className="inline-flex h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" />
                       Thinking
                     </span>
-                  ) : "Ask Neyma"}
+                  ) : askLimitReached ? "Monthly limit reached" : "Ask Neyma"}
                 </Button>
               </div>
             </div>
@@ -664,6 +690,15 @@ export default function AskPage() {
                 </div>
               </div>
             )}
+
+            {askLimitReached ? (
+              <div className="rounded-2xl border border-[var(--border-default)] bg-white px-4 py-3 text-left text-sm text-[var(--text-secondary)]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span>Ask Neyma usage is paused until the next reset or a plan upgrade.</span>
+                  <Link href="/settings" className="app-link font-medium">View plan and usage</Link>
+                </div>
+              </div>
+            ) : null}
           </form>
         </CardBody>
       </Card>
@@ -693,7 +728,7 @@ export default function AskPage() {
       )}
 
       {headline && (
-        <div className="mx-auto mt-6 flex max-w-5xl items-center justify-between gap-3">
+        <div className="mx-auto mt-6 flex max-w-5xl flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-medium text-[var(--text-secondary)]">{headline}</p>
             {results.length > 0 && (
@@ -825,19 +860,19 @@ export default function AskPage() {
                         </p>
                       )}
                     </div>
-                    <div className="flex shrink-0 flex-wrap gap-2 sm:flex-col sm:items-end">
+                    <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-col sm:items-end">
                       <Button
                         onClick={() => void onViewBrief(r)}
                         variant="primary"
                         disabled={busy}
-                        className="h-10 rounded-full px-4"
+                        className="h-10 w-full rounded-full px-4 sm:w-auto"
                       >
                         {busy ? "Building..." : briefReady ? "Open brief" : "Build brief"}
                       </Button>
                       <Button
                         onClick={() => void onAddToList(r)}
                         disabled={busy}
-                        className="h-10 rounded-full px-4"
+                        className="h-10 w-full rounded-full px-4 sm:w-auto"
                       >
                         Add to list
                       </Button>

@@ -7,6 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from backend.access import consume_feature, ensure_feature_available
 from backend.services.ask_config import ADAPTIVE_LIMITS_DEFAULTS
 from backend.services.criteria_registry import (
     normalize_accuracy_mode,
@@ -99,6 +100,14 @@ def ask_find(body: AskRequest, request: Request):
             min(60, max(limit * 3, 20)),
         )
 
+    usage_metadata = {
+        "query": body.query,
+        "city": intent.get("city"),
+        "state": intent.get("state"),
+        "vertical": intent.get("vertical"),
+    }
+    ensure_feature_available(request, "ask")
+
     job_id = create_job(
         user_id=user_id,
         job_type="ask_scan",
@@ -114,6 +123,7 @@ def ask_find(body: AskRequest, request: Request):
             "unsupported_parts": dedup_unsupported,
         },
     )
+    consume_feature(request, "ask", metadata=usage_metadata)
 
     return {
         "job_id": job_id,
@@ -164,6 +174,15 @@ def ask_ensure_brief(body: AskEnsureBriefRequest, request: Request):
                 "diagnostic_id": int(existing["id"]),
             }
 
+    usage_metadata = {
+        "entrypoint": "ask_ensure_brief",
+        "place_id": place_id,
+        "business_name": business_name,
+        "city": city,
+        "state": state,
+    }
+    ensure_feature_available(request, "diagnostic")
+
     job_id = create_job(
         user_id=user_id,
         job_type="diagnostic",
@@ -176,6 +195,7 @@ def ask_ensure_brief(body: AskEnsureBriefRequest, request: Request):
             "deep_audit": True,
         },
     )
+    consume_feature(request, "diagnostic", metadata=usage_metadata)
     return {
         "status": "building",
         "job_id": job_id,

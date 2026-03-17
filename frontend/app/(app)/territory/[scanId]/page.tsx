@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { ExternalLink } from "lucide-react";
 import {
   addProspectsToList,
   createProspectList,
@@ -10,23 +11,53 @@ import {
   getJobStatus,
   getProspectLists,
   getTerritoryScanResults,
-  markProspectOutcome,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { clientFacingBriefError } from "@/lib/present";
 import type { ProspectList, ProspectRow, TerritoryScanResultsResponse } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
-import Badge from "@/app/components/ui/Badge";
-import { Table, THead, TH, TR, TD } from "@/app/components/ui/Table";
 import ListPickerModal from "@/app/components/ListPickerModal";
 import BriefBuildProgress, { type BriefBuildProgressState } from "@/app/components/BriefBuildProgress";
+import { Dots_v2 } from "@/components/ui/spinner";
 
 function territoryBriefReady(row: Pick<ProspectRow, "diagnostic_id" | "full_brief_ready">): boolean {
   return Boolean(row.diagnostic_id && row.full_brief_ready);
 }
 
+function websiteDomain(raw?: string | null): string | null {
+  if (!raw) return null;
+  const normalized = raw.startsWith("http://") || raw.startsWith("https://") ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(normalized);
+    return parsed.hostname.replace(/^www\./, "") || null;
+  } catch {
+    return raw.replace(/^https?:\/\//, "").split("/")[0]?.replace(/^www\./, "") || null;
+  }
+}
+
+function statusPillClass({ busy, briefReady }: { busy: boolean; briefReady: boolean }) {
+  if (busy) {
+    return "border border-[var(--border-default)] bg-[var(--surface)] text-[var(--text-secondary)]";
+  }
+  if (briefReady) {
+    return "border border-transparent bg-[#EAF3DE] text-[#3B6D11]";
+  }
+  return "border-[0.5px] border-[var(--border-default)] bg-[var(--surface)] text-[var(--text-muted)]";
+}
+
+function territoryPhaseLabel(phase: string) {
+  const normalized = phase.toLowerCase();
+  if (normalized.includes("candidate")) return "Discovering";
+  if (normalized.includes("complete")) return "Complete";
+  if (normalized.includes("rank")) return "Ranking";
+  return "In progress";
+}
+
 export default function TerritoryResultsPage() {
   const params = useParams();
   const router = useRouter();
+  const { access } = useAuth();
   const scanId = String(params.scanId || "");
   const [data, setData] = useState<TerritoryScanResultsResponse | null>(null);
   const [lists, setLists] = useState<ProspectList[]>([]);
@@ -44,6 +75,9 @@ export default function TerritoryResultsPage() {
   const [listTargetBusinessName, setListTargetBusinessName] = useState("");
   const [briefProgress, setBriefProgress] = useState<BriefBuildProgressState | null>(null);
   const cacheKey = `territory_scan_${scanId}`;
+  const canUseWorkspace = access?.can_use.workspace !== false;
+  const canSave = access?.can_use.save !== false;
+  const canExport = access?.can_use.export !== false;
 
   useEffect(() => {
     if (!scanId) return;
@@ -89,6 +123,10 @@ export default function TerritoryResultsPage() {
   }, [cacheKey, scanId]);
 
   useEffect(() => {
+    if (!canSave) {
+      setLists([]);
+      return;
+    }
     let cancelled = false;
     async function loadLists() {
       const ls = await getProspectLists().catch(() => ({ items: [] }));
@@ -98,7 +136,7 @@ export default function TerritoryResultsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canSave]);
 
   const progress = useMemo(() => {
     const summary = data?.summary || {};
@@ -142,14 +180,6 @@ export default function TerritoryResultsPage() {
   );
   const pendingBriefCount = Math.max(0, prospects.length - readyBriefCount);
 
-  const outcomeLabel = (status?: string) => {
-    if (!status) return "Not contacted";
-    if (status === "contacted") return "Contacted";
-    if (status === "closed_won") return "Won";
-    if (status === "closed_lost") return "Lost";
-    return "Not contacted";
-  };
-
   function markProspectBriefReady(prospectId: number | null | undefined, diagnosticId: number) {
     if (!prospectId) return;
     setData((prev) => {
@@ -189,11 +219,11 @@ export default function TerritoryResultsPage() {
         markProspectBriefReady(row.prospect_id, st.diagnostic_id);
         return st.diagnostic_id;
       }
-      if (st.status === "failed") throw new Error(st.error || "Failed to build brief");
+      if (st.status === "failed") throw new Error(clientFacingBriefError(st.error));
       setBriefProgress(buildBriefProgressState(st.progress, i + 1, row));
       await new Promise((r) => setTimeout(r, 2000));
     }
-    throw new Error("Brief build timed out");
+    throw new Error(clientFacingBriefError("Brief build timed out"));
   }
 
   async function handleViewBrief(row: ProspectRow) {
@@ -206,7 +236,7 @@ export default function TerritoryResultsPage() {
       const id = row.diagnostic_id && row.full_brief_ready ? row.diagnostic_id : await ensureBrief(row);
       router.push(`/diagnostic/${id}?from=territory&scanId=${encodeURIComponent(scanId)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to open brief");
+      setError(clientFacingBriefError(err instanceof Error ? err.message : "Failed to open brief"));
     } finally {
       setActionProspectId(null);
       setActionLabel(null);
@@ -226,18 +256,12 @@ export default function TerritoryResultsPage() {
       setListTargetBusinessName(row.business_name || "");
       setListModalOpen(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add to list");
+      setError(clientFacingBriefError(err instanceof Error ? err.message : "Failed to add to list"));
     } finally {
       setActionProspectId(null);
       setActionLabel(null);
       setBriefProgress(null);
     }
-  }
-
-  async function handleOutcome(row: ProspectRow, status: "contacted" | "closed_won" | "closed_lost") {
-    if (!row.diagnostic_id) return;
-    await markProspectOutcome({ diagnostic_id: row.diagnostic_id, status });
-    setData(await getTerritoryScanResults(scanId));
   }
 
   async function handleConfirmAddToList(payload: { listId?: number; newListName?: string }) {
@@ -291,25 +315,32 @@ export default function TerritoryResultsPage() {
     <div className="mx-auto max-w-7xl">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs text-[var(--text-muted)]">Territory</p>
-          <h1 className="text-2xl font-semibold tracking-tight">Market Scan: {data?.city || "Market"}{data?.state ? `, ${data.state}` : ""}</h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">{prospects.length} prospects · {data?.status === "running" ? progress.label : "Scan complete"}</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">Territory</p>
+          <h1 className="mt-1 text-[20px] font-medium tracking-[-0.01em] text-[var(--text-primary)]">Market Scan: {data?.city || "Market"}{data?.state ? `, ${data.state}` : ""}</h1>
+          <p className="mt-1 text-[12px] leading-[1.8] text-[var(--text-muted)]">{prospects.length} prospects · {data?.status === "running" ? progress.label : "Scan complete"}</p>
           {prospects.length > 0 && (
-            <p className="mt-1 text-xs text-[var(--text-muted)]">{readyBriefCount} briefs ready · {pendingBriefCount} not built yet</p>
+            <p className="text-[12px] leading-[1.8] text-[var(--text-muted)]">{readyBriefCount} briefs ready · {pendingBriefCount} not built yet</p>
           )}
           {scanTimestamp && (
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
+            <p className="text-[12px] leading-[1.8] text-[var(--text-muted)]">
               {scanAgeDays && scanAgeDays > 0 ? `Last updated ${scanAgeDays} days ago` : "Just updated"} · {new Date(scanTimestamp).toLocaleDateString("en-US")}
             </p>
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href="/territory/new"><Button>New scan</Button></Link>
-          <Link href="/ask"><Button>Ask Neyma</Button></Link>
-          <Link href="/lists"><Button>Lists</Button></Link>
-          <Button variant="primary" onClick={exportCsv}>Export CSV</Button>
+          <Link href="/territory/new"><Button variant="secondary">New scan</Button></Link>
+          {canUseWorkspace ? <Link href="/lists"><Button variant="secondary">Lists</Button></Link> : null}
+          {canExport ? <Button variant="primary" onClick={exportCsv}>Export CSV</Button> : null}
         </div>
       </div>
+
+      {!canUseWorkspace ? (
+        <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]">
+          <CardBody className="text-sm text-[var(--text-secondary)]">
+            Create a free account to save leads, reopen scans from the workspace, and export this market.
+          </CardBody>
+        </Card>
+      ) : null}
 
       {scanAgeDays != null && scanAgeDays > 30 && (
         <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]">
@@ -338,7 +369,7 @@ export default function TerritoryResultsPage() {
       <Card>
         <CardHeader
           title="Ranked Market Prospects"
-          subtitle={`Showing top ${Number(data?.summary?.accepted || prospects.length)} of ${Number(data?.summary?.scored_candidates || 0)} scored prospects. ${readyBriefCount} ready, ${pendingBriefCount} not built yet.`}
+          subtitle={`Showing top ${Number(data?.summary?.accepted || prospects.length)} of ${Number(data?.summary?.scored_candidates || 0)} scored prospects. ${readyBriefCount} briefs are ready, ${pendingBriefCount} still need to be built.`}
           action={
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value as "rank" | "name" | "reviews")} className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-default)] px-2 text-xs">
               <option value="rank">Sort: Rank</option>
@@ -347,55 +378,111 @@ export default function TerritoryResultsPage() {
             </select>
           }
         />
-        <Table>
-          <THead>
-            <tr>
-              <TH>Rank</TH><TH>Business</TH><TH>City</TH><TH>Rating</TH><TH>Reviews</TH><TH>Contact</TH><TH>Website</TH><TH>Key Signal</TH><TH>Status</TH><TH className="text-right">Actions</TH>
-            </tr>
-          </THead>
-          <tbody>
-            {prospects.map((row) => {
-              const busy = actionProspectId != null && actionProspectId === row.prospect_id;
-              const briefReady = territoryBriefReady(row);
-              return (
-                <TR key={`${row.prospect_id || row.place_id}`}>
-                  <TD className="font-medium text-[var(--text-primary)]">#{row.rank || "-"}</TD>
-                  <TD className="font-medium text-[var(--text-primary)]">
-                    <div className="flex flex-col gap-1">
-                      <span>{row.business_name}</span>
-                      <span>
-                        <Badge tone={busy ? "default" : briefReady ? "success" : "muted"}>
-                          {busy ? "Building brief" : briefReady ? "Brief ready" : "Brief not built"}
-                        </Badge>
-                      </span>
-                    </div>
-                  </TD>
-                  <TD>{row.city}{row.state ? `, ${row.state}` : ""}</TD>
-                  <TD>{row.rating ?? "-"}</TD>
-                  <TD>{row.user_ratings_total ?? "-"}</TD>
-                  <TD>{row.phone ? <a href={`tel:${row.phone}`} className="app-link">{row.phone}</a> : "—"}</TD>
-                  <TD>{row.website ? <a href={row.website} target="_blank" rel="noreferrer" className="app-link break-all">{row.website}</a> : "—"}</TD>
-                  <TD>{row.key_signal ? <Badge>{row.key_signal}</Badge> : "—"}</TD>
-                  <TD><Badge tone={row.outcome_status?.status === "closed_won" ? "success" : row.outcome_status?.status === "closed_lost" ? "danger" : "muted"}>{outcomeLabel(row.outcome_status?.status)}</Badge></TD>
-                  <TD className="text-right">
-                    <button
-                      onClick={() => void handleViewBrief(row)}
-                      disabled={busy}
-                      className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-foreground)] transition hover:opacity-95 disabled:opacity-60"
-                    >
-                      {busy ? "Building..." : briefReady ? "Open brief" : "Build brief"}
-                    </button>
-                    <button onClick={() => void handleAddToList(row)} disabled={busy} className="text-[var(--text-secondary)] hover:underline disabled:opacity-60">Add to list</button>
-                    <button onClick={() => void handleOutcome(row, "contacted")} disabled={!row.diagnostic_id} className="ml-2 text-[var(--text-secondary)] hover:underline disabled:opacity-50">Contacted</button>
-                  </TD>
-                </TR>
-              );
-            })}
-          </tbody>
-        </Table>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-left text-[11px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              <tr className="border-b-[0.5px] border-[var(--border-default)]">
+                <th className="w-[36px] px-0 py-[11px] text-center font-medium">Rank</th>
+                <th className="px-[10px] py-[11px] font-medium">Business</th>
+                <th className="px-[10px] py-[11px] font-medium">City</th>
+                <th className="px-[10px] py-[11px] text-center font-medium">Rating</th>
+                <th className="px-[10px] py-[11px] text-center font-medium">Reviews</th>
+                <th className="px-[10px] py-[11px] font-medium">Contact</th>
+                <th className="px-[10px] py-[11px] font-medium">Website</th>
+                <th className="min-w-[160px] px-[10px] py-[11px] text-right font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {prospects.map((row) => {
+                const busy = actionProspectId != null && actionProspectId === row.prospect_id;
+                const briefReady = territoryBriefReady(row);
+                const domain = websiteDomain(row.website);
+                const ratingText = typeof row.rating === "number" ? row.rating.toFixed(1) : null;
+                const rank = typeof row.rank === "number" ? String(row.rank) : "—";
+                const topRank = typeof row.rank === "number" && row.rank <= 3;
+
+                return (
+                  <tr
+                    key={`${row.prospect_id || row.place_id}`}
+                    className="border-b-[0.5px] border-[var(--border-default)] align-middle transition hover:bg-[var(--surface)]"
+                  >
+                    <td className={`px-0 py-[11px] text-center align-middle text-[11px] font-medium ${topRank ? "text-[var(--primary)]" : "text-[var(--text-muted)]"}`}>
+                      {rank}
+                    </td>
+                    <td className="px-[10px] py-[11px] align-middle">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[13px] font-medium text-[var(--text-primary)]">{row.business_name}</span>
+                        <span className={`inline-flex w-fit whitespace-nowrap rounded-full px-[7px] py-[2px] text-[10px] font-medium ${statusPillClass({ busy, briefReady })}`}>
+                          {busy ? "Building brief" : briefReady ? "Brief ready" : "Not built"}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-[10px] py-[11px] align-middle text-[12px] text-[var(--text-secondary)]">
+                      {row.city}{row.state ? `, ${row.state}` : ""}
+                    </td>
+                    <td className="px-[10px] py-[11px] text-center align-middle text-[13px] font-medium text-[var(--text-primary)]">
+                      {ratingText || "—"}
+                    </td>
+                    <td className="px-[10px] py-[11px] text-center align-middle text-[12px] text-[var(--text-muted)]">
+                      {typeof row.user_ratings_total === "number" ? row.user_ratings_total : "—"}
+                    </td>
+                    <td className="px-[10px] py-[11px] align-middle">
+                      {row.phone ? (
+                        <a href={`tel:${row.phone}`} className="whitespace-nowrap text-[12px] text-[var(--primary)] transition hover:underline">
+                          {row.phone}
+                        </a>
+                      ) : (
+                        <span className="text-[12px] text-[var(--text-muted)]">—</span>
+                      )}
+                    </td>
+                    <td className="max-w-[130px] px-[10px] py-[11px] align-middle">
+                      {row.website && domain ? (
+                        <a
+                          href={row.website}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex max-w-[130px] items-center gap-1 truncate text-[12px] text-[var(--text-secondary)] transition hover:text-[var(--text-primary)]"
+                        >
+                          <ExternalLink className="h-[11px] w-[11px] shrink-0" />
+                          <span className="truncate">{domain}</span>
+                        </a>
+                      ) : (
+                        <span className="text-[12px] text-[var(--text-muted)]">—</span>
+                      )}
+                    </td>
+                    <td className="min-w-[160px] px-[10px] py-[11px] text-right align-middle">
+                      <div className="flex justify-end gap-[6px]">
+                        <button
+                          onClick={() => void handleViewBrief(row)}
+                          disabled={busy}
+                          className={`inline-flex h-[31px] items-center justify-center whitespace-nowrap rounded-[8px] px-[11px] text-[12px] font-medium transition disabled:opacity-60 ${
+                            briefReady || busy
+                              ? "bg-[var(--primary)] text-white hover:brightness-95"
+                              : "border border-[var(--border-default)] bg-transparent text-[var(--text-primary)] hover:bg-[var(--surface)]"
+                          }`}
+                        >
+                          {busy ? "Building..." : briefReady ? "Open brief" : "Build brief"}
+                        </button>
+                        {canSave ? (
+                          <button
+                            onClick={() => void handleAddToList(row)}
+                            disabled={busy}
+                            className="inline-flex h-[31px] items-center justify-center whitespace-nowrap rounded-full border border-[var(--border-default)] bg-transparent px-[10px] text-[11px] text-[var(--text-muted)] transition hover:bg-[var(--surface)] hover:text-[var(--text-primary)] disabled:opacity-60"
+                          >
+                            + List
+                          </button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </Card>
 
-      {listModalOpen && (
+      {listModalOpen && canSave && (
         <ListPickerModal
           open={listModalOpen}
           title="Add prospect to list"
@@ -491,7 +578,6 @@ function TerritoryScanProgressPanel({
   className?: string;
 }) {
   const [subeventIndex, setSubeventIndex] = useState(0);
-  const [dotCount, setDotCount] = useState(1);
   const phase = progress.phase.toLowerCase();
   const subevents = phase.includes("candidate")
     ? [
@@ -532,12 +618,8 @@ function TerritoryScanProgressPanel({
     const subeventTimer = window.setInterval(() => {
       setSubeventIndex((current) => (current + 1) % subevents.length);
     }, 1700);
-    const dotTimer = window.setInterval(() => {
-      setDotCount((current) => (current % 3) + 1);
-    }, 420);
     return () => {
       window.clearInterval(subeventTimer);
-      window.clearInterval(dotTimer);
     };
   }, [subevents.length]);
 
@@ -555,16 +637,18 @@ function TerritoryScanProgressPanel({
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold text-[var(--text-primary)]">Running territory scan</p>
                 <span className="rounded-full border border-[var(--border-default)] bg-[var(--secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
-                  {progress.percent}%
+                  {territoryPhaseLabel(progress.phase)}
                 </span>
               </div>
               <p className="mt-1 text-sm text-[var(--text-secondary)]">
                 {progress.city || "Selected market"}{progress.state ? `, ${progress.state}` : ""}
               </p>
-              <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
-                {subevents[subeventIndex]}
-                <span className="inline-block w-4 text-left text-[var(--text-secondary)]">{ ".".repeat(dotCount) }</span>
-              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="shrink-0 scale-[0.5] text-[var(--primary)]">
+                  <Dots_v2 />
+                </span>
+                <p className="text-xs leading-5 text-[var(--text-muted)]">{subevents[subeventIndex]}</p>
+              </div>
               <p className="mt-2 text-xs font-medium text-[var(--text-secondary)]">{progress.label}</p>
             </div>
           </div>

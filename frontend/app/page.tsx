@@ -98,8 +98,8 @@ export default function LandingPage() {
             menuItems={landingMenuItems}
             title={
               <>
-                <span className="block">Drop in a market.</span>
-                <span className="block">Get your best leads ranked.</span>
+                <span className="block">Name the market.</span>
+                <span className="block">We’ll find and rank the leads.</span>
               </>
             }
             description={
@@ -112,14 +112,14 @@ export default function LandingPage() {
             }
             primaryCta={{
               label: "Run Territory Scan",
-              href: user ? "/territory/new" : "/register",
+              href: "/territory/new",
             }}
             secondaryCta={{
               label: "Open Workspace",
               href: user ? "/dashboard" : "/login",
             }}
           >
-            <TerritoryHeroPreview signedIn={Boolean(user)} />
+            <TerritoryHeroPreview />
           </HeroSection>
         </section>
 
@@ -218,14 +218,14 @@ export default function LandingPage() {
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
               <ShineHoverButton asChild>
-                <Link href={user ? "/territory/new" : "/register"}>Run Territory Scan</Link>
+                <Link href="/territory/new">Run Territory Scan</Link>
               </ShineHoverButton>
               <NeymaButton
                 asChild
                 variant="secondary"
                 className="border-white/12 bg-white text-[#0A0A0A] hover:bg-white/92"
               >
-                <Link href={user ? "/diagnostic/new" : "/register"}>
+                <Link href="/diagnostic/new">
                   <span className="text-[#0A0A0A]">Build Brief</span>
                 </Link>
               </NeymaButton>
@@ -267,7 +267,7 @@ export default function LandingPage() {
   );
 }
 
-function TerritoryHeroPreview({ signedIn }: { signedIn: boolean }) {
+function TerritoryHeroPreview() {
   return (
     <div className="overflow-hidden rounded-[26px] border border-[#E6E6E6] bg-white p-4 shadow-[0_25px_60px_rgba(0,0,0,0.08)] sm:p-6">
       <div className="space-y-5">
@@ -277,7 +277,7 @@ function TerritoryHeroPreview({ signedIn }: { signedIn: boolean }) {
           <ScanField label="Specialty focus" value="Dental implants" />
           <div className="flex items-end">
             <ShineHoverButton asChild className="w-full justify-center">
-              <Link href={signedIn ? "/territory/new" : "/register"}>Run scan</Link>
+              <Link href="/territory/new">Run scan</Link>
             </ShineHoverButton>
           </div>
         </div>
@@ -329,7 +329,7 @@ function TerritoryHeroPreview({ signedIn }: { signedIn: boolean }) {
           </div>
           <div className="mt-3 flex justify-center">
             <ShineHoverButton asChild>
-              <Link href={signedIn ? "/territory/new" : "/register"}>Sign up</Link>
+              <Link href="/territory/new">Run scan</Link>
             </ShineHoverButton>
           </div>
         </div>
@@ -458,7 +458,7 @@ function BriefSectionPreview({ signedIn }: { signedIn: boolean }) {
                 <Link href={signedIn ? "/ask" : "/register"}>Draft outreach</Link>
               </NeymaButton>
               <ShineHoverButton asChild>
-                <Link href={signedIn ? "/diagnostic/new" : "/register"}>Full audit</Link>
+                <Link href="/diagnostic/new">Full audit</Link>
               </ShineHoverButton>
             </div>
           </div>
@@ -544,7 +544,7 @@ function SingleBriefInputPreview({ signedIn }: { signedIn: boolean }) {
           </p>
           <div className="mt-6 flex flex-wrap gap-2">
             <ShineHoverButton asChild>
-              <Link href={signedIn ? "/diagnostic/new" : "/register"}>Generate Brief</Link>
+              <Link href="/diagnostic/new">Generate Brief</Link>
             </ShineHoverButton>
             <NeymaButton asChild variant="secondary" className="text-[#0A0A0A]">
               <Link href={signedIn ? "/dashboard" : "/login"}>
