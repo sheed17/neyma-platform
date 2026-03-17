@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { pollUntilDone, submitDiagnostic } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { clientFacingBriefError } from "@/lib/present";
+import { clientFacingAppError, clientFacingBriefError } from "@/lib/present";
 import type { JobStatusResponse } from "@/lib/types";
 import BriefBuildProgress, { type BriefBuildProgressState } from "@/app/components/BriefBuildProgress";
 
@@ -106,7 +106,7 @@ export default function NewDiagnosticPage() {
       if (!result.diagnostic_id) throw new Error("No diagnostic ID returned");
       router.push(`/diagnostic/${result.diagnostic_id}`);
     } catch (err) {
-      setError(clientFacingBriefError(err instanceof Error ? err.message : "Request failed"));
+      setError(clientFacingAppError(clientFacingBriefError(err instanceof Error ? err.message : "Request failed"), "We couldn't build that brief right now. Please try again."));
       setSubmitting(false);
       setProgress(null);
     }

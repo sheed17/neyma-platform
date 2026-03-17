@@ -16,6 +16,7 @@ import {
   submitDiagnostic,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { clientFacingAppError } from "@/lib/present";
 import type { DiagnosticResponse, ProspectList, ServiceIntelligence } from "@/lib/types";
 import { computeVerdict } from "@/lib/verdict";
 import { generateObservationBullets, generateOpportunityFocus, generateWhyNow } from "@/lib/pitch";
@@ -455,7 +456,7 @@ export default function DiagnosticDetailPage() {
     if (invalidId) return;
     getDiagnostic(id)
       .then(setResult)
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(clientFacingAppError(e instanceof Error ? e.message : "Failed to load brief", "We couldn't load this brief right now. Please try again.")))
       .finally(() => setLoading(false));
   }, [id, invalidId]);
 
@@ -535,11 +536,11 @@ export default function DiagnosticDetailPage() {
         }
         router.push(buildDiagnosticHref(Number(job.diagnostic_id), routeContext));
       } else {
-        setError(job.error || "Re-run failed");
+        setError(clientFacingAppError(job.error || "Re-run failed", "We couldn't refresh this brief right now. Please try again."));
         setRerunning(false);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Re-run failed");
+      setError(clientFacingAppError(err instanceof Error ? err.message : "Re-run failed", "We couldn't refresh this brief right now. Please try again."));
       setRerunning(false);
     }
   }
@@ -566,7 +567,7 @@ export default function DiagnosticDetailPage() {
       setNoticeHref(null);
       setNoticeCta(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create share link");
+      setError(clientFacingAppError(err instanceof Error ? err.message : "Failed to create share link", "We couldn't create a share link right now. Please try again."));
     } finally {
       setSharing(false);
     }
@@ -591,7 +592,7 @@ export default function DiagnosticDetailPage() {
       setNoticeCta("Open list");
       setAddListOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add to list");
+      setError(clientFacingAppError(err instanceof Error ? err.message : "Failed to add to list", "We couldn't add this brief to a list right now. Please try again."));
     } finally {
       setAddingToList(false);
     }
@@ -616,7 +617,7 @@ export default function DiagnosticDetailPage() {
       setOutreachOpen(false);
       setOutreachNote("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to log outreach");
+      setError(clientFacingAppError(err instanceof Error ? err.message : "Failed to log outreach", "We couldn't save that outreach update right now. Please try again."));
     } finally {
       setLoggingOutreach(false);
     }
@@ -947,7 +948,7 @@ export default function DiagnosticDetailPage() {
 
               {!canUseWorkspace ? (
                 <div className="rounded-[20px] border border-[var(--border-default)] bg-[var(--muted)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-                  Create a free account to save this brief, log outreach, share it, or export the PDF.
+                  Create a <span className="font-semibold text-[var(--text-primary)]">free account</span> to <span className="font-semibold text-[var(--text-primary)]">save this brief</span>, log outreach, share it, or export the PDF.
                 </div>
               ) : null}
 

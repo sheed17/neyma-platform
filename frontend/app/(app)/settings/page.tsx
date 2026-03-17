@@ -43,7 +43,7 @@ export default function SettingsPage() {
         <CardBody className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="font-medium capitalize text-[var(--text-primary)]">{access?.plan_tier || "Free"} plan</p>
+              <p className="font-semibold text-[var(--text-primary)]">{String(access?.plan_tier || "FREE").toUpperCase()} PLAN</p>
               <p className="text-sm text-[var(--text-muted)]">
                 {String(access?.plan_tier) === "free"
                   ? "Monthly usage resets on the first day of each UTC month."

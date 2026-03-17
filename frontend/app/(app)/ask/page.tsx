@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -13,7 +13,7 @@ import {
   runAskQuery,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { clientFacingBriefError } from "@/lib/present";
+import { clientFacingAppError, clientFacingBriefError } from "@/lib/present";
 import type { ProspectList } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import Badge from "@/app/components/ui/Badge";
@@ -188,7 +188,7 @@ function formatEvidenceSource(source: string | undefined) {
   }
 }
 
-function askUsageMessage(access: ReturnType<typeof useAuth>["access"]) {
+function askUsageMessage(access: ReturnType<typeof useAuth>["access"]): ReactNode {
   if (!access) return null;
   if (access.viewer.is_guest) {
     return "Ask Neyma is available after signup so the shortlist can be saved and reopened inside the workspace.";
@@ -196,7 +196,12 @@ function askUsageMessage(access: ReturnType<typeof useAuth>["access"]) {
   if (String(access.plan_tier) === "free") {
     return `${access.remaining.ask ?? 0} of ${access.limits.ask ?? 0} Ask Neyma requests left this month on the free plan.`;
   }
-  return `${String(access.plan_tier).toUpperCase()} plan: Ask Neyma is available without a usage cap.`;
+  return (
+    <>
+      <span className="font-semibold text-[var(--text-primary)]">{String(access.plan_tier).toUpperCase()} Plan:</span>{" "}
+      <span className="font-semibold text-[var(--text-primary)]">Ask Neyma</span> is available without a usage cap.
+    </>
+  );
 }
 
 export default function AskPage() {
@@ -478,7 +483,7 @@ export default function AskPage() {
     } catch (err) {
       setProgressState(null);
       setProgressEvents([]);
-      setError(err instanceof Error ? err.message : "Failed to run request");
+      setError(clientFacingAppError(err instanceof Error ? err.message : "Failed to run request", "We couldn't run that Ask Neyma request right now. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -732,7 +737,10 @@ export default function AskPage() {
           <div>
             <p className="text-sm font-medium text-[var(--text-secondary)]">{headline}</p>
             {results.length > 0 && (
-              <p className="mt-1 text-xs text-[var(--text-muted)]">{readyBriefCount} briefs ready · {pendingBriefCount} not built yet</p>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                <span className="font-semibold text-[var(--text-secondary)]">{readyBriefCount} briefs ready</span> ·{" "}
+                <span className="font-semibold text-[var(--text-secondary)]">{pendingBriefCount} not built yet</span>
+              </p>
             )}
           </div>
           <button onClick={clearResults} className="text-sm text-[var(--text-secondary)] hover:underline">Clear results</button>
@@ -761,7 +769,9 @@ export default function AskPage() {
         <Card className="mx-auto mt-4 max-w-5xl border-[var(--border-default)]">
           <CardBody>
             <p className="text-sm text-[var(--text-secondary)]">
-              No matches. We scanned {noResultsSummary.total_scanned} prospects; most exclusions from {noResultsSummary.criterion_that_eliminated_most || "filters"}.
+              <span className="font-semibold text-[var(--text-primary)]">No matches.</span> We scanned{" "}
+              <span className="font-semibold text-[var(--text-primary)]">{noResultsSummary.total_scanned} prospects</span>; most exclusions came from{" "}
+              <span className="font-semibold text-[var(--text-primary)]">{noResultsSummary.criterion_that_eliminated_most || "filters"}</span>.
             </p>
             {noResultsSummary.filtered_out_by_criterion && Object.keys(noResultsSummary.filtered_out_by_criterion).length > 0 && (
               <p className="mt-1 text-xs text-[var(--text-muted)]">

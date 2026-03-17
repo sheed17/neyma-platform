@@ -13,7 +13,7 @@ import {
   getTerritoryScanResults,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { clientFacingBriefError } from "@/lib/present";
+import { clientFacingAppError, clientFacingBriefError } from "@/lib/present";
 import type { ProspectList, ProspectRow, TerritoryScanResultsResponse } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
@@ -50,7 +50,7 @@ function territoryPhaseLabel(phase: string) {
   const normalized = phase.toLowerCase();
   if (normalized.includes("candidate")) return "Discovering";
   if (normalized.includes("complete")) return "Complete";
-  if (normalized.includes("ai")) return "Refining";
+  if (normalized.includes("ai")) return "Finalizing";
   if (normalized.includes("rank")) return "Ranking";
   return "In progress";
 }
@@ -75,6 +75,7 @@ export default function TerritoryResultsPage() {
   const [listTargetDiagnosticId, setListTargetDiagnosticId] = useState<number | null>(null);
   const [listTargetBusinessName, setListTargetBusinessName] = useState("");
   const [briefProgress, setBriefProgress] = useState<BriefBuildProgressState | null>(null);
+  const [rowsVisible, setRowsVisible] = useState(false);
   const cacheKey = `territory_scan_${scanId}`;
   const canUseWorkspace = access?.can_use.workspace !== false;
   const canSave = access?.can_use.save !== false;
@@ -111,7 +112,7 @@ export default function TerritoryResultsPage() {
           }
           if (results.status === "completed" || results.status === "failed") return;
         } catch (err) {
-          if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load scan");
+          if (!cancelled) setError(clientFacingAppError(err instanceof Error ? err.message : "Failed to load scan", "We couldn't load this market scan right now. Please try again."));
         }
         attempts += 1;
         await new Promise((r) => setTimeout(r, 2500));
@@ -146,9 +147,16 @@ export default function TerritoryResultsPage() {
     const queryTotal = Number(summary.candidate_queries_total || 0);
     const processed = Number(summary.processed || 0);
     const total = Number(summary.scored_candidates || summary.total_candidates || 0);
-    if (phase === "candidate_fetch" && queryTotal > 0) return { label: `Finding candidates... ${queryDone}/${queryTotal} areas`, percent: Math.round((queryDone / queryTotal) * 100) };
-    if (total > 0) return { label: `Scanning... ${processed}/${total}`, percent: Math.round((processed / total) * 100) };
-    return { label: "Finding candidates...", percent: 0 };
+    if (phase === "candidate_fetch" && queryTotal > 0) {
+      return { label: "Searching the market", percent: 12 + Math.round((queryDone / queryTotal) * 34) };
+    }
+    if (phase.includes("ai")) {
+      return { label: "Refining the shortlist", percent: 84 };
+    }
+    if (total > 0) {
+      return { label: "Ranking local candidates", percent: 52 + Math.round((processed / total) * 24) };
+    }
+    return { label: "Preparing scan", percent: 8 };
   }, [data?.summary]);
   const prospects = useMemo(() => {
     const rows = [...(data?.prospects || [])];
@@ -166,8 +174,19 @@ export default function TerritoryResultsPage() {
         status: data?.status || (loading ? "running" : "idle"),
         summary: (data?.summary || {}) as Record<string, unknown>,
         currentCount: prospects.length,
+        marketHint: data?.market_hint || null,
+        elapsedLabel:
+          data?.status === "running" && data?.created_at
+            ? (() => {
+                const startedAt = new Date(data.created_at).getTime();
+                if (Number.isNaN(startedAt)) return null;
+                const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+                if (elapsedSeconds < 60) return `${elapsedSeconds}s elapsed`;
+                return `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s elapsed`;
+              })()
+            : null,
       }),
-    [data?.city, data?.state, data?.status, data?.summary, loading, prospects.length],
+    [data?.city, data?.state, data?.status, data?.summary, data?.market_hint, data?.created_at, loading, prospects.length],
   );
 
   const scanTimestamp = data?.completed_at || data?.created_at || null;
@@ -180,6 +199,15 @@ export default function TerritoryResultsPage() {
     [prospects],
   );
   const pendingBriefCount = Math.max(0, prospects.length - readyBriefCount);
+
+  useEffect(() => {
+    if (prospects.length === 0) {
+      setRowsVisible(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setRowsVisible(true), 120);
+    return () => window.clearTimeout(timer);
+  }, [prospects.length]);
 
   function markProspectBriefReady(prospectId: number | null | undefined, diagnosticId: number) {
     if (!prospectId) return;
@@ -318,9 +346,16 @@ export default function TerritoryResultsPage() {
         <div>
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-muted)]">Territory</p>
           <h1 className="mt-1 text-[20px] font-medium tracking-[-0.01em] text-[var(--text-primary)]">Market Scan: {data?.city || "Market"}{data?.state ? `, ${data.state}` : ""}</h1>
-          <p className="mt-1 text-[12px] leading-[1.8] text-[var(--text-muted)]">{prospects.length} prospects · {data?.status === "running" ? progress.label : "Scan complete"}</p>
+          <p className="mt-1 text-[12px] leading-[1.8] text-[var(--text-muted)]">
+            {data?.status === "running"
+              ? `${progress.label}${progress.supportingLabel ? ` · ${progress.supportingLabel}` : ""}`
+              : `${prospects.length} prospects ready`}
+          </p>
           {prospects.length > 0 && (
-            <p className="text-[12px] leading-[1.8] text-[var(--text-muted)]">{readyBriefCount} briefs ready · {pendingBriefCount} not built yet</p>
+            <p className="text-[12px] leading-[1.8] text-[var(--text-muted)]">
+              <span className="font-semibold text-[var(--text-secondary)]">{readyBriefCount} briefs ready</span> ·{" "}
+              <span className="font-semibold text-[var(--text-secondary)]">{pendingBriefCount} not built yet</span>
+            </p>
           )}
           {scanTimestamp && (
             <p className="text-[12px] leading-[1.8] text-[var(--text-muted)]">
@@ -338,7 +373,7 @@ export default function TerritoryResultsPage() {
       {!canUseWorkspace ? (
         <Card className="mb-4 border border-[var(--border-default)] bg-[var(--muted)]">
           <CardBody className="text-sm text-[var(--text-secondary)]">
-            Create a free account to save leads, reopen scans from the workspace, and export this market.
+            Create a <span className="font-semibold text-[var(--text-primary)]">free account</span> to <span className="font-semibold text-[var(--text-primary)]">save leads</span>, reopen scans from the workspace, and export this market.
           </CardBody>
         </Card>
       ) : null}
@@ -370,7 +405,11 @@ export default function TerritoryResultsPage() {
       <Card>
         <CardHeader
           title="Ranked Market Prospects"
-          subtitle={`Showing top ${Number(data?.summary?.accepted || prospects.length)} of ${Number(data?.summary?.scored_candidates || 0)} scored prospects. ${readyBriefCount} briefs are ready, ${pendingBriefCount} still need to be built.`}
+          subtitle={
+            data?.status === "running" && prospects.length === 0
+              ? "Neyma is still assembling the first ranked results. The table will fill in as the shortlist becomes ready."
+              : `Showing top ${Number(data?.summary?.accepted || prospects.length)} of ${Number(data?.summary?.scored_candidates || 0)} scored prospects. ${readyBriefCount} briefs are ready, ${pendingBriefCount} still need to be built.`
+          }
           action={
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value as "rank" | "name" | "reviews")} className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-default)] px-2 text-xs">
               <option value="rank">Sort: Rank</option>
@@ -394,7 +433,44 @@ export default function TerritoryResultsPage() {
               </tr>
             </thead>
             <tbody>
-              {prospects.map((row) => {
+              {prospects.length === 0 && data?.status === "running" ? (
+                <tr>
+                  <td colSpan={8} className="px-[18px] py-6">
+                    <div className="rounded-[18px] border border-[var(--border-default)] bg-[var(--muted)] p-4">
+                      <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--text-primary)]">
+                        <span className="shrink-0 scale-[0.5] text-[var(--primary)]">
+                          <Dots_v2 />
+                        </span>
+                        <span>Assembling the first ranked results</span>
+                      </div>
+                      <p className="mt-2 text-[12px] leading-6 text-[var(--text-muted)]">
+                        The shortlist will appear here once the <span className="font-semibold text-[var(--text-secondary)]">strongest candidates</span> are ready for review.
+                      </p>
+                      <div className="mt-4 space-y-2">
+                        {Array.from({ length: 3 }).map((_, index) => (
+                          <div
+                            key={index}
+                            className="flex items-center gap-3 rounded-[14px] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3"
+                          >
+                            <div className="h-4 w-4 rounded-full bg-[var(--muted)]" />
+                            <div className="min-w-0 flex-1">
+                              <div className="h-3 w-40 rounded-full bg-[var(--muted)]" />
+                              <div className="mt-2 h-3 w-28 rounded-full bg-[var(--muted)]" />
+                            </div>
+                            <div className="h-8 w-20 rounded-[10px] bg-[var(--muted)]" />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              ) : prospects.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-[18px] py-8 text-center text-[13px] text-[var(--text-muted)]">
+                    No prospects yet.
+                  </td>
+                </tr>
+              ) : prospects.map((row) => {
                 const busy = actionProspectId != null && actionProspectId === row.prospect_id;
                 const briefReady = territoryBriefReady(row);
                 const domain = websiteDomain(row.website);
@@ -405,7 +481,10 @@ export default function TerritoryResultsPage() {
                 return (
                   <tr
                     key={`${row.prospect_id || row.place_id}`}
-                    className="border-b-[0.5px] border-[var(--border-default)] align-middle transition hover:bg-[var(--surface)]"
+                    className={`border-b-[0.5px] border-[var(--border-default)] align-middle transition-all duration-500 hover:bg-[var(--surface)] ${
+                      rowsVisible ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0"
+                    }`}
+                    style={{ transitionDelay: `${Math.min((row.rank || 1) - 1, 5) * 60}ms` }}
                   >
                     <td className={`px-0 py-[11px] text-center align-middle text-[11px] font-medium ${topRank ? "text-[var(--primary)]" : "text-[var(--text-muted)]"}`}>
                       {rank}
@@ -525,11 +604,12 @@ type TerritoryScanProgressState = {
   phase: string;
   label: string;
   percent: number;
-  queryDone: number;
-  queryTotal: number;
   processed: number;
   total: number;
   accepted: number;
+  marketHint?: string | null;
+  elapsedLabel?: string | null;
+  supportingLabel?: string | null;
 };
 
 function buildTerritoryProgressState({
@@ -538,12 +618,16 @@ function buildTerritoryProgressState({
   status,
   summary,
   currentCount,
+  marketHint,
+  elapsedLabel,
 }: {
   city: string;
   state: string;
   status: string;
   summary: Record<string, unknown>;
   currentCount: number;
+  marketHint?: string | null;
+  elapsedLabel?: string | null;
 }): TerritoryScanProgressState {
   const phase = String(summary.phase || (status === "running" ? "candidate_fetch" : "completed"));
   const queryDone = Number(summary.candidate_queries_done || 0);
@@ -553,24 +637,46 @@ function buildTerritoryProgressState({
   const accepted = Number(summary.accepted || currentCount || 0);
   const label =
     phase === "candidate_fetch" && queryTotal > 0
-      ? `Discovering candidates across ${queryDone}/${queryTotal} areas`
+      ? "Searching the market"
       : phase.includes("ai")
-        ? `Refining the shortlist from ${total || accepted || currentCount} ranked candidates`
+        ? "Finalizing the shortlist"
       : total > 0
-        ? `Ranking ${processed}/${total} candidates`
+        ? "Ranking local candidates"
         : status === "completed"
           ? "Scan complete"
           : "Preparing scan";
+  const supportingLabel =
+    phase === "candidate_fetch" && queryTotal > 0
+      ? `Expanding coverage across ${queryDone}/${queryTotal} nearby areas`
+      : phase.includes("ai")
+        ? `Ordering the strongest ${total || accepted || currentCount} ranked candidates into the final shortlist`
+        : total > 0
+          ? `Scoring ${processed}/${total} candidates`
+          : null;
   const percent =
     phase === "candidate_fetch" && queryTotal > 0
-      ? Math.round((queryDone / queryTotal) * 100)
-      : total > 0
-        ? Math.round((processed / total) * 100)
-        : status === "completed"
-          ? 100
-          : 8;
+      ? 12 + Math.round((queryDone / queryTotal) * 34)
+      : phase.includes("ai")
+        ? 92
+        : total > 0
+          ? 52 + Math.round((processed / total) * 24)
+          : status === "completed"
+            ? 100
+            : 8;
 
-  return { city, state, phase, label, percent, queryDone, queryTotal, processed, total, accepted };
+  return {
+    city,
+    state,
+    phase,
+    label,
+    percent,
+    processed,
+    total,
+    accepted,
+    marketHint,
+    elapsedLabel,
+    supportingLabel,
+  };
 }
 
 function TerritoryScanProgressPanel({
@@ -602,28 +708,32 @@ function TerritoryScanProgressPanel({
   const steps = [
     {
       label: "Discover candidates",
-      meta: progress.queryTotal > 0 ? `${progress.queryDone}/${progress.queryTotal} areas` : "starting",
+      meta: phase.includes("candidate") ? "IN PROGRESS" : "DONE",
       description: "Search the market before any ranking starts.",
       done: !phase.includes("candidate") && (progress.total > 0 || progress.accepted > 0),
-      active: phase.includes("candidate") || (progress.queryDone === 0 && progress.accepted === 0),
+      active: phase.includes("candidate") || (progress.accepted === 0 && progress.total === 0),
     },
     {
       label: "Rank the market",
       meta: phase.includes("ai")
-        ? `${progress.total || progress.accepted} ranked`
+        ? `${progress.total || progress.accepted} READY`
         : progress.total > 0
-          ? `${progress.processed}/${progress.total} ranked`
-          : "queued",
+          ? `${progress.processed}/${progress.total} RANKED`
+          : "QUEUED",
       description: "Review local position, review gaps, and site readiness.",
-      done: progress.processed > 0 && !phase.includes("candidate") && progress.accepted > 0,
-      active: !phase.includes("candidate") && (progress.processed < progress.total || progress.total === 0),
+      done: !phase.includes("candidate") && !phase.includes("ai") && progress.processed > 0,
+      active: !phase.includes("candidate") && !phase.includes("ai") && (progress.processed < progress.total || progress.total === 0),
     },
     {
       label: "Build shortlist",
-      meta: `${progress.accepted} listed`,
+      meta: phase.includes("ai")
+        ? "FINALIZING"
+        : progress.accepted > 0
+          ? `${progress.accepted} READY`
+          : "QUEUED",
       description: "Keep the strongest practices and drop weak fits.",
-      done: false,
-      active: progress.accepted > 0 && progress.processed >= Math.max(progress.total, 1),
+      done: progress.accepted > 0 && !phase.includes("candidate") && !phase.includes("ai"),
+      active: phase.includes("ai") || (progress.accepted > 0 && progress.processed >= Math.max(progress.total, 1)),
     },
   ];
 
@@ -663,13 +773,35 @@ function TerritoryScanProgressPanel({
                 <p className="text-xs leading-5 text-[var(--text-muted)]">{subevents[subeventIndex]}</p>
               </div>
               <p className="mt-2 text-xs font-medium text-[var(--text-secondary)]">{progress.label}</p>
+              {progress.supportingLabel ? (
+                <p className="mt-1 text-[11px] leading-5 text-[var(--text-muted)]">{progress.supportingLabel}</p>
+              ) : null}
+              {progress.elapsedLabel ? (
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">{progress.elapsedLabel}</p>
+              ) : null}
+              {progress.marketHint ? (
+                <p className="mt-2 max-w-[240px] text-[11px] leading-5 text-[var(--text-muted)]">
+                  {progress.marketHint}
+                </p>
+              ) : null}
             </div>
           </div>
 
           <div className="min-w-0 flex-1">
             <div className="grid gap-2 sm:grid-cols-3">
-              <ProgressChip label="Areas" value={progress.queryTotal > 0 ? `${progress.queryDone}/${progress.queryTotal}` : "—"} />
-              <ProgressChip label="Ranked" value={progress.total > 0 ? `${progress.processed}/${progress.total}` : "—"} />
+              <ProgressChip label="Phase" value={territoryPhaseLabel(progress.phase)} />
+              <ProgressChip
+                label="Ranked"
+                value={
+                  phase.includes("ai")
+                    ? (progress.total > 0 ? `${progress.total} ready` : "Finalizing")
+                    : progress.total > 0
+                      ? `${progress.processed}/${progress.total}`
+                      : progress.processed > 0
+                        ? String(progress.processed)
+                        : "Building"
+                }
+              />
               <ProgressChip label="Shortlist" value={String(progress.accepted)} />
             </div>
 

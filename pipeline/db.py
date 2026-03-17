@@ -1708,8 +1708,18 @@ def get_access_state(user_id: int) -> Dict[str, Any]:
     if not user:
         raise ValueError("User not found")
     plan_tier = str(user.get("plan_tier") or "guest").strip().lower()
+    email = str(user.get("email") or "").strip().lower()
+    is_dev_test_user = email == "test@neyma.local"
     workspace = get_workspace(int(user["workspace_id"])) if user.get("workspace_id") else None
-    limits = feature_limit_map(plan_tier)
+    limits = (
+        {
+            "territory_scan": None,
+            "diagnostic": None,
+            "ask": None,
+        }
+        if is_dev_test_user
+        else feature_limit_map(plan_tier)
+    )
     subject_type, subject_id, period_key = _usage_subject(user)
     usage = get_usage_counter(subject_type, subject_id, period_key)
     remaining = {
@@ -1726,7 +1736,7 @@ def get_access_state(user_id: int) -> Dict[str, Any]:
         "share": not is_guest,
         "export": not is_guest,
     }
-    recommended_cta = "Upgrade to Pro" if not is_guest and plan_tier == "free" else "Sign up"
+    recommended_cta = None if is_dev_test_user else ("Upgrade to Pro" if not is_guest and plan_tier == "free" else "Sign up")
     return {
         "viewer": {
             "user_id": int(user["id"]),
@@ -1734,7 +1744,7 @@ def get_access_state(user_id: int) -> Dict[str, Any]:
             "name": user.get("name"),
             "is_guest": is_guest,
         },
-        "plan_tier": plan_tier,
+        "plan_tier": "pro" if is_dev_test_user else plan_tier,
         "workspace": (
             {
                 "id": int(workspace["id"]),

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getPublicSharedBrief } from "@/lib/api";
+import { clientFacingAppError } from "@/lib/present";
 import type { DiagnosticResponse } from "@/lib/types";
 import { generateOpportunityFocus, generateWhyNow } from "@/lib/pitch";
 import { getModeledUpsideDisplay } from "@/lib/revenueDisplay";
@@ -18,7 +19,7 @@ export default function SharedBriefPage() {
     if (!token) return;
     getPublicSharedBrief(token)
       .then(setResult)
-      .catch((e) => setError(e.message))
+      .catch((e) => setError(clientFacingAppError(e instanceof Error ? e.message : "Failed to load shared brief", "We couldn't open this shared brief right now.")))
       .finally(() => setLoading(false));
   }, [token]);
 

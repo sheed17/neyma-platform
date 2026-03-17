@@ -1,13 +1,20 @@
 "use client";
 
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 import { AuthForm } from "@/components/ui/premium-auth";
 import { useAuth } from "@/lib/auth";
 
 export default function LoginPage() {
-  const { login, loginAsTestUser } = useAuth();
+  const { user, loading, login, loginAsTestUser } = useAuth();
   const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && user) {
+      router.replace("/dashboard");
+    }
+  }, [loading, router, user]);
 
   return (
     <div className="grid w-full max-w-5xl gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">

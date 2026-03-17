@@ -90,6 +90,90 @@ export function clientFacingBriefError(message: string | null | undefined, fallb
   return raw;
 }
 
+export function clientFacingAppError(
+  message: string | null | undefined,
+  fallback = "Something didn't come through on our side. Please try again."
+): string {
+  const raw = String(message || "").trim();
+  if (!raw) return fallback;
+
+  const normalized = raw.toLowerCase();
+
+  if (normalized.includes("valid 2-letter us state code")) return raw;
+  if (normalized.includes("enter a city")) return raw;
+  if (normalized.includes("enter a business name")) return raw;
+  if (normalized.includes("select a list")) return raw;
+  if (normalized.includes("list name is required")) return "Enter a name for the list.";
+
+  if (
+    normalized.includes("unable to reach the api")
+    || normalized.includes("networkerror")
+    || normalized.includes("failed to fetch")
+    || normalized.includes("load failed")
+  ) {
+    return "We couldn't reach Neyma right now. Please try again in a moment.";
+  }
+
+  if (
+    normalized.includes("timed out")
+    || normalized.includes("job timed out")
+  ) {
+    return "This is taking longer than expected. Please try again.";
+  }
+
+  if (
+    normalized.includes("job did not start")
+    || normalized.includes("did not start")
+    || normalized.includes("no job id")
+    || normalized.includes("no diagnostic id")
+    || normalized.includes("prospect id missing")
+    || normalized.includes("no diagnostic selected")
+    || normalized.includes("no prospect selected")
+  ) {
+    return "We couldn't start that step right now. Please try again.";
+  }
+
+  if (
+    normalized.includes("unauthorized")
+    || normalized.includes("forbidden")
+    || normalized.includes("auth required")
+  ) {
+    return "Sign in to continue with this action.";
+  }
+
+  if (
+    normalized.includes("free plan")
+    || normalized.includes("guest")
+    || normalized.includes("limit reached")
+  ) {
+    return raw;
+  }
+
+  if (
+    normalized.includes("openai")
+    || normalized.includes("supabase")
+    || normalized.includes("railway")
+    || normalized.includes("playwright")
+    || normalized.includes("crawl")
+    || normalized.includes("crawler")
+    || normalized.includes("rendered")
+    || normalized.includes("traceback")
+    || normalized.includes("exception")
+  ) {
+    return fallback;
+  }
+
+  if (
+    normalized.includes("failed")
+    || normalized.includes("error")
+    || normalized.includes("could not")
+  ) {
+    return fallback;
+  }
+
+  return raw;
+}
+
 export function clientFacingAuditText(text: string | null | undefined): string {
   const raw = String(text || "").trim();
   if (!raw) return "";

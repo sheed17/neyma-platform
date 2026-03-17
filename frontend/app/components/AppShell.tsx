@@ -68,7 +68,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const { user, access, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const guestEntry = !user && isGuestEntryPath(pathname);
-  const planLabel = access?.plan_tier ? `${String(access.plan_tier).charAt(0).toUpperCase()}${String(access.plan_tier).slice(1)} plan` : null;
+  const planLabel = access?.plan_tier ? `${String(access.plan_tier).toUpperCase()} PLAN` : null;
 
   const pageMeta = useMemo(() => pageMetaFromPath(pathname || "/dashboard"), [pathname]);
 
@@ -85,11 +85,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       <div className="relative z-10 flex min-h-screen">
         {!guestEntry ? (
-        <aside className="hidden min-h-screen w-[248px] shrink-0 self-stretch border-r border-[var(--border-default)] bg-white/88 lg:block">
+        <aside className="hidden min-h-screen w-[248px] shrink-0 self-stretch border-r border-white/12 bg-[var(--primary)] lg:block">
           <div className="sticky top-0 flex h-screen flex-col px-4 py-5">
             <Link href="/dashboard" className="rounded-[18px] px-2 py-1">
-              <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[var(--text-muted)]">Neyma workspace</p>
-              <p className="mt-1 text-[28px] font-medium tracking-[-0.05em] text-[var(--text-primary)]">Neyma</p>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/68">NEYMA WORKSPACE</p>
+              <p className="mt-1 text-[28px] font-medium tracking-[-0.05em] text-white">Neyma</p>
             </Link>
 
             <nav className="mt-6 space-y-2">
@@ -102,33 +102,33 @@ export default function AppShell({ children }: { children: ReactNode }) {
                     href={link.href}
                     className={`flex items-center gap-3 rounded-[16px] px-3 py-3 text-sm transition ${
                       active
-                        ? "bg-white text-[var(--text-primary)] shadow-[0_12px_28px_rgba(10,10,10,0.08)]"
-                        : "text-[var(--text-secondary)] hover:bg-white hover:text-[var(--text-primary)]"
+                        ? "bg-white text-[var(--primary)] shadow-[0_12px_28px_rgba(10,10,10,0.12)]"
+                        : "text-white/82 hover:bg-white/10 hover:text-white"
                     }`}
                   >
                     <span
                       className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border ${
                         active
                           ? "border-[#e9def7] bg-[#f5eefc] text-[var(--primary)]"
-                          : "border-[var(--border-default)] bg-[var(--surface)] text-[var(--text-secondary)]"
+                          : "border-white/16 bg-white/10 text-white/82"
                       }`}
                     >
                       <Icon className="h-4 w-4 shrink-0" />
                     </span>
-                    <span className="font-medium">{link.label}</span>
+                    <span className="font-semibold">{link.label}</span>
                   </Link>
                 );
               })}
             </nav>
 
-            <div className="mt-auto rounded-[22px] border border-[var(--border-default)] bg-[var(--surface)] p-4">
+            <div className="mt-auto rounded-[22px] border border-white/14 bg-white/10 p-4 backdrop-blur-sm">
               {user ? (
                 <div>
-                  <p className="truncate text-sm text-[var(--text-primary)]">{user.name}</p>
-                  {planLabel ? <p className="mt-1 text-xs text-[var(--text-secondary)]">{planLabel}</p> : null}
+                  <p className="truncate text-sm font-semibold text-white">{user.name}</p>
+                  {planLabel ? <p className="mt-1 text-xs font-semibold tracking-[0.08em] text-white/72">{planLabel}</p> : null}
                   <button
                     onClick={logout}
-                    className="mt-3 inline-flex h-10 items-center rounded-full border border-[var(--border-default)] bg-white px-4 text-sm text-[var(--text-secondary)] transition hover:bg-white hover:text-[var(--text-primary)]"
+                    className="mt-3 inline-flex h-10 items-center rounded-full border border-white/16 bg-white px-4 text-sm font-medium text-[var(--primary)] transition hover:bg-white/95"
                   >
                     Log out
                   </button>
@@ -184,7 +184,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                         {user.name?.slice(0, 1).toUpperCase() || "N"}
                       </span>
                       <div className="hidden pr-1 sm:block">
-                        <p className="text-sm font-medium text-black/85">{user.name}</p>
+                        <p className="text-sm font-semibold text-black/85">{user.name}</p>
                       </div>
                     </div>
                     <button

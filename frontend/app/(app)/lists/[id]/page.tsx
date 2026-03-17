@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { getListMembers, removeListMember } from "@/lib/api";
+import { clientFacingAppError } from "@/lib/present";
 import type { ProspectListMembersResponse, ProspectRow } from "@/lib/types";
 import Button from "@/app/components/ui/Button";
 import { Card, CardHeader } from "@/app/components/ui/Card";
@@ -31,7 +32,7 @@ export default function ListDetailPage() {
     try {
       setData(await getListMembers(listId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load list");
+      setError(clientFacingAppError(err instanceof Error ? err.message : "Failed to load list", "We couldn't load this list right now. Please try again."));
     } finally {
       setLoading(false);
     }

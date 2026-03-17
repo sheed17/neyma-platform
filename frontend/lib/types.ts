@@ -441,6 +441,18 @@ export type TerritoryScanStatusResponse = {
   completed_at?: string | null;
   summary?: Record<string, unknown>;
   error?: string | null;
+  current_step?: string;
+  progress_pct?: number;
+  status_label?: string;
+  status_note?: string;
+  market_hint?: string | null;
+  live_counts?: {
+    areas_done?: number;
+    areas_total?: number;
+    candidates_found?: number;
+    candidates_scored?: number;
+    shortlist_count?: number;
+  };
 };
 
 export type ProspectRow = {

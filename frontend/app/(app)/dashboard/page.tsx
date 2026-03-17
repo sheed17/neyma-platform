@@ -19,6 +19,7 @@ import EmptyState from "@/app/components/ui/EmptyState";
 import { Skeleton } from "@/app/components/ui/Skeleton";
 
 const PAGE_SIZE = 10;
+const WORKSPACE_CACHE_KEY = "neyma_workspace_snapshot_v1";
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", {
@@ -197,19 +198,48 @@ export default function DashboardPage() {
   const [page, setPage] = useState(0);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const cached = window.sessionStorage.getItem(WORKSPACE_CACHE_KEY);
+      if (!cached) return;
+      const parsed = JSON.parse(cached) as {
+        items?: DiagnosticListItem[];
+        scans?: TerritoryScanListItem[];
+      };
+      if (Array.isArray(parsed.items)) setItems(parsed.items);
+      if (Array.isArray(parsed.scans)) setScans(parsed.scans);
+      if (Array.isArray(parsed.items) || Array.isArray(parsed.scans)) {
+        setLoading(false);
+      }
+    } catch {
+      // ignore malformed cache
+    }
+  }, []);
+
+  useEffect(() => {
     async function load() {
-      setLoading(true);
       setError(null);
       try {
         const [diagnostics, recentScans] = await Promise.all([
-          listDiagnostics(200, 0),
+          listDiagnostics(80, 0),
           getRecentTerritoryScans(10),
         ]);
         setItems(diagnostics.items);
         setScans(recentScans.items);
+        if (typeof window !== "undefined") {
+          window.sessionStorage.setItem(
+            WORKSPACE_CACHE_KEY,
+            JSON.stringify({
+              items: diagnostics.items,
+              scans: recentScans.items,
+            }),
+          );
+        }
       } catch (err) {
-        setItems([]);
-        setScans([]);
+        if (items.length === 0 && scans.length === 0) {
+          setItems([]);
+          setScans([]);
+        }
         setError(
           err instanceof Error
             ? err.message
@@ -221,7 +251,7 @@ export default function DashboardPage() {
     }
 
     void load();
-  }, []);
+  }, [items.length, scans.length]);
 
   useEffect(() => {
     setPage(0);

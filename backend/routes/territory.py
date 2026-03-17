@@ -37,6 +37,64 @@ from pipeline.db import (
 router = APIRouter(tags=["territory"])
 
 
+def _territory_progress_payload(summary: Dict[str, Any] | None, status: str, current_count: int = 0) -> Dict[str, Any]:
+    payload = dict(summary or {})
+    phase = str(payload.get("phase") or ("completed" if status == "completed" else "candidate_fetch"))
+    query_done = int(payload.get("candidate_queries_done") or 0)
+    query_total = int(payload.get("candidate_queries_total") or 0)
+    processed = int(payload.get("processed") or 0)
+    total = int(payload.get("scored_candidates") or payload.get("total_candidates") or 0)
+    accepted = int(payload.get("accepted") or current_count or 0)
+    raw_candidates = int(payload.get("raw_candidates_collected") or 0)
+
+    if phase == "candidate_fetch" and query_total > 0:
+        progress_pct = round((query_done / max(query_total, 1)) * 100)
+        current_step = "discover_candidates"
+        status_label = "Discovering candidates"
+        status_note = f"Searching across {query_done}/{query_total} nearby areas"
+    elif "ai" in phase:
+        progress_pct = round((processed / max(total, 1)) * 100) if total > 0 else 82
+        current_step = "refine_shortlist"
+        status_label = "Refining shortlist"
+        status_note = f"Reordering the strongest {max(total, accepted, current_count)} candidates"
+    elif "rank" in phase or "score" in phase:
+        progress_pct = round((processed / max(total, 1)) * 100) if total > 0 else 48
+        current_step = "rank_market"
+        status_label = "Ranking the market"
+        status_note = f"Scoring {processed}/{max(total, processed, 1)} candidates"
+    elif status == "completed":
+        progress_pct = 100
+        current_step = "completed"
+        status_label = "Scan complete"
+        status_note = f"{accepted} shortlisted"
+    else:
+        progress_pct = 8
+        current_step = "starting"
+        status_label = "Preparing scan"
+        status_note = "Getting the market ready"
+
+    market_hint = (
+        "This is a larger market, so search expansion may take a minute."
+        if phase == "candidate_fetch" and query_total >= 100
+        else None
+    )
+
+    return {
+        "current_step": current_step,
+        "progress_pct": max(0, min(progress_pct, 100)),
+        "status_label": status_label,
+        "status_note": status_note,
+        "live_counts": {
+            "areas_done": query_done,
+            "areas_total": query_total,
+            "candidates_found": raw_candidates,
+            "candidates_scored": processed,
+            "shortlist_count": accepted,
+        },
+        "market_hint": market_hint,
+    }
+
+
 class TerritoryFilters(BaseModel):
     has_implant_gap: Optional[bool] = None
     below_review_avg: Optional[bool] = None
@@ -134,13 +192,18 @@ def get_scan_status(scan_id: str, request: Request):
     scan = get_territory_scan(scan_id, user_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+    progress = _territory_progress_payload(scan.get("summary") or {}, str(scan.get("status") or ""), 0)
     return {
         "scan_id": scan_id,
+        "city": scan.get("city"),
+        "state": scan.get("state"),
+        "vertical": scan.get("vertical"),
         "status": scan.get("status"),
         "created_at": scan.get("created_at"),
         "completed_at": scan.get("completed_at"),
         "summary": scan.get("summary") or {},
         "error": scan.get("error"),
+        **progress,
     }
 
 
@@ -163,6 +226,7 @@ def get_scan_results(scan_id: str, request: Request):
     else:
         # list_rescan polling only needs status/summary; keep compatibility.
         ranked = []
+    progress = _territory_progress_payload(scan.get("summary") or {}, str(scan.get("status") or ""), len(ranked))
 
     return {
         "scan_id": scan_id,
@@ -174,6 +238,7 @@ def get_scan_results(scan_id: str, request: Request):
         "completed_at": scan.get("completed_at"),
         "summary": scan.get("summary") or {},
         "error": scan.get("error"),
+        **progress,
         "prospects": ranked,
     }
 
