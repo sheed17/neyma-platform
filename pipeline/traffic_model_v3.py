@@ -249,6 +249,18 @@ def compute_traffic_v3(
     paid_clicks = _paid_clicks_estimate_monthly(context)
     traffic_conf = _traffic_confidence_score(context, objective_layer or {}, index)
 
+    # Override with real SEO traffic data when available
+    real_organic = context.get("signal_real_organic_traffic")
+    traffic_source = "proxy_model"
+    if real_organic is not None and real_organic > 0:
+        traffic_source = context.get("signal_traffic_source", "seo_api")
+        traffic_estimate_monthly = {"lower": int(real_organic * 0.8), "upper": int(real_organic * 1.2)}
+        traffic_conf = min(95, traffic_conf + 30)
+
+    real_paid = context.get("signal_real_paid_traffic")
+    if real_paid is not None and real_paid > 0:
+        paid_clicks = {"lower": int(real_paid * 0.8), "upper": int(real_paid * 1.2)}
+
     return {
         "traffic_index": index,
         "traffic_estimate_tier": tier,
@@ -257,6 +269,7 @@ def compute_traffic_v3(
         "traffic_confidence_score": traffic_conf,
         "traffic_efficiency_score": eff_score,
         "traffic_efficiency_interpretation": eff_label,
+        "traffic_source": traffic_source,
         "traffic_assumptions": TRAFFIC_ASSUMPTIONS,
         "paid_clicks_assumptions": PAID_CLICKS_ASSUMPTIONS if paid_clicks else None,
         "model_version": TRAFFIC_MODEL_VERSION,

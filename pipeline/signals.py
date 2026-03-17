@@ -20,9 +20,10 @@ Cost Optimization:
 import re
 import time
 import logging
-from typing import Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from html import unescape
+from urllib.parse import urljoin, urlparse
 import requests
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,9 @@ USER_AGENT = (
 # Automated scheduling is an ops maturity signal, NOT a booking requirement.
 #
 # Interpretation:
-#   has_automated_scheduling = true  → Operationally mature, possibly saturated
-#   has_automated_scheduling = false → Manual ops, higher optimization opportunity
+#   has_automated_scheduling = true  → Verified self-scheduling flow
+#   has_automated_scheduling = false → Verified phone-only / non-self-scheduling flow
+#   has_automated_scheduling = null  → Unknown or only partial/request-form evidence
 AUTOMATED_SCHEDULING_PATTERNS = [
     # Field service management (HVAC-specific)
     r'servicetitan\.com',
@@ -69,10 +71,29 @@ AUTOMATED_SCHEDULING_PATTERNS = [
     r'lumahealth\.io',
     r'weave\.com',
     r'demandforce\.com',
+    r'dentrix\.com',
+    r'curvedental\.com',
+    r'opendental\.com',
+    r'denticon\.com',
+    r'carestack\.com',
+    r'tab32\.com',
+    r'revenuewell\.com',
+    r'yapi\.com',
+    r'lighthouse360\.com',
+    r'pb\.dental',
+    r'flexbook\.me',
+    r'getweave\.com',
+    r'modento\.io',
+    r'kleer\.com',
+    r'dentalhq\.com',
     
-    # Booking platforms (less common for HVAC)
+    # Booking platforms (general)
     r'booksy\.com',
     r'vagaro\.com',
+    r'mindbody\.com',
+    r'mindbodyonline\.com',
+    r'jane\.app',
+    r'intakeq\.com',
 ]
 
 # Booking conversion path (dentist-realistic): detect path type from page
@@ -80,8 +101,14 @@ BOOKING_CONVERSION_PATH_FULL = [
     r"book\s*now",
     r"book\s*online",
     r"book\s*an?\s*appointment",
+    r"make\s+an?\s+appointment",
+    r"make\s+appointment",
     r"schedule\s*now",
     r"schedule\s*online",
+    r"schedule\s+with\s+us",
+    r"pick\s+a\s+time",
+    r"select\s+(a\s+)?time",
+    r"complete\s+your\s+booking",
     r"appointment\s*request",  # often leads to scheduler
 ]
 BOOKING_CONVERSION_PATH_REQUEST = [
@@ -89,12 +116,49 @@ BOOKING_CONVERSION_PATH_REQUEST = [
     r"request\s*a\s*visit",
     r"schedule\s*request",
     r"contact\s*us\s*for\s*appointment",
+    r"request\s+an?\s+appointment",
 ]
 BOOKING_CONVERSION_PATH_PHONE_ONLY = [
     r"call\s*to\s*schedule",
     r"phone\s*only",
     r"call\s*for\s*appointment",
 ]
+
+BOOKING_FLOW_TIME_PATTERNS = [
+    r"pick\s+a\s+time",
+    r"select\s+(a\s+)?time",
+    r"available\s+times?",
+    r"time\s+slot",
+    r"choose\s+(a\s+)?time",
+]
+
+BOOKING_FLOW_STEP_PATTERNS = [
+    r"appointment\s+type",
+    r"complete\s+your\s+booking",
+    r"next:\s*select\s+time",
+    r"returning\s+patient",
+    r"new\s+patient",
+]
+
+BOOKING_PAGE_HINT_PATTERNS = [
+    r"/make-appointment",
+    r"/appointment",
+    r"/appointments",
+    r"/schedule",
+    r"/book",
+    r"/book-now",
+    r"/request-appointment",
+]
+
+CONTACT_PAGE_HINT_PATTERNS = [
+    r"/contact",
+    r"/contact-us",
+    r"/request-appointment",
+    r"/appointment-request",
+    r"/book",
+]
+
+MAX_CAPTURE_FOLLOWUP_PAGES = 3
 
 # =============================================================================
 # CONTACT FORM DETECTION (AGENCY-SAFE)
@@ -524,6 +588,31 @@ def _fetch_website_html(url: str, headers: Dict) -> Tuple[Optional[str], int, bo
         return None, 0, url.startswith('https'), url
 
 
+def _is_low_quality_html(html: str | None) -> bool:
+    """
+    Conservative quality gate for initial HTML extraction.
+
+    Returns True when content is missing or likely an unrendered JS shell.
+    """
+    if html is None:
+        return True
+
+    html_lower = html.lower()
+    if len(html) < 500:
+        return True
+    if "<body" not in html_lower:
+        return True
+
+    js_shell_markers = [
+        "enable javascript",
+        "__next_data__",
+        "app-root",
+        "<noscript>",
+        "window.__initial_state__",
+    ]
+    return any(marker in html_lower for marker in js_shell_markers)
+
+
 def _extract_emails(html: str) -> List[str]:
     """
     Extract email addresses from HTML content.
@@ -557,6 +646,121 @@ def _extract_emails(html: str) -> List[str]:
             emails.add(email)
     
     return list(emails)
+
+
+def _strip_html_tags(raw: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", raw or "", flags=re.IGNORECASE)
+    text = unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _same_domain(url_a: str, url_b: str) -> bool:
+    try:
+        a = normalize_domain(url_a)
+        b = normalize_domain(url_b)
+        return bool(a and b and a == b)
+    except Exception:
+        return False
+
+
+def _extract_same_domain_anchor_candidates(html: str, base_url: str) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for href, inner in re.findall(
+        r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        href = str(href or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        full_url = urljoin(base_url, href)
+        if not _same_domain(full_url, base_url):
+            continue
+        norm = full_url.split("#", 1)[0]
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(
+            {
+                "url": norm,
+                "path": urlparse(norm).path or "/",
+                "text": _strip_html_tags(inner).lower(),
+            }
+        )
+    return out
+
+
+def _collect_capture_candidate_urls(html: str, base_url: str) -> Dict[str, List[str]]:
+    anchors = _extract_same_domain_anchor_candidates(html, base_url)
+    booking: List[str] = []
+    contact: List[str] = []
+    for row in anchors:
+        text = row["text"]
+        path = row["path"].lower()
+        url = row["url"]
+        if (
+            any(re.search(p, text, re.IGNORECASE) for p in BOOKING_CONVERSION_PATH_FULL + BOOKING_CONVERSION_PATH_REQUEST)
+            or any(re.search(p, path, re.IGNORECASE) for p in BOOKING_PAGE_HINT_PATTERNS)
+        ):
+            booking.append(url)
+            continue
+        if (
+            any(re.search(p, text, re.IGNORECASE) for p in CONTACT_FORM_TEXT_PATTERNS)
+            or any(re.search(p, path, re.IGNORECASE) for p in CONTACT_PAGE_HINT_PATTERNS)
+        ):
+            contact.append(url)
+    return {
+        "booking": booking[:MAX_CAPTURE_FOLLOWUP_PAGES],
+        "contact": contact[:MAX_CAPTURE_FOLLOWUP_PAGES],
+    }
+
+
+def _merge_unique_strs(*values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for group in values:
+        for value in group or []:
+            item = str(value or "").strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def _path_label(url: str, base_url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        base = urlparse(base_url)
+        path = parsed.path or "/"
+        if normalize_domain(url) != normalize_domain(base_url):
+            return parsed.netloc or url
+        return path or "/"
+    except Exception:
+        return url
+
+
+def _booking_confidence(flow_type: str, evidence: List[str]) -> str:
+    if flow_type == "online_self_scheduling":
+        if any("pick a time" in e.lower() or "select time" in e.lower() or "complete your booking" in e.lower() for e in evidence):
+            return "high"
+        if any("platform" in e.lower() for e in evidence):
+            return "high"
+        return "medium"
+    if flow_type in {"appointment_request_form", "call_only"}:
+        return "high" if evidence else "medium"
+    return "low"
+
+
+def _contact_confidence(value: Optional[bool], evidence: List[str]) -> str:
+    if value is True:
+        if any("form html" in e.lower() or "submit" in e.lower() or "plugin" in e.lower() for e in evidence):
+            return "high"
+        return "medium"
+    if value is False:
+        return "high" if evidence else "medium"
+    return "low"
 
 
 def _detect_schema_microdata(html: str, html_lower: str, has_substantial_html: bool) -> Tuple[Optional[bool], Optional[List[str]]]:
@@ -701,6 +905,47 @@ def _detect_phone_in_html(html: str, html_lower: str, has_substantial_html: bool
     return None
 
 
+def _detect_phone_clickable(html_lower: str, has_substantial_html: bool) -> Optional[bool]:
+    if re.search(r'href\s*=\s*["\']tel:[^"\']+["\']', html_lower, re.IGNORECASE):
+        return True
+    if has_substantial_html:
+        return False
+    return None
+
+
+def _count_cta_elements(html_lower: str) -> int:
+    """
+    Count approximate CTA elements by text and class/id markers.
+    Deterministic, lightweight proxy (no DOM execution).
+    """
+    text_patterns = [
+        r'>\s*book(?:\s+now|\s+online|\s+appointment)?\s*<',
+        r'>\s*schedule(?:\s+now|\s+online|\s+appointment)?\s*<',
+        r'>\s*contact(?:\s+us)?\s*<',
+        r'>\s*call(?:\s+now|\s+us)?\s*<',
+        r'>\s*request(?:\s+appointment|\s+quote|\s+service)?\s*<',
+    ]
+    attr_patterns = [
+        r'class\s*=\s*["\'][^"\']*(?:cta|button|btn|appointment|book)[^"\']*["\']',
+        r'id\s*=\s*["\'][^"\']*(?:cta|button|btn|appointment|book)[^"\']*["\']',
+    ]
+    count = 0
+    for p in text_patterns + attr_patterns:
+        count += len(re.findall(p, html_lower, re.IGNORECASE))
+    return min(count, 100)
+
+
+def _detect_form_step_type(html_lower: str, has_substantial_html: bool) -> str:
+    if not has_substantial_html:
+        return "unknown"
+    # Heuristic: explicit step labels / wizard indicators imply multi-step.
+    if re.search(r'(multi[- ]?step|step\s*1|step\s*2|next\s*step|progress[- ]?bar|wizard)', html_lower, re.IGNORECASE):
+        return "multi_step"
+    if "<form" in html_lower:
+        return "single_step"
+    return "unknown"
+
+
 def _detect_address_in_html(html_lower: str, has_substantial_html: bool) -> Optional[bool]:
     """Detect physical address on page (schema or street pattern). Phase 0.1."""
     for pattern in ADDRESS_IN_HTML_PATTERNS:
@@ -711,7 +956,7 @@ def _detect_address_in_html(html_lower: str, has_substantial_html: bool) -> Opti
     return None
 
 
-def _analyze_html_content(html: str) -> Dict:
+def _analyze_html_content(html: str, base_url: Optional[str] = None) -> Dict:
     """
     Analyze HTML content for signals using AGENCY-SAFE tri-state semantics.
     
@@ -740,8 +985,10 @@ def _analyze_html_content(html: str) -> Dict:
     """
     html_lower = html.lower()
     
-    # Check if we have substantial HTML content
+    # Substantial HTML is used for broader site-quality signals. Capture verification
+    # needs a lower bar because booking/contact pages are often short.
     has_substantial_html = len(html_lower) > 500 and '<body' in html_lower
+    has_capture_html = len(html_lower) > 80 and any(token in html_lower for token in ("<body", "<form", "href=", "<button", "<input"))
     
     # =========================================================================
     # MOBILE-FRIENDLY: Viewport meta tag detection
@@ -775,16 +1022,21 @@ def _analyze_html_content(html: str) -> Dict:
         for pattern in CONTACT_FORM_ABSENCE_PATTERNS
     )
     
-    # Determine has_contact_form with AGENCY-SAFE logic
-    if has_form_html or has_form_text:
-        # Confidently observed - human can clearly submit a request
+    # Determine has_contact_form with AGENCY-SAFE logic.
+    # Text-only CTA evidence is recorded separately and can trigger follow-up verification,
+    # but we do not treat it as a verified form on its own.
+    contact_form_evidence: List[str] = []
+    if has_form_html:
+        contact_form_evidence.append("Form HTML or form plugin detected")
+        if has_form_text:
+            contact_form_evidence.append("Contact/request CTA language detected")
         has_contact_form = True
     elif has_explicit_absence:
-        # Explicit evidence of absence - defensible to reviewer
+        contact_form_evidence.append("Explicit phone-only or no-online-form language detected")
         has_contact_form = False
     else:
-        # Unknown - could be JS-rendered, iframe, multi-page flow
-        # DEFAULT TO NULL, NOT FALSE
+        if has_form_text:
+            contact_form_evidence.append("Contact/request CTA language detected but no submit form verified on this page")
         has_contact_form = None
     
     # =========================================================================
@@ -802,16 +1054,65 @@ def _analyze_html_content(html: str) -> Dict:
         email_address = None
     
     # =========================================================================
-    # AUTOMATED SCHEDULING: Operational maturity signal
+    # AUTOMATED SCHEDULING: Online booking detection
     # =========================================================================
-    has_scheduling_evidence = any(
+    has_scheduling_platform = any(
         re.search(pattern, html_lower, re.IGNORECASE)
         for pattern in AUTOMATED_SCHEDULING_PATTERNS
     )
-    
-    if has_scheduling_evidence:
+
+    # Detect booking CTAs and links to booking subdomains/pages
+    has_full_cta = any(re.search(p, html_lower) for p in BOOKING_CONVERSION_PATH_FULL) if has_capture_html else False
+    has_request_cta = any(re.search(p, html_lower) for p in BOOKING_CONVERSION_PATH_REQUEST) if has_capture_html else False
+    has_phone_only_cta = any(re.search(p, html_lower) for p in BOOKING_CONVERSION_PATH_PHONE_ONLY) if has_capture_html else False
+    has_time_markers = any(re.search(p, html_lower, re.IGNORECASE) for p in BOOKING_FLOW_TIME_PATTERNS) if has_capture_html else False
+    has_step_markers = any(re.search(p, html_lower, re.IGNORECASE) for p in BOOKING_FLOW_STEP_PATTERNS) if has_capture_html else False
+
+    # Check for booking links to subdomains (book.*, schedule.*, appointment.*)
+    has_booking_subdomain_link = False
+    if has_capture_html:
+        booking_link_patterns = [
+            r'href\s*=\s*["\']https?://book\.',
+            r'href\s*=\s*["\']https?://schedule\.',
+            r'href\s*=\s*["\']https?://appointment\.',
+            r'href\s*=\s*["\']https?://booking\.',
+            r'href\s*=\s*["\']https?://app\.[^"\']*(?:book|schedul|appoint)',
+        ]
+        has_booking_subdomain_link = any(
+            re.search(p, html_lower, re.IGNORECASE)
+            for p in booking_link_patterns
+        )
+
+    scheduling_cta_detected = bool(has_full_cta or has_request_cta or has_phone_only_cta or has_booking_subdomain_link)
+    booking_flow_evidence: List[str] = []
+    if has_scheduling_platform:
+        booking_flow_evidence.append("Known scheduling platform detected")
+    if has_full_cta:
+        booking_flow_evidence.append("Strong scheduling CTA detected")
+    if has_request_cta:
+        booking_flow_evidence.append("Appointment request CTA detected")
+    if has_phone_only_cta:
+        booking_flow_evidence.append("Call-to-schedule CTA detected")
+    if has_time_markers:
+        booking_flow_evidence.append("Time-selection UI markers detected")
+    if has_step_markers:
+        booking_flow_evidence.append("Appointment flow step markers detected")
+    if has_booking_subdomain_link:
+        booking_flow_evidence.append("Booking-oriented link target detected")
+
+    booking_flow_type = "unknown"
+    if has_scheduling_platform or ((has_full_cta or has_request_cta) and has_time_markers) or (has_time_markers and has_step_markers):
+        booking_flow_type = "online_self_scheduling"
+    elif has_request_cta and (has_form_html or has_form_text or has_step_markers):
+        booking_flow_type = "appointment_request_form"
+    elif has_phone_only_cta:
+        booking_flow_type = "call_only"
+
+    # Online booking = verified self-scheduling only.
+    has_automated_scheduling: bool | None
+    if booking_flow_type == "online_self_scheduling":
         has_automated_scheduling = True
-    elif has_substantial_html:
+    elif booking_flow_type == "call_only":
         has_automated_scheduling = False
     else:
         has_automated_scheduling = None
@@ -820,17 +1121,14 @@ def _analyze_html_content(html: str) -> Dict:
     # BOOKING CONVERSION PATH (dentist-realistic: Phone-only | Request form | Online booking limited/full)
     # =========================================================================
     booking_conversion_path = None
-    if has_substantial_html:
-        has_full_cta = any(re.search(p, html_lower) for p in BOOKING_CONVERSION_PATH_FULL)
-        has_request_cta = any(re.search(p, html_lower) for p in BOOKING_CONVERSION_PATH_REQUEST)
-        has_phone_only_cta = any(re.search(p, html_lower) for p in BOOKING_CONVERSION_PATH_PHONE_ONLY)
-        if has_scheduling_evidence and has_full_cta:
+    if has_capture_html:
+        if booking_flow_type == "online_self_scheduling" and (has_time_markers or has_step_markers):
             booking_conversion_path = "Online booking (full)"
-        elif has_scheduling_evidence:
+        elif booking_flow_type == "online_self_scheduling":
             booking_conversion_path = "Online booking (limited)"
-        elif has_request_cta or (has_contact_form and not has_scheduling_evidence):
+        elif booking_flow_type == "appointment_request_form":
             booking_conversion_path = "Request form"
-        elif has_phone_only_cta or (not has_contact_form and not has_scheduling_evidence):
+        elif booking_flow_type == "call_only":
             booking_conversion_path = "Phone-only"
     
     # =========================================================================
@@ -900,16 +1198,29 @@ def _analyze_html_content(html: str) -> Dict:
     # =========================================================================
     has_social_links, social_platforms = _detect_social_links(html_lower, has_substantial_html)
     has_phone_in_html = _detect_phone_in_html(html, html_lower, has_substantial_html)
+    phone_clickable = _detect_phone_clickable(html_lower, has_substantial_html)
+    cta_count = _count_cta_elements(html_lower) if has_substantial_html else 0
+    form_step_type = _detect_form_step_type(html_lower, has_substantial_html)
     has_address_in_html = _detect_address_in_html(html_lower, has_substantial_html)
     linkedin_company_url = _extract_linkedin_company_url(html)
+    candidate_urls = _collect_capture_candidate_urls(html, base_url) if (base_url and has_capture_html) else {"booking": [], "contact": []}
     
     return {
         "mobile_friendly": mobile_friendly,
         "has_contact_form": has_contact_form,
+        "contact_form_confidence": _contact_confidence(has_contact_form, contact_form_evidence),
+        "contact_form_evidence": contact_form_evidence,
+        "contact_form_cta_detected": bool(has_form_text),
         "has_email": has_email,
         "email_address": email_address,
         "has_automated_scheduling": has_automated_scheduling,
         "booking_conversion_path": booking_conversion_path,
+        "booking_flow_type": booking_flow_type,
+        "booking_flow_confidence": _booking_confidence(booking_flow_type, booking_flow_evidence),
+        "booking_flow_evidence": booking_flow_evidence,
+        "scheduling_cta_detected": scheduling_cta_detected,
+        "booking_candidate_urls": candidate_urls.get("booking") or [],
+        "contact_candidate_urls": candidate_urls.get("contact") or [],
         "has_trust_badges": has_trust_badges,
         # New signal families
         "runs_paid_ads": runs_paid_ads,
@@ -923,9 +1234,156 @@ def _analyze_html_content(html: str) -> Dict:
         "has_social_links": has_social_links,
         "social_platforms": social_platforms if social_platforms else None,
         "has_phone_in_html": has_phone_in_html,
+        "phone_clickable": phone_clickable,
+        "cta_count": cta_count,
+        "form_single_or_multi_step": form_step_type,
         "has_address_in_html": has_address_in_html,
         "linkedin_company_url": linkedin_company_url,
         "_has_substantial_html": has_substantial_html,
+    }
+
+
+def _booking_flow_rank(value: str) -> int:
+    normalized = str(value or "").strip().lower()
+    if normalized == "online_self_scheduling":
+        return 4
+    if normalized == "appointment_request_form":
+        return 3
+    if normalized == "call_only":
+        return 2
+    return 0
+
+
+def _verification_status(value: Optional[bool]) -> str:
+    if value is True:
+        return "detected"
+    if value is False:
+        return "not_detected"
+    return "unknown"
+
+
+def _capture_page_signal_bundle(
+    *,
+    page_url: str,
+    html: Optional[str],
+    headers: Dict[str, str],
+    use_headless: bool,
+) -> Tuple[Optional[Dict], str]:
+    if not html:
+        return None, "requests_failed"
+
+    analysis = _analyze_html_content(html, base_url=page_url)
+    method = "requests"
+
+    needs_render = (
+        _is_low_quality_html(html)
+        or (analysis.get("scheduling_cta_detected") and analysis.get("has_automated_scheduling") is None)
+        or (analysis.get("contact_form_cta_detected") and analysis.get("has_contact_form") is None)
+    )
+    if use_headless and needs_render:
+        try:
+            from pipeline.headless_browser import render_page
+
+            rendered_html, _ = render_page(page_url)
+            if rendered_html and not _is_low_quality_html(rendered_html):
+                rendered_analysis = _analyze_html_content(rendered_html, base_url=page_url)
+                analysis = rendered_analysis
+                method = "playwright"
+        except Exception as exc:
+            logger.debug("Capture follow-up headless render skipped for %s: %s", page_url, exc)
+    return analysis, method
+
+
+def _merge_capture_verification(
+    *,
+    homepage_url: str,
+    homepage_analysis: Dict,
+    followups: List[Dict[str, Any]],
+    extraction_method: str,
+) -> Dict[str, Any]:
+    all_pages = [
+        {
+            "page": _path_label(homepage_url, homepage_url),
+            "source": "homepage",
+            "analysis": homepage_analysis,
+            "method": extraction_method,
+        }
+    ] + list(followups or [])
+
+    booking_page = max(
+        all_pages,
+        key=lambda row: _booking_flow_rank(str((row.get("analysis") or {}).get("booking_flow_type") or "")),
+    )
+    booking_analysis = booking_page.get("analysis") or {}
+
+    contact_page = next(
+        (row for row in all_pages if (row.get("analysis") or {}).get("has_contact_form") is True),
+        None,
+    )
+    if contact_page is None:
+        contact_page = next(
+            (row for row in all_pages if (row.get("analysis") or {}).get("has_contact_form") is False),
+            None,
+        )
+    if contact_page is None:
+        contact_page = all_pages[0]
+    contact_analysis = contact_page.get("analysis") or {}
+
+    booking_cta_pages = [
+        row["page"]
+        for row in all_pages
+        if (row.get("analysis") or {}).get("scheduling_cta_detected")
+    ]
+    contact_cta_pages = [
+        row["page"]
+        for row in all_pages
+        if (row.get("analysis") or {}).get("contact_form_cta_detected")
+    ]
+
+    booking_value = str(booking_analysis.get("booking_flow_type") or "unknown")
+    contact_value = contact_analysis.get("has_contact_form")
+
+    booking_evidence = _merge_unique_strs(
+        list(booking_analysis.get("booking_flow_evidence") or []),
+        [f"Observed on {_path_label(booking_page.get('page') or homepage_url, homepage_url)}"] if booking_value != "unknown" else [],
+    )
+    contact_evidence = _merge_unique_strs(
+        list(contact_analysis.get("contact_form_evidence") or []),
+        [f"Observed on {contact_page.get('page')}"] if contact_value is True else [],
+    )
+
+    return {
+        "homepage_page": _path_label(homepage_url, homepage_url),
+        "followup_pages_checked": [row["page"] for row in followups],
+        "verification_methods": [
+            {
+                "page": row["page"],
+                "method": row["method"],
+                "source": row["source"],
+            }
+            for row in all_pages
+        ],
+        "scheduling_cta": {
+            "status": "detected" if booking_cta_pages else "unknown",
+            "confidence": "high" if booking_cta_pages else "low",
+            "observed_pages": booking_cta_pages or [all_pages[0]["page"]],
+            "evidence": _merge_unique_strs(
+                [f"Booking CTA observed on {page}" for page in booking_cta_pages],
+                list(booking_analysis.get("booking_flow_evidence") or [])[:2],
+            )[:4],
+        },
+        "booking_flow": {
+            "value": booking_value,
+            "confidence": str(booking_analysis.get("booking_flow_confidence") or "low"),
+            "observed_pages": [booking_page["page"]] if booking_value != "unknown" else ([all_pages[0]["page"]] if booking_cta_pages else []),
+            "evidence": booking_evidence[:4],
+        },
+        "contact_form": {
+            "status": _verification_status(contact_value),
+            "confidence": str(contact_analysis.get("contact_form_confidence") or "low"),
+            "observed_pages": [contact_page["page"]] if contact_value is not None else (contact_cta_pages or []),
+            "evidence": contact_evidence[:4],
+        },
     }
 
 
@@ -939,8 +1397,9 @@ def analyze_website(url: str) -> Dict:
     - null  = Unknown / not determinable (page inaccessible, JS-rendered, etc.)
     
     Design:
-    - 1 GET request (+ 1 retry on SSL failure via HTTP)
-    - No headless browser, no JS execution
+    - Primary HTTP GET (+ 1 retry on SSL failure via HTTP)
+    - One guarded headless retry only when extraction quality is low
+      or critical signals are all inconclusive
     - Unknown ≠ False (epistemically honest)
     - SSL errors don't block analysis - we try HTTP fallback
     
@@ -960,10 +1419,16 @@ def analyze_website(url: str) -> Dict:
         "has_ssl": None,               # Unknown until we try to connect
         "mobile_friendly": None,       # Unknown until HTML analyzed
         "has_contact_form": None,      # Unknown until HTML analyzed (NEVER default false)
+        "contact_form_confidence": "low",
+        "contact_form_cta_detected": None,
         "has_email": None,             # Unknown until HTML analyzed (NEVER false)
         "email_address": None,
         "has_automated_scheduling": None,
         "booking_conversion_path": None,
+        "booking_flow_type": None,
+        "booking_flow_confidence": "low",
+        "scheduling_cta_detected": None,
+        "capture_verification": None,
         "has_trust_badges": None,
         "page_load_time_ms": None,
         "website_accessible": None,
@@ -978,8 +1443,14 @@ def analyze_website(url: str) -> Dict:
         "has_social_links": None,
         "social_platforms": None,
         "has_phone_in_html": None,
+        "phone_clickable": None,
+        "cta_count": 0,
+        "form_single_or_multi_step": "unknown",
         "has_address_in_html": None,
         "linkedin_company_url": None,
+        "extraction_method": "http",
+        "extraction_retry_count": 0,
+        "extraction_notes": None,
     }
     
     headers = {
@@ -997,21 +1468,24 @@ def analyze_website(url: str) -> Dict:
     signals["page_load_time_ms"] = load_time_ms if load_time_ms > 0 else None
     signals["has_ssl"] = has_ssl  # This is determined from the connection
     signals["website_url"] = final_url
-    
+
+    # Primary analysis (if HTML is present).
+    content_signals = None
     if html:
-        # Successfully retrieved HTML - we can make confident assessments
         signals["website_accessible"] = True
-        
-        # Analyze HTML content - returns tri-state values
-        content_signals = _analyze_html_content(html)
+        content_signals = _analyze_html_content(html, base_url=final_url)
         signals["mobile_friendly"] = content_signals["mobile_friendly"]
         signals["has_contact_form"] = content_signals["has_contact_form"]
+        signals["contact_form_confidence"] = content_signals.get("contact_form_confidence") or "low"
+        signals["contact_form_cta_detected"] = content_signals.get("contact_form_cta_detected")
         signals["has_email"] = content_signals["has_email"]
         signals["email_address"] = content_signals["email_address"]
         signals["has_automated_scheduling"] = content_signals["has_automated_scheduling"]
         signals["booking_conversion_path"] = content_signals.get("booking_conversion_path")
+        signals["booking_flow_type"] = content_signals.get("booking_flow_type")
+        signals["booking_flow_confidence"] = content_signals.get("booking_flow_confidence") or "low"
+        signals["scheduling_cta_detected"] = content_signals.get("scheduling_cta_detected")
         signals["has_trust_badges"] = content_signals["has_trust_badges"]
-        # New signal families
         signals["runs_paid_ads"] = content_signals["runs_paid_ads"]
         signals["paid_ads_channels"] = content_signals["paid_ads_channels"]
         signals["hiring_active"] = content_signals["hiring_active"]
@@ -1022,14 +1496,145 @@ def analyze_website(url: str) -> Dict:
         signals["has_social_links"] = content_signals["has_social_links"]
         signals["social_platforms"] = content_signals["social_platforms"]
         signals["has_phone_in_html"] = content_signals["has_phone_in_html"]
+        signals["phone_clickable"] = content_signals["phone_clickable"]
+        signals["cta_count"] = content_signals["cta_count"]
+        signals["form_single_or_multi_step"] = content_signals["form_single_or_multi_step"]
         signals["has_address_in_html"] = content_signals["has_address_in_html"]
         signals["linkedin_company_url"] = content_signals["linkedin_company_url"]
     else:
-        # Could not retrieve HTML - site is not accessible
-        # We KNOW it's not accessible (confident false)
-        # But we DON'T KNOW about content signals (null = unknown)
-        # AGENCY-SAFE: All content signals remain null
+        # Primary fetch failed; content signals remain unknown (None defaults).
         signals["website_accessible"] = False
+
+    # Recovery ladder: headless retry only when extraction quality is weak.
+    critical_fields = [
+        "has_contact_form",
+        "has_automated_scheduling",
+        "runs_paid_ads",
+        "hiring_active",
+    ]
+    low_quality_html = _is_low_quality_html(html)
+    critical_all_none = all(signals.get(field) is None for field in critical_fields)
+    should_try_headless = low_quality_html or critical_all_none
+
+    best_content_signals = content_signals
+    best_html = html
+    if should_try_headless:
+        try:
+            from pipeline.headless_browser import render_page
+
+            rendered_html, rendered_load_ms = render_page(final_url)
+            if rendered_html and not _is_low_quality_html(rendered_html):
+                rendered_signals = _analyze_html_content(rendered_html, base_url=final_url)
+                signals["website_accessible"] = True
+                signals["mobile_friendly"] = rendered_signals["mobile_friendly"]
+                signals["has_contact_form"] = rendered_signals["has_contact_form"]
+                signals["contact_form_confidence"] = rendered_signals.get("contact_form_confidence") or "low"
+                signals["contact_form_cta_detected"] = rendered_signals.get("contact_form_cta_detected")
+                signals["has_email"] = rendered_signals["has_email"]
+                signals["email_address"] = rendered_signals["email_address"]
+                signals["has_automated_scheduling"] = rendered_signals["has_automated_scheduling"]
+                signals["booking_conversion_path"] = rendered_signals.get("booking_conversion_path")
+                signals["booking_flow_type"] = rendered_signals.get("booking_flow_type")
+                signals["booking_flow_confidence"] = rendered_signals.get("booking_flow_confidence") or "low"
+                signals["scheduling_cta_detected"] = rendered_signals.get("scheduling_cta_detected")
+                signals["has_trust_badges"] = rendered_signals["has_trust_badges"]
+                signals["runs_paid_ads"] = rendered_signals["runs_paid_ads"]
+                signals["paid_ads_channels"] = rendered_signals["paid_ads_channels"]
+                signals["hiring_active"] = rendered_signals["hiring_active"]
+                signals["hiring_roles"] = rendered_signals["hiring_roles"]
+                signals["hiring_signal_source"] = rendered_signals.get("hiring_signal_source")
+                signals["has_schema_microdata"] = rendered_signals["has_schema_microdata"]
+                signals["schema_types"] = rendered_signals["schema_types"]
+                signals["has_social_links"] = rendered_signals["has_social_links"]
+                signals["social_platforms"] = rendered_signals["social_platforms"]
+                signals["has_phone_in_html"] = rendered_signals["has_phone_in_html"]
+                signals["phone_clickable"] = rendered_signals["phone_clickable"]
+                signals["cta_count"] = rendered_signals["cta_count"]
+                signals["form_single_or_multi_step"] = rendered_signals["form_single_or_multi_step"]
+                signals["has_address_in_html"] = rendered_signals["has_address_in_html"]
+                signals["linkedin_company_url"] = rendered_signals["linkedin_company_url"]
+
+                if signals["page_load_time_ms"] is None and rendered_load_ms > 0:
+                    signals["page_load_time_ms"] = rendered_load_ms
+                signals["extraction_method"] = "headless"
+                signals["extraction_retry_count"] = 1
+                signals["extraction_notes"] = "Recovered via headless render"
+                best_content_signals = rendered_signals
+                best_html = rendered_html
+            else:
+                signals["extraction_notes"] = "Headless fallback failed"
+        except Exception as exc:
+            logger.debug("Headless fallback skipped for %s: %s", final_url, exc)
+            signals["extraction_notes"] = "Headless fallback failed"
+
+    followups: List[Dict[str, Any]] = []
+    followup_urls: List[str] = []
+    if best_html and best_content_signals:
+        booking_urls = list(best_content_signals.get("booking_candidate_urls") or [])
+        contact_urls = list(best_content_signals.get("contact_candidate_urls") or [])
+        followup_urls = _merge_unique_strs(booking_urls, contact_urls)[:MAX_CAPTURE_FOLLOWUP_PAGES]
+
+    should_follow_capture = bool(followup_urls) and (
+        signals.get("has_automated_scheduling") is not True
+        or signals.get("has_contact_form") is not True
+        or signals.get("scheduling_cta_detected")
+    )
+
+    if should_follow_capture:
+        use_headless = bool(signals.get("extraction_method") == "headless")
+        for candidate_url in followup_urls:
+            follow_html, _, _, follow_final_url = _fetch_website_html(candidate_url, headers)
+            page_url = follow_final_url or candidate_url
+            page_analysis, method = _capture_page_signal_bundle(
+                page_url=page_url,
+                html=follow_html,
+                headers=headers,
+                use_headless=use_headless,
+            )
+            if not page_analysis:
+                continue
+            followups.append(
+                {
+                    "page": _path_label(page_url, final_url),
+                    "url": page_url,
+                    "source": "followup",
+                    "method": method,
+                    "analysis": page_analysis,
+                }
+            )
+
+        for row in followups:
+            analysis = row.get("analysis") or {}
+            if analysis.get("has_contact_form") is True:
+                signals["has_contact_form"] = True
+                signals["contact_form_confidence"] = analysis.get("contact_form_confidence") or "high"
+            elif signals.get("has_contact_form") is None and analysis.get("has_contact_form") is False:
+                signals["has_contact_form"] = False
+                signals["contact_form_confidence"] = analysis.get("contact_form_confidence") or "high"
+
+            booking_flow_type = str(analysis.get("booking_flow_type") or "")
+            if _booking_flow_rank(booking_flow_type) > _booking_flow_rank(str(signals.get("booking_flow_type") or "")):
+                signals["booking_flow_type"] = booking_flow_type
+                signals["booking_flow_confidence"] = analysis.get("booking_flow_confidence") or "medium"
+                signals["booking_conversion_path"] = analysis.get("booking_conversion_path")
+                if booking_flow_type == "online_self_scheduling":
+                    signals["has_automated_scheduling"] = True
+                elif booking_flow_type == "call_only" and signals.get("has_automated_scheduling") is None:
+                    signals["has_automated_scheduling"] = False
+
+            if analysis.get("scheduling_cta_detected"):
+                signals["scheduling_cta_detected"] = True
+
+        if followups and signals.get("extraction_method") == "http":
+            signals["extraction_method"] = "http_followup"
+
+    if best_content_signals:
+        signals["capture_verification"] = _merge_capture_verification(
+            homepage_url=final_url,
+            homepage_analysis=best_content_signals,
+            followups=followups,
+            extraction_method=str(signals.get("extraction_method") or "http"),
+        )
     
     return signals
 
@@ -1124,7 +1729,8 @@ def extract_signals(lead: Dict) -> Dict:
     
     # Extract review signals
     reviews = details.get("reviews", [])
-    review_count = lead.get("user_ratings_total", 0) or len(reviews)
+    urt = lead.get("user_ratings_total")
+    review_count = int(urt) if urt is not None and urt != 0 else len(reviews)
     rating = lead.get("rating")
     last_review_days_ago = calculate_days_since_review(reviews)
     
@@ -1148,10 +1754,16 @@ def extract_signals(lead: Dict) -> Dict:
             "has_ssl": None,             # Unknown
             "mobile_friendly": None,     # Unknown
             "has_contact_form": None,    # Unknown (NEVER false)
+            "contact_form_confidence": "low",
+            "contact_form_cta_detected": None,
             "has_email": None,           # Unknown (NEVER false)
             "email_address": None,
             "has_automated_scheduling": None,
             "booking_conversion_path": None,
+            "booking_flow_type": None,
+            "booking_flow_confidence": "low",
+            "scheduling_cta_detected": None,
+            "capture_verification": None,
             "has_trust_badges": None,
             "page_load_time_ms": None,
             "website_accessible": None,
@@ -1165,6 +1777,9 @@ def extract_signals(lead: Dict) -> Dict:
             "has_social_links": None,
             "social_platforms": None,
             "has_phone_in_html": None,
+            "phone_clickable": None,
+            "cta_count": 0,
+            "form_single_or_multi_step": "unknown",
             "has_address_in_html": None,
             "linkedin_company_url": None,
         }
@@ -1212,6 +1827,8 @@ def extract_signals(lead: Dict) -> Dict:
         
         # Inbound readiness - AGENCY-SAFE (never default false)
         "has_contact_form": website_signals["has_contact_form"],
+        "contact_form_confidence": website_signals.get("contact_form_confidence"),
+        "contact_form_cta_detected": website_signals.get("contact_form_cta_detected"),
         
         # Email reachability - NEVER false
         "has_email": website_signals["has_email"],
@@ -1220,6 +1837,10 @@ def extract_signals(lead: Dict) -> Dict:
         # Operational maturity - can be false (explicit signal)
         "has_automated_scheduling": website_signals["has_automated_scheduling"],
         "booking_conversion_path": website_signals.get("booking_conversion_path"),
+        "booking_flow_type": website_signals.get("booking_flow_type"),
+        "booking_flow_confidence": website_signals.get("booking_flow_confidence"),
+        "scheduling_cta_detected": website_signals.get("scheduling_cta_detected"),
+        "capture_verification": website_signals.get("capture_verification"),
         
         # Trust/reputation signals
         "has_trust_badges": website_signals["has_trust_badges"],
@@ -1258,6 +1879,14 @@ def extract_signals(lead: Dict) -> Dict:
         "review_summary_text": review_context.get("review_summary"),
         "review_themes": review_context.get("review_themes") or [],
         "review_sample_snippets": review_context.get("review_sample_snippets") or [],
+        "review_sample_size": review_context.get("review_sample_size") or 0,
+        "review_service_mentions": review_context.get("service_mentions") or {},
+        "review_complaint_themes": review_context.get("complaint_themes") or {},
+        "review_intelligence": review_context,
+        # Observable conversion-structure details
+        "phone_clickable": website_signals.get("phone_clickable"),
+        "cta_count": website_signals.get("cta_count"),
+        "form_single_or_multi_step": website_signals.get("form_single_or_multi_step"),
     }
     
     return signals

@@ -38,6 +38,7 @@ from pipeline.fetch import PlacesFetcher, get_keywords_for_niche
 from pipeline.normalize import (
     normalize_place,
     deduplicate_places,
+    filter_practices_only,
     filter_places,
     get_place_summary
 )
@@ -191,7 +192,13 @@ def run_extraction(
     logger.info("Step 4: Deduplicating places...")
     unique_places = deduplicate_places(normalized_places)
     logger.info(f"Unique places after deduplication: {len(unique_places)}")
-    
+
+    # Step 7b: Dental-only practice filter (exclude individual practitioner listings)
+    if "dent" in (niche or "").strip().lower():
+        logger.info("Step 4b: Filtering to dental practice listings only...")
+        unique_places = filter_practices_only(unique_places)
+        logger.info(f"Practice listings remaining: {len(unique_places)}")
+
     # Step 8: Optional filtering
     if min_rating is not None or min_reviews is not None:
         logger.info("Step 5: Applying filters...")

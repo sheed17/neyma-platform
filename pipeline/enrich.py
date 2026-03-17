@@ -36,6 +36,8 @@ REQUIRED_FIELDS = [
     "formatted_phone_number",
     "international_phone_number",
     "reviews",
+    "user_ratings_total",
+    "rating",
     "url",  # Google Maps URL (basic, free)
 ]
 
@@ -199,7 +201,6 @@ class PlaceDetailsEnricher:
         details = self.get_place_details(place_id)
         
         if details:
-            # Merge details into lead (don't overwrite existing fields)
             enriched = lead.copy()
             enriched["_place_details"] = {
                 "website": details.get("website"),
@@ -208,6 +209,10 @@ class PlaceDetailsEnricher:
                 "reviews": details.get("reviews", []),
                 "google_maps_url": details.get("url"),
             }
+            if details.get("user_ratings_total") is not None:
+                enriched["user_ratings_total"] = details["user_ratings_total"]
+            if details.get("rating") is not None:
+                enriched["rating"] = details["rating"]
             return enriched
         
         return lead

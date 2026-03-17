@@ -10,6 +10,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+PRACTICE_KEYWORDS = (
+    "dental",
+    "dentistry",
+    "group",
+    "family",
+    "smile",
+    "clinic",
+    "center",
+    "associates",
+    "care",
+    "&",
+)
+
 
 def normalize_place(place_json: Dict) -> Dict:
     """
@@ -120,6 +133,45 @@ def deduplicate_places(places: List[Dict]) -> List[Dict]:
         logger.info(f"Removed {duplicates_removed} duplicate places")
     
     return unique_places
+
+
+def is_likely_practice(place: Dict) -> bool:
+    """
+    Heuristic classifier for dental listings.
+
+    Returns True for practice-level listings, False for likely individual
+    practitioner listings (e.g., "Dr. Jane Smith, DDS").
+    """
+    name = str(place.get("name") or "").strip()
+    if not name:
+        return True
+
+    lower_name = name.lower()
+    has_practice_keyword = any(keyword in lower_name for keyword in PRACTICE_KEYWORDS)
+    starts_with_dr = lower_name.startswith("dr.") or lower_name.startswith("dr ")
+
+    if starts_with_dr and not has_practice_keyword:
+        return False
+    return True
+
+
+def filter_practices_only(places: List[Dict]) -> List[Dict]:
+    """Keep only listings classified as practice-level."""
+    kept: List[Dict] = []
+    removed = 0
+    for place in places:
+        if is_likely_practice(place):
+            kept.append(place)
+        else:
+            removed += 1
+
+    if removed > 0:
+        logger.info(
+            "Filtered out %s individual practitioner listings; %s practices remaining",
+            removed,
+            len(kept),
+        )
+    return kept
 
 
 def filter_places(

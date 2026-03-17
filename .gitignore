@@ -15,5 +15,10 @@ output/
 # Logs
 *.log
 
+# Frontend (Next.js)
+frontend/.next/
+frontend/.env.local
+frontend/node_modules/
+
 # OS
 .DS_Store

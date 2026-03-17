@@ -51,6 +51,7 @@ from pipeline.db import (
     update_run_completed,
     update_run_failed,
 )
+from pipeline.embedding_store import store_lead_embedding_if_eligible
 
 def _compute_run_stats(signals: List[Dict]) -> Dict:
     """Run stats for DB (same as run_enrichment)."""
@@ -179,6 +180,7 @@ def run_upload_pipeline(
                 what_would_change=decision.what_would_change,
                 prompt_version=agent.prompt_version,
             )
+            store_lead_embedding_if_eligible(lead_id, merged, force_embed=False)
             if (idx + 1) % progress_interval == 0:
                 logger.info("  Processed %d/%d leads", idx + 1, len(enriched_leads))
         run_stats = _compute_run_stats(signals)

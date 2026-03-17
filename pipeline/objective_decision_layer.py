@@ -31,8 +31,13 @@ REQUEST_TIMEOUT = 55
 # --- Demand / Capture / Conversion / Trust model (deterministic) ---
 
 
+_FILLER_PREFIXES = ("limited ", "no data",)
+
 def _signal_block(status: str, evidence: List[str], confidence: float) -> Dict[str, Any]:
-    return {"status": status, "evidence": evidence[:5], "confidence": round(min(1.0, max(0.0, confidence)), 2)}
+    meaningful = [e for e in evidence if not any(e.lower().startswith(p) for p in _FILLER_PREFIXES)]
+    conf = 0.5 + 0.1 * len(meaningful)
+    conf = round(min(0.85, max(0.0, min(confidence, conf))), 2)
+    return {"status": status, "evidence": evidence[:5], "confidence": conf}
 
 
 def _compute_demand_signals(lead: Dict, dentist_profile: Dict) -> Dict[str, Any]:
@@ -131,16 +136,22 @@ def _compute_conversion_signals(lead: Dict, dentist_profile: Dict) -> Dict[str, 
     """Conversion: booking friction, contact form, call-only intake, mobile UX proxy."""
     evidence = []
     readiness = dentist_profile.get("patient_acquisition_readiness") or {}
+    svc = lead.get("service_intelligence") or {}
+    low_crawl = str((svc.get("crawl_confidence") or "")).strip().lower() == "low"
     booking_friction = readiness.get("booking_friction", "")
     leaks = readiness.get("conversion_leaks") or []
     has_booking = lead.get("signal_has_automated_scheduling") is True
     has_form = lead.get("signal_has_contact_form") is True
     has_phone = lead.get("signal_has_phone") is True
-    if has_booking:
+    if low_crawl:
+        evidence.append("Conversion structure not fully evaluated (low crawl confidence)")
+    elif has_booking:
         evidence.append("Online booking present")
     else:
         evidence.append("No online booking")
-    if has_form:
+    if low_crawl:
+        pass
+    elif has_form:
         evidence.append("Contact form present")
     else:
         evidence.append("No contact form detected")
@@ -149,9 +160,11 @@ def _compute_conversion_signals(lead: Dict, dentist_profile: Dict) -> Dict[str, 
     for leak in leaks[:3]:
         evidence.append(leak)
     score = 0.0
-    if has_booking:
+    if low_crawl:
+        score += 0.15
+    elif has_booking:
         score += 0.5
-    if has_form:
+    if not low_crawl and has_form:
         score += 0.25
     if booking_friction == "Low":
         score += 0.25
@@ -262,6 +275,16 @@ def _compute_root_bottleneck(
         and not (capture == "Strong" and trust == "Strong" and has_niche_positioning)
     )
 
+    has_website = lead.get("signal_has_website") is True
+
+    if trust == "Weak" and not has_website:
+        return {
+            "bottleneck": "visibility_limited",
+            "why_root_cause": "No website detected; the practice is essentially invisible online beyond its GBP listing.",
+            "evidence": dcm["capture_signals"]["evidence"] + ["No website detected"],
+            "what_would_change": "Establishing a web presence would shift this classification.",
+            "confidence": dcm["capture_signals"]["confidence"],
+        }
     if trust == "Weak":
         return {
             "bottleneck": "trust_limited",
@@ -423,7 +446,7 @@ def _compute_comparative_context(
         positioning = competitive_snapshot.get("review_positioning") or "—"
         density = competitive_snapshot.get("market_density_score", "")
         return (
-            f"Among {competitive_snapshot['dentists_sampled']} nearby dentists, this practice has "
+            f"Among {competitive_snapshot['dentists_sampled']} nearby practices, this practice has "
             f"{review_count} reviews (sample avg {avg:.0f}); {positioning}. Market density: {density}."
         )
     typical_volume = 50

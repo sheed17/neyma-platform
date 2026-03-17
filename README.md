@@ -1,454 +1,206 @@
 # Lead Scoring Engine
 
-A Python-based Google Places lead extraction and enrichment system that reliably collects and analyzes hundreds to thousands of business leads for a given niche and city.
+An intelligence platform that extracts, enriches, and analyzes business leads from Google Places—built for the dental vertical and production deployment.
 
-**Product focus:** We decide which businesses are worth your time — and tell you why. Score is internal (used for ordering/filtering); what we give users is **context**: reasoning, dimensions, themes, outreach angles, and evidence so they can act with confidence.
+We decide which businesses are worth pursuing and explain why. The system delivers **context over scores**: reasoning, dimensions, outreach angles, and evidence so sales teams can act with confidence.
 
-## Pipeline Overview
+---
 
-| Step | Script | Description |
-|------|--------|-------------|
-| 1–3 | `run_pipeline.py` | Extract leads via Nearby Search (grid + keyword expansion) |
-| 4 | `run_enrichment.py` | Enrich with Place Details, signals, Meta Ads (optional), context (reasoning, dimensions, themes); writes to SQLite |
-| 5 | `export_leads.py` | Export context-first (from DB) or legacy (from file) |
-| — | `list_runs.py` | List runs, prune by retention |
-| — | `test_small.py` | Quick end-to-end test (3 leads, ~$0.06; optional Meta Ads when token set) |
-| — | `run_upload.py` | Enrich **uploaded** leads (CSV/JSON): same signals, Meta Ads, context, DB; teams can run their existing lists through the pipeline |
+## What We Built
 
-## Features
+### End-to-end pipeline
+- **Extraction** — Geographic tiling, keyword expansion, and pagination to collect leads from Google Places Nearby Search
+- **Enrichment** — Place Details, website signals, Meta Ads detection, and competitor sampling
+- **Intelligence** — Objective decision layer, revenue modeling, and deterministic context for each lead
 
-### Lead Extraction (Steps 1-3)
-- **Geographic Tiling**: Grid-based search for complete city coverage
-- **Keyword Expansion**: Multiple search terms per niche
-- **Pagination**: Up to 60 results per query
-- **Deduplication**: Removes duplicates using `place_id`
+### Dental vertical
+The system is specialized for dental practices. For each lead we produce:
 
-### Signal Extraction & Context (Step 4)
-- **Place Details Enrichment**: Website, phone, reviews
-- **Website Signals**: SSL, mobile-friendly, contact forms, booking widgets, LinkedIn company URL
-- **Phone Normalization**: International format standardization
-- **Review Analysis**: Recency, count, rating; optional review summary and themes (LLM or keyword fallback)
-- **Meta Ads Library** (optional): When `META_ACCESS_TOKEN` is set, checks whether the business runs Meta ads; augments `signal_runs_paid_ads` / `signal_paid_ads_channels`
-- **Context for the user**: Six dimensions, reasoning summary, priority suggestion, themes, suggested outreach angles, confidence, and optional LLM refinement and RAG (`--llm-reasoning`). Score is internal; export and UX should emphasize this context so users see *why* a lead is or isn’t worth their time.
+- **Objective Intelligence** — Root constraint, primary growth vector, service gaps (high-ticket detected vs missing landing pages), competitive profile (market density, review tier, nearest competitors)
+- **Revenue Intelligence Brief** — Executive diagnosis, market position, demand signals (Google Ads, Meta Ads), high-value service gaps, modeled revenue upside, strategic gap analysis, conversion infrastructure, risk flags, and intervention plan
+- **Opportunity Profile** — Deterministic label (High-Leverage | Moderate | Low-Leverage) with short parenthetical reasoning
 
-### Cost Optimization
-- **Field Selection**: Only request needed Place Details fields (53% savings)
-- **Rate Limiting**: Prevents wasted failed calls
-- **Batch Processing**: Efficient API usage
+### Signals and context
+- Website: SSL, mobile-friendly, contact forms, booking widgets, schema markup
+- Reviews: Count, rating, recency, velocity
+- Paid demand: Google Ads and Meta Ads presence (no spend estimates; factual status only)
+- Service depth: High-ticket procedures detected, missing dedicated pages, schema coverage
 
-For **concrete examples** of what you see at each step (raw leads, enrichment console/DB, context-first export, list_runs, re-enrichment, dedupe) and **what happens internally**, see **[docs/EXAMPLES_AND_INTERNALS.md](docs/EXAMPLES_AND_INTERNALS.md)**.
+### Outcome loop
+- **Embeddings** — Structural snapshot per lead (objective state) stored in SQLite for similarity search
+- **Lead outcomes** — Contacted, proposal sent, closed, close value, service sold
+- **Similarity stats** — Conversion rates and top service sold across similar historical profiles (used for UI and future analytics)
 
-## MVP Checklist
+### Hybrid RAG (cohort + similarity + outcomes)
+- **Typed lead docs (`lead_docs_v1`)**: `signal_profile`, `service_coverage`, `market_context`, `conversion_path`, `llm_brief_summary`
+- **Cohort retrieval**: SQL-filtered peers by vertical/city/review-gap bucket/market-density
+- **Vector retrieval**: semantic nearest docs from other leads (when embeddings available)
+- **Outcome patterns**: observed constraint/leverage/outreach patterns weighted by booked/closed outcomes
+- **Guardrails**: dentist LLM receives only retrieved context and must emit strict JSON with evidence references
 
-**On your end**
-- [ ] Set `GOOGLE_PLACES_API_KEY` (required for fetch + enrich).
-- [ ] (Optional) Set `OPENAI_API_KEY` for LLM refinement and RAG; set `META_ACCESS_TOKEN` for Meta Ads Library (regenerate at developers.facebook.com if you see "Invalid OAuth access token").
-- [ ] Run in order: **run_pipeline** → **run_enrichment** → **export_leads**. Export reads from DB by default.
+---
 
-**Already done (codebase)**
-- Context-first pipeline (6 dimensions, reasoning, optional LLM + RAG).
-- SQLite persistence (runs, leads, signals, context, embeddings).
-- Export: context-first (default from DB) or legacy (from file with `--export-legacy`).
-- DB maintenance: `list_runs.py` to list runs and prune by retention.
-- Run failure handling: failed runs are marked in DB so they don’t appear as “latest” for export.
+## Architecture
 
-## Quick Start
+| Component | Description |
+|-----------|-------------|
+| **Extraction** | `run_pipeline.py` — Grid-based Nearby Search with keyword expansion |
+| **Enrichment** | `run_enrichment.py` — Place Details, signals, Meta Ads, competitors, embeddings |
+| **Upload** | `run_upload.py` — Enrich uploaded leads (CSV/JSON) through the same pipeline |
+| **Export** | `export_leads.py` — Context-first or legacy export from DB |
+| **Briefs** | `render_brief.py` — Revenue Intelligence Brief HTML per lead |
+| **Outcomes** | `update_outcome.py` — Create/update outcome records for the loop |
+| **Hybrid RAG** | `pipeline/doc_builder.py` + `pipeline/rag/hybrid_retriever.py` |
+| **API** | FastAPI backend — `POST /diagnostic` for single-lead enrichment |
 
-### 1. Set up environment
+### Run the API server
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-export GOOGLE_PLACES_API_KEY="your-api-key"
-# Optional: for Meta Ads Library augmentation
-export META_ACCESS_TOKEN="your-meta-token"
-# Optional: for LLM refinement and RAG (run_enrichment.py --llm-reasoning)
-export OPENAI_API_KEY="your-openai-key"
-```
-
-### 2. (Optional) Run a quick test
+From the project root:
 
 ```bash
-python scripts/test_small.py
+uvicorn backend.main:app --reload
 ```
 
-Runs the full pipeline on 3 leads (~$0.06). Uses Meta Ads when `META_ACCESS_TOKEN` is set. Output: `output/test_small_results.json`.
+- Health check: `GET /health`
+- Diagnostic: `POST /diagnostic` with body `{"business_name": "Example Dental", "city": "San Jose"}` (website optional)
 
-### 3. Extract leads
+### Territory + lists workflow
+
+New workflow path (single-diagnostic remains unchanged):
+
+- `POST /territory` — start async Tier 1 territory scan `{ city, state?, vertical, limit?, filters? }`
+- `GET /territory/{scan_id}` — poll scan status/progress
+- `GET /territory/{scan_id}/results` — Tier 1 ranked prospect rows (Places + Place Details + single-homepage checks)
+- `POST /territory/prospects/{prospect_id}/ensure-brief` — run/attach Tier 2 full diagnostic on demand
+- `POST /lists`, `GET /lists` — create/list saved prospect lists
+- `POST /lists/{id}/members`, `GET /lists/{id}/members`, `DELETE /lists/{id}/members/{diagnostic_id}` — list membership
+- `POST /lists/{id}/rescan` — async re-scan current list members
+- `POST /diagnostics/{id}/outcome` — mark `contacted | closed_won | closed_lost`
+
+Tier 1 ranking is deterministic and lightweight: review count/rating plus basic website infrastructure checks (SSL, contact form, phone, viewport/schema).
+Tier 2 remains the existing full diagnostic pipeline and runs only when a user requests a brief or adds a prospect to a list.
+
+### Run the frontend (Next.js)
+
+From the project root, start the API first, then:
 
 ```bash
-python scripts/run_pipeline.py
+cd frontend
+cp .env.local.example .env.local   # optional: edit NEXT_PUBLIC_API_URL if backend runs elsewhere
+npm run dev
 ```
 
-### 4. Enrich with signals (writes to DB + optional enriched JSON)
+Open [http://localhost:3000](http://localhost:3000). The UI shows API status and a diagnostic form (business name, city, optional website) and displays the structured result.
+
+### Measure Capture Accuracy (gold-set benchmark)
+
+Use this to measure real precision/recall/F1 for brief-critical capture signals:
+- online booking
+- contact form
+- phone prominence
+- phone clickable
+- CTA presence
+- form structure accuracy
+
+1. Prepare input CSV with at least:
+`business_name,city,state,website`
+
+2. Generate model predictions:
 
 ```bash
-python scripts/run_enrichment.py
-# Optional: --llm-reasoning (needs OPENAI_API_KEY), --max-leads N, --input path/to/leads.json
+python3 scripts/generate_capture_benchmark.py \
+  --csv data/capture_benchmark_input.csv \
+  --output output/capture_benchmark_predictions.csv
 ```
 
-Enrichment includes Place Details, website signals, review context, optional Meta Ads check, and rich context (6 dimensions, reasoning, themes, outreach angles). Results are stored in SQLite; optional enriched JSON in `output/`.
+3. Human-label the same CSV by filling:
+`label_online_booking,label_contact_form,label_phone_prominent,label_phone_clickable,label_has_cta,label_form_structure`
+using:
+- bool labels: `true` or `false`
+- form structure: `single_step`, `multi_step`, `none`, or `unknown`
 
-### 5. Export leads (default: context-first from DB)
+4. Evaluate:
 
 ```bash
-python scripts/export_leads.py
-# Legacy shape from file: python scripts/export_leads.py --export-legacy
-# Dedupe by place_id: python scripts/export_leads.py --dedupe-by-place-id
+python3 scripts/evaluate_capture_benchmark.py \
+  --csv output/capture_benchmark_predictions.csv \
+  --json-out output/capture_benchmark_metrics.json
 ```
 
-### 6. (Optional) Upload existing leads
+The evaluator prints per-signal precision/recall/F1/accuracy and summary macro/micro F1.
 
-Teams can run the same enrichment (signals, Meta Ads, context) on their own lists:
+### Database
+- SQLite: runs, leads, signals, decisions, embeddings (versioned), outcomes
+- Tables: `runs`, `leads`, `lead_signals`, `decisions`, `lead_embeddings_v2`, `lead_outcomes`, `lead_intel_v1`, `lead_docs_v1`
 
-```bash
-python scripts/run_upload.py --upload path/to/leads.csv
-# Or JSON: python scripts/run_upload.py --upload path/to/leads.json
-# Limit and LLM: python scripts/run_upload.py --upload leads.csv --max-leads 100 --llm-reasoning
-# No Google API: python scripts/run_upload.py --upload leads.csv --no-place-details
-```
+### Key modules
+- **Objective intelligence** — Root bottleneck, growth vector, service intel, competitive profile
+- **Revenue brief renderer** — Deterministic HTML and view model (no LLM in brief)
+- **Embedding snapshot** — Structural text for embeddings (objective state)
+- **Outcome stats** — Similarity-based conversion metrics
 
-**Upload format:** CSV or JSON. Required column: **name**. Optional: **website**, **phone**, **address**, **place_id** (and common variants like `business_name`, `url`, `phone_number`). Rows with a Google **place_id** get Place Details (website, phone, reviews) from the API; rows without use the website/phone you provide and skip reviews. Results go to the same DB and appear in `export_leads` and `list_runs` (runs tagged `source: upload`).
+---
 
-## Cost Analysis
+## Revenue Intelligence Brief
 
-### Nearby Search (Steps 1-3)
-| Metric | Value |
-|--------|-------|
-| Cost per 1,000 calls | $32.00 |
-| Results per call | Up to 60 (with pagination) |
-| Effective cost per lead | ~$0.06 |
+Each dental lead gets a Revenue Intelligence Brief that includes:
 
-### Place Details (Step 4)
-| Approach | Cost per 1,000 |
-|----------|----------------|
-| All fields | $17.00 |
-| **Our approach** (selected fields) | **$8.00** |
-| Savings | **53%** |
+- **Executive Diagnosis** — Constraint, primary leverage, opportunity profile, modeled revenue upside
+- **Market Position** — Revenue band, reviews, local avg, market density
+- **Competitive Context** — Dentists sampled, lead vs market, nearest competitors
+- **Demand Signals** — Google Ads status (Search campaigns detected / Not detected), Meta Ads (Active / Not detected), estimated traffic, last review, review velocity
+- **Local SEO & High-Value Service Pages** — Detected services, missing pages, schema
+- **Modeled Revenue Upside** — Primary service capture gap (conservative bands, 30% cap vs revenue band)
+- **Strategic Gap** — Nearest competitor, capture gap narrative
+- **Conversion Infrastructure** — Online booking, contact form, phone, mobile
+- **Risk Flags** — Cost leakage and agency-fit risks
+- **Intervention Plan** — 3-step plan; Step 3 dynamically calibrated by paid demand status
 
-### Total Pipeline Cost Example
-For 200 leads in San Jose:
-- Nearby Search: ~$12.80
-- Place Details: ~$1.60
-- **Total: ~$14.40** ($0.07 per enriched lead)
+---
 
-## Configuration
+## Production Readiness
 
-### Lead Extraction (`scripts/run_pipeline.py`)
+The core logic is complete and stable. The system:
 
-```python
-CITY_CONFIG = {
-    "name": "San Jose, CA",
-    "center_lat": 37.3382,
-    "center_lng": -121.8863,
-    "radius_km": 15.0
-}
+- Uses deterministic classification (no invented numbers, no probabilities in briefs)
+- Stores embeddings for similarity and outcome analytics
+- Supports outcome tracking and similar-lead conversion stats
+- Handles missing data gracefully (omits sections when data is absent)
+- Works for dental leads; non-dental paths remain intact
 
-SEARCH_CONFIG = {
-    "niche": "hvac",
-    "search_radius_km": 2.0,
-    "max_pages_per_query": 3,
-    "use_keyword_expansion": True
-}
+Next phase: backend API, UI, and production database deployment.
 
-OUTPUT_CONFIG = {
-    "output_dir": "output",
-    "filename_prefix": "leads"
-}
-```
-
-### Enrichment (`scripts/run_enrichment.py`)
-
-```python
-CONFIG = {
-    "input_dir": "output",
-    "output_dir": "output",
-    "max_leads": None,   # None = all leads, or set a number for testing
-    "progress_interval": 10,
-    "llm_reasoning": False,  # Set via --llm-reasoning for LLM refinement + RAG
-}
-```
-
-## Supported Niches
-
-Built-in keyword expansion:
-- `hvac` - HVAC, heating and cooling, AC repair, etc.
-- `plumber` - Plumber, plumbing contractor, drain cleaning
-- `electrician` - Electrician, electrical contractor
-- `roofing` - Roofing contractor, roof repair
-- `landscaping` - Landscaping, lawn care
-- `cleaning` - Cleaning service, house cleaning
-- `dentist` / `dental` - Dentist, dental clinic, orthodontist, cosmetic dentist, etc.
-
-## Objective decision layer (dentist / sales)
-
-For dental leads, the pipeline adds an **objective decision layer** that separates demand, capture/visibility, conversion, and trust, picks **one root bottleneck** per lead, and produces a prioritized plan so the system does not over-prescribe (e.g. always “booking friction”).
-
-Outputs include:
-- **root_bottleneck_classification** – One of: `demand_limited`, `visibility_limited`, `conversion_limited`, `trust_limited`, `saturation_limited`, **`differentiation_limited`** (with why, evidence, what would change, confidence). Booking is primary only when demand/capture are adequate, conversion is weak, and differentiation is not already established.
-- **seo_lever_assessment** – `is_primary_growth_lever` (boolean), `confidence`, `reasoning`, `alternative_primary_lever`; when SEO is not the best lever, the alternative is named (e.g. Reputation/trust, Conversion/booking).
-- **demand_capture_conversion_model** – Status (Strong/Moderate/Weak) and evidence for demand, capture, conversion, and trust signals.
-- **comparative_context** – One sentence framing the lead vs nearby dentists (uses competitor sample when available).
-- **primary_sales_anchor** – One issue to lead with, aligned to the root bottleneck (never defaulting to “booking friction” unless the bottleneck is conversion).
-- **intervention_plan** – 3–5 **concrete** actions (implementable, measurable within 60 days), top action addresses the root bottleneck, with “why_not_secondaries_yet” on the first.
-- **access_request_plan** – Minimal access (e.g. GBP Manager, Website Admin) and when to ask.
-- **de_risking_questions** – Up to 3 questions to validate assumptions on the call.
-- **service_intelligence** – High-ticket vs general service pages detected; dedicated vs mentioned; missing high-value pages (when crawl runs).
-- **competitive_snapshot** – Top 5 dentists within 1.5 mi: avg review count/rating, lead review percentile, market density (when lat/lng available).
-- **revenue_leverage_analysis** – Primary revenue driver, estimated revenue asymmetry, highest-leverage growth vector (feeds root bottleneck and seo_best_lever).
-- **seo_sales_value_score** – Internal 0–100 for **prioritization only** (not shown to dentist): high when asymmetry + weak visibility + missing pages; low when saturated + strong reviews + no leverage.
-
-**Root logic and full schema:** See **[docs/OBJECTIVE_DECISION_SCHEMA.md](docs/OBJECTIVE_DECISION_SCHEMA.md)** for when each bottleneck is chosen, JSON shape for all new blocks, and an example upgraded output.
-
-Example shape (per-lead `objective_decision_layer`):
-
-```json
-{
-  "root_bottleneck_classification": {
-    "bottleneck": "visibility_limited",
-    "why_root_cause": "Demand appears present but the practice is not capturing it well.",
-    "evidence": ["Review count vs market: Below Average", "Rating strength: Moderate"],
-    "what_would_change": "Higher review volume or stronger local visibility would shift this.",
-    "confidence": 0.75
-  },
-  "seo_lever_assessment": { "is_primary_growth_lever": true, "confidence": 0.75, "reasoning": "Visibility is the root bottleneck and trust is adequate; SEO is a strong next lever.", "alternative_primary_lever": "" },
-  "demand_capture_conversion_model": {
-    "demand_signals": { "status": "Moderate", "evidence": ["..."], "confidence": 0.6 },
-    "capture_signals": { "status": "Weak", "evidence": ["..."], "confidence": 0.7 },
-    "conversion_signals": { "status": "Moderate", "evidence": ["..."], "confidence": 0.6 },
-    "trust_signals": { "status": "Strong", "evidence": ["..."], "confidence": 0.8 }
-  },
-  "comparative_context": "This profile has below-typical review volume (25 reviews) but recent activity.",
-  "primary_sales_anchor": { "issue": "...", "why_this_first": "...", "what_happens_if_ignored": "...", "confidence": 0.7 },
-  "intervention_plan": [
-    { "priority": 1, "action": "...", "category": "Capture", "expected_impact": "...", "time_to_signal_days": 30, "confidence": 0.7, "why_not_secondaries_yet": "..." }
-  ],
-  "access_request_plan": [
-    { "intervention_ref": "GBP optimization", "access_type": "Google Business Profile – Manager", "why_needed": "...", "risk_level": "Low", "when_to_ask": "After initial agreement" }
-  ],
-  "de_risking_questions": [
-    { "question": "How are new patients finding you today?", "ties_to_uncertainty": "Demand and channel mix" }
-  ]
-}
-```
-
-When service depth and competitor sampling run, the same block also includes `service_intelligence`, `competitive_snapshot`, `revenue_leverage_analysis`, and `seo_sales_value_score` (see [docs/OBJECTIVE_DECISION_SCHEMA.md](docs/OBJECTIVE_DECISION_SCHEMA.md)).
-
-### How sales should use this output in a call
-
-1. **Start with the root bottleneck** – Read `root_bottleneck_classification.why_root_cause` and use the evidence list to frame the conversation (“We’re seeing X; here’s what supports that…”).
-2. **Lead with one anchor only** – Use `primary_sales_anchor.issue` and `why_this_first` as your opening. Do not pitch booking, visibility, and reputation in the same breath.
-3. **Check whether SEO is the right lever** – If `seo_lever_assessment.is_primary_growth_lever` is false, use `seo_lever_assessment.reasoning` and `alternative_primary_lever` to set expectations (“SEO may not be the best first step because…”).
-4. **Use the intervention plan as your roadmap** – After agreement on the anchor, introduce the first action from `intervention_plan` and use `why_not_secondaries_yet` to explain why you’re not adding more at once.
-5. **Ask the de-risking questions** – Use `de_risking_questions` to confirm assumptions (e.g. who runs ads, how patients book, past SEO/review issues) and tighten confidence before proposing next steps.
+---
 
 ## Project Structure
 
 ```
 lead-scoring-engine/
-├── main.py
-├── requirements.txt
-├── test_places.py               # Test Nearby Search API
-├── test_enrichment.py           # Test Place Details API
-├── test_website_signals.py      # Test website signal extraction
-├── docs/
-│   ├── EXAMPLES_AND_INTERNALS.md
-│   └── OBJECTIVE_DECISION_SCHEMA.md   # Root logic, schema, example (dental)
 ├── pipeline/
-│   ├── __init__.py
-│   ├── geo.py                   # Geographic grid generation
-│   ├── fetch.py                 # Nearby Search API client
-│   ├── normalize.py             # Normalization & deduplication
-│   ├── enrich.py                # Place Details API client
-│   ├── signals.py               # Website & business signal extraction
-│   ├── review_context.py        # Review summary & themes (LLM or keyword)
-│   ├── meta_ads.py              # Meta Ads Library (optional, META_ACCESS_TOKEN)
-│   ├── upload.py                # Load & normalize uploaded leads (CSV/JSON)
-│   ├── context.py              # Context-first interpreter (6 dimensions)
-│   ├── opportunities.py        # Opportunity intelligence
-│   ├── score.py                 # Lead scoring & priority
-│   ├── service_depth.py        # Service page detection (high-ticket, missing pages)
-│   ├── competitor_sampling.py  # Nearby Search 1.5 mi, competitive snapshot
-│   ├── revenue_leverage.py      # Revenue asymmetry, seo_sales_value_score
-│   ├── llm_reasoning.py         # Optional LLM refinement (--llm-reasoning)
-│   ├── embeddings.py            # Embeddings for RAG
-│   ├── db.py                    # SQLite persistence (runs, leads, context)
-│   ├── validation.py            # Validation warnings
-│   └── export.py                # Export utilities
+│   ├── db.py                    # Persistence (runs, leads, signals, embeddings, outcomes)
+│   ├── revenue_brief_renderer.py
+│   ├── objective_intelligence.py
+│   ├── objective_decision_layer.py
+│   ├── revenue_intelligence.py
+│   ├── embedding_snapshot.py
+│   ├── competitor_sampling.py
+│   ├── dentist_profile.py
+│   ├── fetch.py, enrich.py, signals.py
+│   └── ...
 ├── scripts/
-│   ├── run_pipeline.py          # Steps 1–3: Extraction
-│   ├── run_enrichment.py        # Step 4: Enrichment (signals, Meta Ads, scoring, DB)
-│   ├── export_leads.py          # Step 5: Context-first or legacy export
-│   ├── list_runs.py             # List runs, prune by retention
-│   ├── run_upload.py            # Enrich uploaded leads (CSV/JSON)
-│   ├── test_small.py            # Quick E2E test (3 leads)
-│   ├── run_scoring.py           # Standalone scoring
-│   └── test_scoring.py          # Scoring tests
-└── output/
-    ├── leads_*.json             # Raw extracted leads
-    ├── enriched_leads_*.json    # Enriched leads (optional from run_enrichment)
-    └── test_small_results.json  # Output from test_small.py
+│   ├── run_pipeline.py
+│   ├── run_enrichment.py
+│   ├── run_upload.py
+│   ├── export_leads.py
+│   ├── render_brief.py
+│   ├── update_outcome.py
+│   ├── list_runs.py
+│   └── test_small.py
+├── data/                        # SQLite DB
+└── output/                      # Leads, enriched JSON, briefs
 ```
 
-## Output Schemas
-
-### Raw Lead (Steps 1-3)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `place_id` | string | Google Places unique ID |
-| `name` | string | Business name |
-| `address` | string | Street address |
-| `latitude` | float | Location |
-| `longitude` | float | Location |
-| `rating` | float | Google rating (1-5) |
-| `user_ratings_total` | int | Review count |
-| `business_status` | string | OPERATIONAL, CLOSED_*, etc. |
-
-### Enriched Lead Signals (Step 4)
-
-**HVAC Signal Model:** Phone is the PRIMARY booking mechanism. Automated scheduling indicates operational maturity, not booking capability.
-
-| Signal | Type | Description |
-|--------|------|-------------|
-| `signal_has_phone` | bool | **PRIMARY booking signal** |
-| `signal_phone_number` | string | International format |
-| `signal_has_website` | bool | Has a website |
-| `signal_website_url` | string | Full URL |
-| `signal_domain` | string | Normalized domain |
-| `signal_has_ssl` | bool | Uses HTTPS |
-| `signal_mobile_friendly` | bool | Has viewport meta tag |
-| `signal_has_contact_form` | bool | Inbound lead readiness |
-| `signal_has_automated_scheduling` | bool | Ops maturity (see below) |
-| `signal_page_load_time_ms` | int | Response time |
-| `signal_rating` | float | Google rating |
-| `signal_review_count` | int | Total reviews |
-| `signal_last_review_days_ago` | int | Days since last review |
-| `signal_has_schema_microdata` | bool | Organization/LocalBusiness in ld+json or microdata |
-| `signal_schema_types` | list | e.g. `["Organization", "LocalBusiness"]` |
-| `signal_has_social_links` | bool | Social profile links on website (Phase 0.1) |
-| `signal_social_platforms` | list | e.g. `["facebook", "instagram", "yelp"]` |
-| `signal_has_phone_in_html` | bool | Phone number or tel: link on page |
-| `signal_has_address_in_html` | bool | Street address or schema on page |
-| `signal_linkedin_company_url` | string | LinkedIn company page URL (when found on website) |
-| `signal_review_summary_text` | string | Summary of review text (LLM or keyword fallback) |
-| `signal_review_themes` | list | Themes from reviews (e.g. quality, service, timeliness) |
-| `signal_review_sample_snippets` | list | Short snippets from first few reviews |
-| `signal_runs_paid_ads` | bool | True when Meta Ads Library returns ads (optional; requires `META_ACCESS_TOKEN`) |
-| `signal_paid_ads_channels` | list | e.g. `["meta"]` when Meta ads found; from website pixel or Meta Ads Library |
-| `signal_meta_ads_source` | string | `"meta_ads_library"` when augmented via Meta Ads API |
-| `signal_meta_ads_count` | int | Number of ads returned by Meta Ads Library for this business |
-
-### Phase 2: RAG (similar past summaries)
-With `--llm-reasoning`, the pipeline embeds each lead’s context (reasoning + dimensions) and stores it in SQLite. On later runs, the LLM step retrieves similar past summaries and uses them to refine reasoning and outreach angles. Requires `OPENAI_API_KEY`; optional `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`).
-
-### Additions (logic & data)
-- **Configurable dimension weights** – `context.DIMENSION_PRIORITY_WEIGHTS` controls how each dimension contributes to priority (defaults in code).
-- **No-opportunity flag** – When all dimensions are Weak/Unknown and confidence ≥ 0.5, context includes `no_opportunity: true` and `no_opportunity_reason` (filter dead ends in export).
-- **Priority derivation** – Context includes `priority_derivation` (e.g. "Priority High: Paid Growth, Website & Funnel") for debuggability.
-- **Run stats** – Each completed run stores `run_stats` (e.g. has_website_true, signal_coverage_pct); visible in `list_runs.py` and `get_run()`.
-- **Validation warnings** – Signals and context are checked for impossible combos; warnings stored per lead and in export (`validation_warnings`).
-- **Re-enrichment** – `run_enrichment.py --place-ids path/to/ids.txt` only enriches leads whose `place_id` is in the file (one per line or JSON array).
-- **Export dedupe** – `export_leads.py --dedupe-by-place-id` exports one lead per place_id (latest run wins) for context-first export.
-
-### DB maintenance (list & prune runs)
-```bash
-python scripts/list_runs.py                    # list recent runs
-python scripts/list_runs.py --prune-keep 5     # keep last 5 completed runs, delete rest
-python scripts/list_runs.py --prune-older-than 30   # delete runs older than 30 days
-python scripts/list_runs.py --prune-keep 3 --dry-run # show what would be deleted
-```
-
-## HVAC Signal Interpretation
-
-```
-IF has_phone AND review_count > 5:
-    lead_status = "Active HVAC business"
-
-IF has_contact_form:
-    inbound_ready = true
-
-IF has_automated_scheduling:
-    ops_type = "Automated"      # Mature ops, possibly agency-saturated
-ELSE:
-    ops_type = "Manual"         # Higher optimization opportunity
-```
-
-**Key Insight:** Lack of automated scheduling ≠ weak lead. It indicates manual operations and higher opportunity for optimization services.
-
-## Automated Scheduling Systems Detected
-
-Field Service Management (HVAC-specific):
-- ServiceTitan
-- HouseCall Pro
-- Jobber
-- FieldEdge
-- SuccessWare
-
-General Scheduling:
-- Calendly
-- Acuity Scheduling
-- Square Appointments
-- Setmore
-- Schedulicity
-
-## API Usage Estimation
-
-```python
-from pipeline.geo import estimate_api_calls
-
-# Estimate extraction cost
-estimate = estimate_api_calls(
-    city_radius_km=15.0,
-    search_radius_km=2.0,
-    keywords_count=6,
-    max_pages=3
-)
-print(f"Max API calls: {estimate['max_api_calls']}")
-
-# Enrichment cost = leads × $0.008
-enrichment_cost = 200 * 0.008  # $1.60 for 200 leads
-```
-
-## Next steps & roadmap to production
-
-### 1. Enable OpenAI (one key for everything)
-
-A single **`OPENAI_API_KEY`** is used for:
-
-| Use | When | Optional env |
-|-----|------|---------------|
-| **Embeddings** | Stored when you run enrichment with `--llm-reasoning`; used for RAG (similar past leads) | `OPENAI_EMBEDDING_MODEL` (default: `text-embedding-3-small`) |
-| **LLM reasoning** | Refines reasoning summary, themes, and outreach angles | `OPENAI_MODEL` (default: `gpt-4o-mini`) |
-| **Review context** | LLM-generated review summary and themes (when key is set) | Same `OPENAI_MODEL` in `review_context` |
-
-**Do this:**
-
-1. Create an API key at [platform.openai.com](https://platform.openai.com/api-keys).
-2. Set it in your environment: `export OPENAI_API_KEY="sk-..."`.
-3. Run enrichment with LLM and RAG:  
-   `python scripts/run_enrichment.py --llm-reasoning`  
-   Embeddings are stored in SQLite automatically; future runs will use them for similar-lead retrieval.
-
-No code changes required; the pipeline already checks for the key and falls back to deterministic output when it’s missing.
-
-### 2. Roadmap to production
-
-| Step | What to do |
-|------|------------|
-| **Secrets** | Never commit keys. Use env vars in production (e.g. your host’s “environment” or “secrets”). Optionally use a `.env` file loaded by your process (keep `.env` in `.gitignore`). |
-| **Run strategy** | Run **run_pipeline** periodically (e.g. cron weekly) to refresh leads; then **run_enrichment** (with or without `--llm-reasoning`) to fill the DB. **export_leads** (or your own consumer) reads from the DB. |
-| **Database** | SQLite file lives in `output/` by default. For production: (1) Put the DB path on a durable volume, (2) Back it up regularly (e.g. cron copy or snapshot), (3) Use `list_runs.py --prune-*` to control retention. |
-| **Scale** | For large lead counts, use `--max-leads` in batches or split input files. Rate limiting and field selection are already in place to reduce API cost. |
-| **Monitoring** | Logs go to stdout; capture them in your host/container. Optionally add health checks (e.g. “DB exists and is writable”, “last run completed”). |
-| **Deployment** | Run on a VM, container (Docker), or serverless (e.g. scheduled Lambda/Cloud Run) that runs the three scripts in order. No built-in HTTP API; export outputs (JSON/CSV) or point your app at the SQLite DB. |
-
-**Minimal production loop:**
-
-1. **run_pipeline.py** → produces `output/leads_*.json`
-2. **run_enrichment.py** (optionally `--llm-reasoning`) → reads latest leads, writes to SQLite
-3. **export_leads.py** or your own code → reads from DB for downstream use (CRM, sheets, API, etc.)
+---
 
 ## License
 

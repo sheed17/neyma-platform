@@ -117,25 +117,33 @@ def _build_dental_practice_profile(lead: Dict) -> Dict[str, Any]:
 
 
 def _build_patient_acquisition_readiness(lead: Dict) -> Dict[str, Any]:
-    has_booking = lead.get("signal_has_automated_scheduling") is True
+    booking_path = lead.get("signal_booking_conversion_path")
+    has_booking = (
+        booking_path in ("Online booking (limited)", "Online booking (full)")
+        or lead.get("signal_has_automated_scheduling") is True
+    )
+    no_booking = (
+        booking_path in ("Phone-only", "Request form")
+        or lead.get("signal_has_automated_scheduling") is False
+    )
     has_phone = lead.get("signal_has_phone") is True
     has_form = lead.get("signal_has_contact_form") is True
-    if not has_booking and has_phone and not has_form:
+    if no_booking and has_phone and not has_form:
         booking_friction = "High"
-    elif not has_booking:
+    elif no_booking:
         booking_friction = "Moderate"
     else:
         booking_friction = "Low"
     conversion_leaks = []
     if not has_form and lead.get("signal_has_website") is True:
         conversion_leaks.append("No contact form for web leads")
-    if not has_booking and has_phone:
+    if no_booking and has_phone:
         conversion_leaks.append("Phone-only intake; no online booking")
     rating = lead.get("signal_rating")
     review_count = lead.get("signal_review_count") or 0
-    if rating and rating >= 4.0 and review_count >= 5 and not has_booking:
+    if rating and rating >= 4.0 and review_count >= 5 and no_booking:
         chair_fill_risk = "Moderate"
-    elif not has_booking:
+    elif no_booking:
         chair_fill_risk = "High"
     else:
         chair_fill_risk = "Low"
@@ -234,7 +242,11 @@ def _build_agency_fit_reasoning(lead: Dict, dental_profile: Dict, patient_readin
     ideal = False
     strong_rep = (lead.get("signal_rating") or 0) >= 4.0 and (lead.get("signal_review_count") or 0) >= 5
     low_volume = (lead.get("signal_review_count") or 0) < 80
-    no_booking = lead.get("signal_has_automated_scheduling") is not True
+    booking_path = lead.get("signal_booking_conversion_path")
+    no_booking = (
+        booking_path in ("Phone-only", "Request form")
+        or lead.get("signal_has_automated_scheduling") is False
+    )
     high_intent_procedures = bool(review_intent.get("procedure_mentions")) or dental_profile.get("estimated_ltv_class") == "High"
     if strong_rep and low_volume and no_booking:
         why.append("Strong reputation with room to grow review volume")

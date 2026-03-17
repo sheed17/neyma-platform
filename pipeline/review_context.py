@@ -12,6 +12,8 @@ from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+from pipeline.service_depth import CANONICAL_BUCKETS, CANONICAL_DISPLAY
+
 # Simple theme keywords (fallback when no LLM)
 REVIEW_THEME_KEYWORDS = {
     "quality": ["quality", "great work", "excellent", "professional", "skilled", "done right"],
@@ -19,6 +21,12 @@ REVIEW_THEME_KEYWORDS = {
     "price": ["price", "fair", "reasonable", "worth it", "affordable", "quote"],
     "timeliness": ["fast", "quick", "on time", "scheduled", "timely", "same day"],
     "trust": ["trust", "recommend", "honest", "reliable", "dependable"],
+}
+
+COMPLAINT_THEME_KEYWORDS = {
+    "wait_time": ["wait", "waiting", "long time", "late", "delay"],
+    "billing": ["billing", "bill", "charge", "charged", "insurance issue"],
+    "communication": ["no response", "didn't call", "not informed", "poor communication"],
 }
 
 
@@ -45,6 +53,36 @@ def _fallback_themes(texts: List[str]) -> List[str]:
         if any(kw in combined for kw in keywords):
             found.append(theme)
     return found[:5] if found else []
+
+
+def _service_mentions(texts: List[str]) -> Dict[str, int]:
+    """
+    Count in how many sampled reviews each service/procedure is mentioned.
+    Value = number of distinct reviews with at least one alias mention.
+    """
+    counts: Dict[str, int] = {}
+    for bucket, aliases in CANONICAL_BUCKETS.items():
+        c = 0
+        for text in texts:
+            lower = text.lower()
+            if any(alias in lower for alias in aliases):
+                c += 1
+        if c > 0:
+            counts[CANONICAL_DISPLAY.get(bucket, bucket.title())] = c
+    return counts
+
+
+def _complaint_themes(texts: List[str]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for label, kws in COMPLAINT_THEME_KEYWORDS.items():
+        c = 0
+        for text in texts:
+            lower = text.lower()
+            if any(kw in lower for kw in kws):
+                c += 1
+        if c > 0:
+            out[label] = c
+    return out
 
 
 def _llm_summarize_reviews(texts: List[str], rating: Optional[float], review_count: Optional[int]) -> Dict[str, Any]:
@@ -106,6 +144,9 @@ def build_review_context(
         "review_summary": None,
         "review_themes": [],
         "review_sample_snippets": [],
+        "review_sample_size": len(texts),
+        "service_mentions": {},
+        "complaint_themes": {},
     }
     if not texts:
         if review_count and review_count > 0:
@@ -114,6 +155,8 @@ def build_review_context(
 
     # Sample snippets (always)
     out["review_sample_snippets"] = [(t[:80] + "..." if len(t) > 80 else t) for t in texts[:3]]
+    out["service_mentions"] = _service_mentions(texts)
+    out["complaint_themes"] = _complaint_themes(texts)
 
     # Try LLM first
     llm_out = _llm_summarize_reviews(texts, rating, review_count or len(texts))

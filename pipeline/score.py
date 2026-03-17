@@ -126,9 +126,6 @@ def _compute_internal_score(signals: Dict) -> Tuple[int, List[str]]:
     if _is_false(scheduling):
         score += 20
         reasons.append("Manual scheduling detected (optimization opportunity)")
-    elif scheduling is None:
-        score += 10
-        reasons.append("Scheduling automation status unknown")
     
     # --- Reputation opportunity ---
     review_count = signals.get("review_count")

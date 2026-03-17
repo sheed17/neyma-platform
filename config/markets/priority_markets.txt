@@ -1,0 +1,12 @@
+Phoenix, AZ
+Denver, CO
+Seattle, WA
+Houston, TX
+Miami, FL
+Atlanta, GA
+Charlotte, NC
+Chicago, IL
+Columbus, OH
+Minneapolis, MN
+Boston, MA
+Philadelphia, PA

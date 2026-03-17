@@ -2,8 +2,8 @@
 Unit tests for compute_opportunity_profile in revenue_brief_renderer.
 
 Scenarios:
-  a) missing_high_value=True, schema_missing=True, high_density=True -> High-Leverage
-  b) missing_high_value=True, high_density=False, schema_missing=False -> Moderate
+  a) missing_high_value=True, high_density=True -> High-Leverage
+  b) missing_high_value=True, high_density=False -> Moderate
   c) missing_high_value=False -> Low-Leverage
 """
 
@@ -36,8 +36,8 @@ def _lead(**overrides):
     return base
 
 
-def test_high_leverage_missing_high_value_schema_high_density():
-    """missing_high_value=True, schema_missing=True, high_density=True -> High-Leverage"""
+def test_high_leverage_missing_high_value_high_density():
+    """missing_high_value=True, high_density=True -> High-Leverage"""
     lead = _lead(
         objective_intelligence={
             "service_intel": {
@@ -51,11 +51,11 @@ def test_high_leverage_missing_high_value_schema_high_density():
     result = compute_opportunity_profile(lead)
     assert result.get("label") == "High-Leverage"
     assert result.get("why")
-    assert "high-ticket" in result["why"] or "schema" in result["why"]
+    assert "high-ticket" in result["why"] or "structured" in result["why"]
 
 
-def test_moderate_missing_high_value_no_high_density_no_schema():
-    """missing_high_value=True, high_density=False, schema_missing=False, paid_active=True -> Moderate"""
+def test_moderate_missing_high_value_no_high_density():
+    """missing_high_value=True, high_density=False, paid_active=True -> Moderate"""
     lead = _lead(
         objective_intelligence={
             "service_intel": {
