@@ -17,11 +17,14 @@ export interface ServiceIntelligence {
   detected_services: string[];
   missing_services: string[];
   crawl_confidence?: "low" | "medium" | "high" | string;
+  visibility_gap?: string;
   pages_crawled?: number;
   js_detected?: boolean;
   crawl_method?: string;
   deep_scan?: boolean;
   service_page_count?: number;
+  city_or_near_me_page_count?: number;
+  geo_page_examples?: string[];
   playwright_fetch_summary?: {
     playwright_pages?: number;
     requests_pages?: number;
@@ -356,6 +359,7 @@ export type DiagnosticResponse = {
   risk_flags?: string[];
   evidence?: EvidenceItem[];
   competitors?: CompetitorEntry[];
+  review_intelligence?: BriefReviewIntelligence | null;
   local_avg_rating?: number | null;
   local_avg_rating_points?: number | null;
 };

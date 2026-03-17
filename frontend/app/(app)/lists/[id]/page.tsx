@@ -132,17 +132,22 @@ export default function ListDetailPage() {
                 </div>
                 <div className="mt-4 flex flex-col gap-2">
                   {row.diagnostic_id ? (
+                    (() => {
+                      const diagnosticId = row.diagnostic_id;
+                      return (
                     <>
                       <Link
-                        href={`/diagnostic/${row.diagnostic_id}?from=list&listId=${listId}`}
+                        href={`/diagnostic/${diagnosticId}?from=list&listId=${listId}`}
                         className="inline-flex h-10 items-center justify-center rounded-full bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-foreground)] transition hover:opacity-95"
                       >
                         Open brief
                       </Link>
-                      <button onClick={() => void handleRemove(row.diagnostic_id)} className="text-sm text-[var(--text-secondary)] hover:underline">
+                      <button onClick={() => void handleRemove(diagnosticId)} className="text-sm text-[var(--text-secondary)] hover:underline">
                         Remove
                       </button>
                     </>
+                      );
+                    })()
                   ) : (
                     <span className="text-xs text-[var(--text-muted)]">Brief unavailable</span>
                   )}
@@ -183,17 +188,22 @@ export default function ListDetailPage() {
                     <TD>{row.added_at ? new Date(row.added_at).toLocaleDateString("en-US") : "-"}</TD>
                     <TD className="text-right">
                       {row.diagnostic_id ? (
+                        (() => {
+                          const diagnosticId = row.diagnostic_id;
+                          return (
                         <>
                           <Link
-                            href={`/diagnostic/${row.diagnostic_id}?from=list&listId=${listId}`}
+                            href={`/diagnostic/${diagnosticId}?from=list&listId=${listId}`}
                             className="mr-2 inline-flex h-9 items-center justify-center rounded-full bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-foreground)] transition hover:opacity-95"
                           >
                             Open brief
                           </Link>
-                          <button onClick={() => void handleRemove(row.diagnostic_id)} className="text-[var(--text-secondary)] hover:underline">
+                          <button onClick={() => void handleRemove(diagnosticId)} className="text-[var(--text-secondary)] hover:underline">
                             Remove
                           </button>
                         </>
+                          );
+                        })()
                       ) : (
                         <span className="text-xs text-[var(--text-muted)]">Brief unavailable</span>
                       )}

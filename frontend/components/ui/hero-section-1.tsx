@@ -4,6 +4,7 @@
 import React from "react";
 import Link from "next/link";
 import { ChevronRight, Menu, X } from "lucide-react";
+import type { Variants } from "framer-motion";
 
 import { AnimatedGroup } from "@/components/ui/animated-group";
 import { Button } from "@/components/ui/button";
@@ -33,7 +34,7 @@ type HeroSectionProps = {
   children?: React.ReactNode;
 };
 
-const transitionVariants = {
+const transitionVariants: { item: Variants } = {
   item: {
     hidden: {
       opacity: 0,
@@ -45,7 +46,7 @@ const transitionVariants = {
       filter: "blur(0px)",
       y: 0,
       transition: {
-        type: "spring",
+        type: "spring" as const,
         bounce: 0.3,
         duration: 1.5,
       },

@@ -16,7 +16,7 @@ import {
   submitDiagnostic,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import type { DiagnosticResponse, ProspectList } from "@/lib/types";
+import type { DiagnosticResponse, ProspectList, ServiceIntelligence } from "@/lib/types";
 import { computeVerdict } from "@/lib/verdict";
 import { generateObservationBullets, generateOpportunityFocus, generateWhyNow } from "@/lib/pitch";
 import { cleanWebsiteDisplay, isSchemaRelated } from "@/lib/present";
@@ -650,7 +650,7 @@ export default function DiagnosticDetailPage() {
     : [];
   const homepagePage = String(captureVerification?.homepage_page || "/");
   const reviewIntel = b?.review_intelligence || result.review_intelligence || {};
-  const svc = result.service_intelligence || {};
+  const svc: Partial<ServiceIntelligence> = result.service_intelligence || {};
   const spaV2 = (b?.service_page_analysis?.v2 as Record<string, unknown> | undefined)
     || (svc.service_page_analysis_v2 as Record<string, unknown> | undefined)
     || {};
@@ -667,8 +667,11 @@ export default function DiagnosticDetailPage() {
   const reviewCount = firstNumber(mp?.reviews) || firstNumber(result.review_position) || 0;
   const rating = firstNumber(result.review_position);
   const localAvgReviews = firstNumber(mp?.local_avg) || firstNumber((result.evidence || []).find((e) => String(e.label || "").toLowerCase().includes("review"))?.value) || 0;
-
-  const opportunitySignal = String(ed?.opportunity_profile?.label || verdict.label || "Opportunity Signal");
+  const opportunityProfile =
+    ed?.opportunity_profile && typeof ed.opportunity_profile === "object"
+      ? ed.opportunity_profile
+      : null;
+  const opportunitySignal = String(opportunityProfile?.label || verdict.label || "Opportunity Signal");
   const modeledUpside = getModeledUpsideDisplay(result);
   const topGap = String(verdict.topGap || csg?.service || sg?.service || "—");
   const preferredFocus = modeledUpside.serviceContext && modeledUpside.serviceContext !== "Primary gap"

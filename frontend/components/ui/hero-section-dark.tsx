@@ -5,7 +5,7 @@ import { ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-interface HeroSectionProps extends React.HTMLAttributes<HTMLDivElement> {
+interface HeroSectionProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "title"> {
   title?: React.ReactNode;
   subtitle?: {
     regular: React.ReactNode;

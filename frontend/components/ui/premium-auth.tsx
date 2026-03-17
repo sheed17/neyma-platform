@@ -291,7 +291,9 @@ export function AuthForm({
     }
     fieldsToValidate.forEach((field) => {
       const error = validateField(field, formData[field]);
-      if (error) newErrors[field] = error;
+      if (error) {
+        (newErrors as Record<string, string | undefined>)[field] = error;
+      }
     });
 
     setErrors(newErrors);
