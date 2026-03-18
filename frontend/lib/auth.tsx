@@ -186,6 +186,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     if (error) throw new Error(error.message);
     applySessionState(setUser, data.session);
+    setAccessLoading(true);
+    try {
+      const nextAccess = await getAccessState();
+      setAccess(nextAccess);
+      if (nextAccess.viewer.is_guest) {
+        throw new Error("We couldn't finish signing you in. Please try again.");
+      }
+    } finally {
+      setAccessLoading(false);
+    }
   }, []);
 
   const register = useCallback(async (name: string, email: string, password: string) => {
@@ -216,6 +226,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginAsTestUser = useCallback(async () => {
     await new Promise((r) => setTimeout(r, 250));
     applyUserState(setUser, TEST_USER);
+    setAccessLoading(true);
+    try {
+      const nextAccess = await getAccessState();
+      setAccess(nextAccess);
+    } finally {
+      setAccessLoading(false);
+    }
   }, []);
 
   const logout = useCallback(async () => {

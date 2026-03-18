@@ -93,6 +93,36 @@ const calculatePasswordStrength = (password: string): PasswordStrength => {
   return { score, feedback, requirements };
 };
 
+function normalizeAuthMessage(message: string | null | undefined, mode: AuthMode): string {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return mode === "login"
+      ? "We couldn't sign you in right now. Please try again."
+      : "We couldn't complete that account step right now. Please try again.";
+  }
+
+  const normalized = raw.toLowerCase();
+  if (normalized.includes("invalid login credentials")) {
+    return "That email and password do not match our records.";
+  }
+  if (normalized.includes("email not confirmed")) {
+    return "Check your email to confirm your account, then come back and sign in.";
+  }
+  if (normalized.includes("user already registered")) {
+    return "An account already exists for that email. Try signing in instead.";
+  }
+  if (normalized.includes("password should be at least")) {
+    return "Use a stronger password with at least 8 characters.";
+  }
+  if (normalized.includes("signup is disabled")) {
+    return "Account creation is not available right now. Please try again shortly.";
+  }
+  if (normalized.includes("invalid api key")) {
+    return "Neyma authentication is not configured correctly right now. Please try again shortly.";
+  }
+  return raw;
+}
+
 const PasswordStrengthIndicator: React.FC<{ password: string }> = ({ password }) => {
   const strength = calculatePasswordStrength(password);
 
@@ -327,7 +357,6 @@ export function AuthForm({
           localStorage.removeItem("rememberMe");
         }
 
-        setSuccessMessage("Login successful");
         onSuccess?.({ email: formData.email.trim() });
       } else if (authMode === "signup") {
         if (onSignup) {
@@ -342,22 +371,23 @@ export function AuthForm({
         }
 
         setRegistrationStep("complete");
-        setSuccessMessage("Account created successfully");
-        onSuccess?.({ email: formData.email.trim(), name: formData.name.trim() });
+        setSuccessMessage("");
       } else if (authMode === "reset") {
         if (onResetPassword) {
           await onResetPassword({ email: formData.email.trim() });
         } else {
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
-        setSuccessMessage("Password reset email sent");
+        setSuccessMessage("Password reset link sent");
         setTimeout(() => switchMode("login"), 1200);
       }
     } catch (error) {
-      const message =
+      const message = normalizeAuthMessage(
         error instanceof Error && error.message
           ? error.message
-          : "Authentication failed. Please try again.";
+          : "Authentication failed. Please try again.",
+        authMode
+      );
       setErrors({ general: message });
     } finally {
       setIsLoading(false);
@@ -463,7 +493,7 @@ export function AuthForm({
     if (authMode === "signup" && registrationStep === "complete") {
       return (
         <div className="space-y-6 text-center">
-          <div className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-green-600 dark:bg-green-900 dark:text-green-400">
+          <div className="inline-flex h-16 w-16 items-center justify-center rounded-full border border-[rgba(83,74,183,0.12)] bg-[rgba(83,74,183,0.08)] text-[var(--primary)]">
             <svg
               className="h-8 w-8"
               fill="none"
@@ -481,8 +511,11 @@ export function AuthForm({
           </div>
 
           <div>
-            <h3 className="mb-2 text-2xl font-bold">Welcome Aboard</h3>
-            <p className="text-muted-foreground">Your account is set up. Check your email to confirm it, then log in to open the workspace.</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">Account created</p>
+            <h3 className="mt-2 mb-2 text-2xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">Check your email</h3>
+            <p className="text-sm leading-7 text-[var(--text-secondary)]">
+              We sent a confirmation link to <span className="font-semibold text-[var(--text-primary)]">{formData.email}</span>. Confirm your account there, then come back and sign in to open the workspace.
+            </p>
           </div>
 
           <button
@@ -492,7 +525,7 @@ export function AuthForm({
               "w-full rounded-xl bg-primary px-6 py-3 font-medium text-primary-foreground hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-primary/20"
             )}
           >
-            Go to Login
+            Go to login
           </button>
         </div>
       );
@@ -723,29 +756,33 @@ export function AuthForm({
       aria-labelledby="auth-title"
     >
       {successMessage ? (
-        <div className="mb-4 flex items-center gap-2 rounded-xl border border-green-400/30 bg-green-500/20 p-3">
-          <svg
-            className="h-4 w-4 text-green-500"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M5 13l4 4L19 7"
-            />
-          </svg>
-          <span className="text-sm text-green-700 dark:text-green-300">{successMessage}</span>
+        <div className="mb-4 flex items-center gap-2 rounded-[16px] border border-[rgba(83,74,183,0.14)] bg-[rgba(83,74,183,0.07)] px-4 py-3">
+          <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white text-[var(--primary)]">
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M5 13l4 4L19 7"
+              />
+            </svg>
+          </div>
+          <span className="text-sm font-medium text-[var(--text-primary)]">{successMessage}</span>
         </div>
       ) : null}
 
       {errors.general ? (
-        <div className="mb-4 flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/20 p-3">
-          <AlertTriangle className="h-4 w-4 text-destructive" />
-          <span className="text-sm text-destructive">{errors.general}</span>
+        <div className="mb-4 flex items-center gap-2 rounded-[16px] border border-[rgba(227,83,83,0.18)] bg-[rgba(227,83,83,0.08)] px-4 py-3">
+          <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white text-[#d34a4a]">
+            <AlertTriangle className="h-4 w-4" />
+          </div>
+          <span className="text-sm font-medium text-[#c13f3f]">{errors.general}</span>
         </div>
       ) : null}
 

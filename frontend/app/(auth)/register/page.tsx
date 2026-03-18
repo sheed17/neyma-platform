@@ -41,9 +41,6 @@ export default function RegisterPage() {
             }}
             testAccountLabel="Skip to test account"
             testAccountHint="Local shortcut for opening the workspace without verification."
-            onSuccess={() => {
-              router.push("/login");
-            }}
             onClose={() => {
               router.push("/login");
             }}

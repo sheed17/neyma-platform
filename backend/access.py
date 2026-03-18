@@ -56,11 +56,12 @@ def require_signed_in(
 ) -> Dict[str, Any]:
     access = access_state_for_request(request)
     if access["viewer"]["is_guest"]:
+        auth_failed = bool(getattr(request.state, "auth_failed", False))
         _raise_structured_access_error(
-            code="AUTH_REQUIRED",
-            message=message,
+            code="SESSION_INVALID" if auth_failed else "AUTH_REQUIRED",
+            message="We couldn't finish signing you in. Please sign in again." if auth_failed else message,
             access=access,
-            recommended_cta="Sign up",
+            recommended_cta="Log in" if auth_failed else "Sign up",
         )
     return access
 

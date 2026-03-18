@@ -55,12 +55,15 @@ def _guest_session_id(request: Request) -> str | None:
 @lru_cache(maxsize=1)
 def _supabase_auth_config() -> dict[str, str] | None:
     url = (os.getenv("SUPABASE_URL") or "").strip()
-    anon_key = (os.getenv("SUPABASE_ANON_KEY") or "").strip()
-    if not url or not anon_key:
+    public_key = (
+        (os.getenv("SUPABASE_PUBLISHABLE_KEY") or "").strip()
+        or (os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    )
+    if not url or not public_key:
         return None
     return {
         "user_url": f"{url.rstrip('/')}/auth/v1/user",
-        "anon_key": anon_key,
+        "public_key": public_key,
     }
 
 
@@ -73,7 +76,7 @@ def _fetch_supabase_user(token: str) -> dict[str, Any] | None:
             config["user_url"],
             headers={
                 "Authorization": f"Bearer {token}",
-                "apikey": config["anon_key"],
+                "apikey": config["public_key"],
             },
             timeout=8,
         )
@@ -90,6 +93,7 @@ class LocalIdentityMiddleware(BaseHTTPMiddleware):
         created_guest_session: str | None = None
         user = None
         guest_session_id: str | None = None
+        auth_failed = False
 
         token = _bearer_token(request)
         if token:
@@ -102,6 +106,8 @@ class LocalIdentityMiddleware(BaseHTTPMiddleware):
                     or str(supabase_user.get("email") or "").split("@")[0]
                 )
                 user = get_or_create_user(email=str(supabase_user["email"]), name=name)
+            else:
+                auth_failed = True
 
         if not user:
             email, name = _test_identity(request)
@@ -117,6 +123,7 @@ class LocalIdentityMiddleware(BaseHTTPMiddleware):
         request.state.plan_tier = str(user.get("plan_tier") or "guest")
         request.state.is_guest = bool(int(user.get("is_guest") or 0))
         request.state.guest_session_id = guest_session_id if bool(int(user.get("is_guest") or 0)) else None
+        request.state.auth_failed = auth_failed
 
         response = await call_next(request)
 

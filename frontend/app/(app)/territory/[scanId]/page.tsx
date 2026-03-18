@@ -140,24 +140,6 @@ export default function TerritoryResultsPage() {
     };
   }, [canSave]);
 
-  const progress = useMemo(() => {
-    const summary = data?.summary || {};
-    const phase = String(summary.phase || "");
-    const queryDone = Number(summary.candidate_queries_done || 0);
-    const queryTotal = Number(summary.candidate_queries_total || 0);
-    const processed = Number(summary.processed || 0);
-    const total = Number(summary.scored_candidates || summary.total_candidates || 0);
-    if (phase === "candidate_fetch" && queryTotal > 0) {
-      return { label: "Searching the market", percent: 12 + Math.round((queryDone / queryTotal) * 34) };
-    }
-    if (phase.includes("ai")) {
-      return { label: "Refining the shortlist", percent: 84 };
-    }
-    if (total > 0) {
-      return { label: "Ranking local candidates", percent: 52 + Math.round((processed / total) * 24) };
-    }
-    return { label: "Preparing scan", percent: 8 };
-  }, [data?.summary]);
   const prospects = useMemo(() => {
     const rows = [...(data?.prospects || [])];
     if (sortBy === "name") rows.sort((a, b) => a.business_name.localeCompare(b.business_name));
