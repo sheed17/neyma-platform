@@ -3,7 +3,16 @@
 
 import React from "react";
 import Link from "next/link";
-import { ChevronRight, Menu, X } from "lucide-react";
+import {
+  ChevronRight,
+  FileStack,
+  LayoutGrid,
+  ListTodo,
+  Map,
+  Menu,
+  MessageSquareText,
+  X,
+} from "lucide-react";
 import type { Variants } from "framer-motion";
 
 import { AnimatedGroup } from "@/components/ui/animated-group";
@@ -15,6 +24,14 @@ import { cn } from "@/lib/utils";
 type NavItem = {
   name: string;
   href: string;
+};
+
+const mobileMenuIcons: Record<string, React.ComponentType<{ className?: string }>> = {
+  "Run Territory Scan": Map,
+  "Open Workspace": LayoutGrid,
+  "Build Brief": FileStack,
+  "Ask Neyma": MessageSquareText,
+  Lists: ListTodo,
 };
 
 type HeroSectionProps = {
@@ -236,19 +253,25 @@ function HeroHeader({ menuItems }: { menuItems: NavItem[] }) {
         <div
           className={cn(
             "mx-auto mt-2 max-w-6xl px-6 transition-all duration-300 lg:px-12",
-            isScrolled && "max-w-4xl rounded-[16px] border border-[var(--border)] bg-white/90 backdrop-blur-lg lg:px-5"
+            isScrolled &&
+              !menuState &&
+              "max-w-4xl rounded-[16px] border border-[var(--border)] bg-white/90 backdrop-blur-lg lg:px-5",
+            menuState && "rounded-[24px] border border-white/12 bg-[var(--primary)] shadow-[0_20px_48px_rgba(10,10,10,0.18)] lg:rounded-none lg:border-transparent lg:bg-transparent lg:shadow-none"
           )}
         >
           <div className="relative flex flex-wrap items-center justify-between gap-6 py-3 lg:gap-0 lg:py-4">
             <div className="flex w-full justify-between lg:w-auto">
               <Link href="/" aria-label="home" className="flex items-center space-x-2">
-                <Logo />
+                <Logo className={cn(menuState && "text-white")} />
               </Link>
 
               <button
                 onClick={() => setMenuState(!menuState)}
                 aria-label={menuState ? "Close Menu" : "Open Menu"}
-                className="relative z-20 -m-2.5 -mr-4 block cursor-pointer p-2.5 lg:hidden"
+                className={cn(
+                  "relative z-20 -m-2.5 -mr-4 block cursor-pointer rounded-full p-2.5 transition-colors lg:hidden",
+                  menuState ? "bg-white/10 text-white hover:bg-white/16" : "text-[var(--text-primary)]"
+                )}
               >
                 <Menu className="m-auto size-6 duration-200 group-data-[state=active]:rotate-180 group-data-[state=active]:scale-0 group-data-[state=active]:opacity-0" />
                 <X className="absolute inset-0 m-auto size-6 -rotate-180 scale-0 opacity-0 duration-200 group-data-[state=active]:rotate-0 group-data-[state=active]:scale-100 group-data-[state=active]:opacity-100" />
@@ -270,23 +293,37 @@ function HeroHeader({ menuItems }: { menuItems: NavItem[] }) {
               </ul>
             </div>
 
-            <div className="mb-6 hidden w-full flex-wrap items-center justify-end space-y-8 rounded-3xl border border-[var(--border)] bg-white p-6 shadow-[0_12px_30px_rgba(0,0,0,0.05)] group-data-[state=active]:block md:flex-nowrap lg:m-0 lg:flex lg:w-fit lg:gap-6 lg:space-y-0 lg:border-transparent lg:bg-transparent lg:p-0 lg:shadow-none">
+            <div className="mb-6 hidden w-full flex-wrap items-center justify-end space-y-6 rounded-3xl border border-white/12 bg-[var(--primary)] p-5 shadow-[0_20px_48px_rgba(10,10,10,0.18)] group-data-[state=active]:block md:flex-nowrap lg:m-0 lg:flex lg:w-fit lg:gap-6 lg:space-y-0 lg:border-transparent lg:bg-transparent lg:p-0 lg:shadow-none">
               <div className="lg:hidden">
-                <ul className="space-y-6 text-base">
-                  {menuItems.map((item) => (
-                    <li key={item.name}>
-                      <Link
-                        href={item.href}
-                        className="block text-[var(--text-secondary)] duration-150 hover:text-[var(--text-primary)]"
-                      >
-                        <span>{item.name}</span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
+                <div className="rounded-[24px] border border-white/14 bg-white p-3 shadow-[0_18px_36px_rgba(10,10,10,0.12)]">
+                  <ul className="space-y-2 text-base">
+                    {menuItems.map((item) => {
+                      const Icon = mobileMenuIcons[item.name] ?? LayoutGrid;
+                      return (
+                        <li key={item.name}>
+                          <Link
+                            href={item.href}
+                            onClick={() => setMenuState(false)}
+                            className="flex items-center gap-3 rounded-[16px] px-3 py-3 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[#f5eefc] hover:text-[var(--primary)]"
+                          >
+                            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#e9def7] bg-[#f5eefc] text-[var(--primary)]">
+                              <Icon className="h-4 w-4 shrink-0" />
+                            </span>
+                            <span>{item.name}</span>
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               </div>
               <div className="flex w-full flex-col space-y-3 sm:flex-row sm:gap-3 sm:space-y-0 md:w-fit">
-                <Button asChild variant="outline" size="sm" className="border-[#E6E6E6] bg-white hover:bg-[#F8F8FB]">
+                <Button
+                  asChild
+                  variant="outline"
+                  size="sm"
+                  className="border-transparent bg-white text-[var(--primary)] hover:bg-white/95"
+                >
                   <Link href="/register">
                     <span>Get Started</span>
                   </Link>
