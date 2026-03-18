@@ -65,7 +65,7 @@ export default function NewTerritoryPage() {
   const [city, setCity] = useState(searchParams.get("city") || "");
   const [state, setState] = useState(searchParams.get("state") || "");
   const [vertical, setVertical] = useState(searchParams.get("vertical") || "dentist");
-  const [limit, setLimit] = useState(20);
+  const [limit, setLimit] = useState("20");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scanLimitReached = !accessLoading && access?.can_use.territory_scan === false;
@@ -174,13 +174,27 @@ export default function NewTerritoryPage() {
                 <FieldLabel htmlFor="territory-limit">Limit</FieldLabel>
                 <input
                   id="territory-limit"
-                  type="number"
-                  min={1}
-                  max={20}
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={limit}
-                  onChange={(e) => setLimit(Math.max(1, Math.min(20, Number(e.target.value || 20))))}
+                  onChange={(e) => {
+                    const next = e.target.value.replace(/\D/g, "").slice(0, 2);
+                    setLimit(next);
+                  }}
+                  onBlur={() => {
+                    const normalized = Math.max(1, Math.min(20, Number(limit) || 20));
+                    setLimit(String(normalized));
+                  }}
+                  aria-describedby="territory-limit-hint"
                   className="h-11 w-full rounded-[8px] border border-[var(--border-default)] bg-[var(--bg-card)] px-3 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--ring)]"
                 />
+                <p
+                  id="territory-limit-hint"
+                  className="mt-2 text-[11px] uppercase tracking-[0.06em] text-[var(--text-muted)]/80"
+                >
+                  Max 20 prospects per scan
+                </p>
               </div>
             </div>
 
@@ -255,10 +269,10 @@ export default function NewTerritoryPage() {
 function territoryUsageMessage(access: ReturnType<typeof useAuth>["access"]) {
   if (!access) return null;
   if (access.viewer.is_guest) {
-    return `${access.remaining.territory_scan ?? 0} of ${access.limits.territory_scan ?? 0} guest territory scans left on this device. Create a free account to save the work.`;
+    return `Guest plan: ${access.remaining.territory_scan ?? 0} of ${access.limits.territory_scan ?? 0} territory scans left on this device. Max ${access.limits.territory_scan ?? 0}.`;
   }
   if (String(access.plan_tier) === "free") {
-    return `${access.remaining.territory_scan ?? 0} of ${access.limits.territory_scan ?? 0} territory scans left this month on the free plan.`;
+    return `Free plan: ${access.remaining.territory_scan ?? 0} of ${access.limits.territory_scan ?? 0} territory scans left this month. Max ${access.limits.territory_scan ?? 0} each month.`;
   }
   return `${String(access.plan_tier).toUpperCase()} plan: territory scans are available without a usage cap.`;
 }

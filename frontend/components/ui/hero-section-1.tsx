@@ -256,13 +256,14 @@ function HeroHeader({ menuItems }: { menuItems: NavItem[] }) {
             isScrolled &&
               !menuState &&
               "max-w-4xl rounded-[16px] border border-[var(--border)] bg-white/90 backdrop-blur-lg lg:px-5",
-            menuState && "rounded-[24px] border border-white/12 bg-[var(--primary)] shadow-[0_20px_48px_rgba(10,10,10,0.18)] lg:rounded-none lg:border-transparent lg:bg-transparent lg:shadow-none"
+            menuState &&
+              "rounded-[24px] border border-[var(--border)] bg-white/96 shadow-[0_20px_48px_rgba(10,10,10,0.12)] backdrop-blur-lg lg:rounded-none lg:border-transparent lg:bg-transparent lg:shadow-none"
           )}
         >
           <div className="relative flex flex-wrap items-center justify-between gap-6 py-3 lg:gap-0 lg:py-4">
             <div className="flex w-full justify-between lg:w-auto">
               <Link href="/" aria-label="home" className="flex items-center space-x-2">
-                <Logo className={cn(menuState && "text-white")} />
+                <Logo className={cn(menuState && "text-black")} />
               </Link>
 
               <button
@@ -270,7 +271,9 @@ function HeroHeader({ menuItems }: { menuItems: NavItem[] }) {
                 aria-label={menuState ? "Close Menu" : "Open Menu"}
                 className={cn(
                   "relative z-20 -m-2.5 -mr-4 block cursor-pointer rounded-full p-2.5 transition-colors lg:hidden",
-                  menuState ? "bg-white/10 text-white hover:bg-white/16" : "text-[var(--text-primary)]"
+                  menuState
+                    ? "bg-[#f5eefc] text-[var(--primary)] hover:bg-[#efe4fd]"
+                    : "text-[var(--text-primary)]"
                 )}
               >
                 <Menu className="m-auto size-6 duration-200 group-data-[state=active]:rotate-180 group-data-[state=active]:scale-0 group-data-[state=active]:opacity-0" />
@@ -293,7 +296,7 @@ function HeroHeader({ menuItems }: { menuItems: NavItem[] }) {
               </ul>
             </div>
 
-            <div className="mb-6 hidden w-full flex-wrap items-center justify-end space-y-6 rounded-3xl border border-white/12 bg-[var(--primary)] p-5 shadow-[0_20px_48px_rgba(10,10,10,0.18)] group-data-[state=active]:block md:flex-nowrap lg:m-0 lg:flex lg:w-fit lg:gap-6 lg:space-y-0 lg:border-transparent lg:bg-transparent lg:p-0 lg:shadow-none">
+            <div className="mb-6 hidden w-full flex-wrap items-center justify-end space-y-6 rounded-3xl border border-[var(--border)] bg-white p-5 shadow-[0_20px_48px_rgba(10,10,10,0.12)] group-data-[state=active]:block md:flex-nowrap lg:m-0 lg:flex lg:w-fit lg:gap-6 lg:space-y-0 lg:border-transparent lg:bg-transparent lg:p-0 lg:shadow-none">
               <div className="lg:hidden">
                 <div className="rounded-[24px] border border-white/14 bg-white p-3 shadow-[0_18px_36px_rgba(10,10,10,0.12)]">
                   <ul className="space-y-2 text-base">

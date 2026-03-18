@@ -191,10 +191,10 @@ function formatEvidenceSource(source: string | undefined) {
 function askUsageMessage(access: ReturnType<typeof useAuth>["access"]): ReactNode {
   if (!access) return null;
   if (access.viewer.is_guest) {
-    return "Ask Neyma is available after signup so the shortlist can be saved and reopened inside the workspace.";
+    return "Guest plan: Ask Neyma is unavailable until signup. Max 0 requests before creating an account.";
   }
   if (String(access.plan_tier) === "free") {
-    return `${access.remaining.ask ?? 0} of ${access.limits.ask ?? 0} Ask Neyma requests left this month on the free plan.`;
+    return `Free plan: ${access.remaining.ask ?? 0} of ${access.limits.ask ?? 0} Ask Neyma requests left this month. Max ${access.limits.ask ?? 0} each month.`;
   }
   return (
     <>
@@ -664,6 +664,9 @@ export default function AskPage() {
                   ) : askLimitReached ? "Monthly limit reached" : "Ask Neyma"}
                 </Button>
               </div>
+              <p className="mt-3 text-[11px] uppercase tracking-[0.06em] text-[var(--text-muted)]/80">
+                Max 20 dental practices per Ask Neyma request
+              </p>
             </div>
 
             {message && (
