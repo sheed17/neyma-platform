@@ -1938,6 +1938,104 @@ def get_access_state(user_id: int) -> Dict[str, Any]:
     }
 
 
+def delete_user_account(user_id: int) -> bool:
+    user = get_user(int(user_id))
+    if not user:
+        return False
+
+    workspace_id = int(user["workspace_id"]) if user.get("workspace_id") else None
+    workspace = get_workspace(workspace_id) if workspace_id else None
+    active_members = int((workspace or {}).get("active_members") or 0)
+    if workspace_id and active_members > 1:
+        raise ValueError("This workspace still has other active members. Contact support to close the account safely.")
+
+    if use_runtime_postgres():
+        conn = _get_runtime_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM brief_share_tokens WHERE user_id = %s", (int(user_id),))
+                cur.execute("DELETE FROM prospect_lists WHERE user_id = %s", (int(user_id),))
+                cur.execute("DELETE FROM territory_prospects WHERE user_id = %s", (int(user_id),))
+                cur.execute("DELETE FROM territory_scans WHERE user_id = %s", (int(user_id),))
+                cur.execute("DELETE FROM diagnostics WHERE user_id = %s", (int(user_id),))
+                cur.execute("DELETE FROM jobs WHERE user_id = %s", (int(user_id),))
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        conn = _get_conn()
+        try:
+            conn.execute("DELETE FROM brief_share_tokens WHERE user_id = ?", (int(user_id),))
+            conn.execute("DELETE FROM prospect_lists WHERE user_id = ?", (int(user_id),))
+            conn.execute("DELETE FROM territory_prospects WHERE user_id = ?", (int(user_id),))
+            conn.execute("DELETE FROM territory_scans WHERE user_id = ?", (int(user_id),))
+            conn.execute("DELETE FROM diagnostics WHERE user_id = ?", (int(user_id),))
+            conn.execute("DELETE FROM jobs WHERE user_id = ?", (int(user_id),))
+            conn.commit()
+        finally:
+            conn.close()
+
+    if use_access_postgres():
+        conn = _get_access_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM usage_events WHERE user_id = %s", (int(user_id),))
+                cur.execute(
+                    "DELETE FROM usage_counters WHERE subject_type = 'user' AND subject_id = %s",
+                    (str(int(user_id)),),
+                )
+                cur.execute(
+                    "DELETE FROM access_entitlements WHERE scope_type = 'user' AND scope_id = %s",
+                    (str(int(user_id)),),
+                )
+                cur.execute("DELETE FROM guest_sessions WHERE user_id = %s", (int(user_id),))
+                cur.execute("DELETE FROM workspace_members WHERE user_id = %s", (int(user_id),))
+                cur.execute("DELETE FROM users WHERE id = %s", (int(user_id),))
+                if workspace_id:
+                    cur.execute(
+                        "DELETE FROM access_entitlements WHERE scope_type = 'workspace' AND scope_id = %s",
+                        (str(int(workspace_id)),),
+                    )
+                    cur.execute("DELETE FROM workspaces WHERE id = %s", (int(workspace_id),))
+                    cur.execute(
+                        "DELETE FROM usage_counters WHERE subject_type = 'workspace' AND subject_id = %s",
+                        (str(int(workspace_id)),),
+                    )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    conn = _get_conn()
+    try:
+        conn.execute("DELETE FROM usage_events WHERE user_id = ?", (int(user_id),))
+        conn.execute(
+            "DELETE FROM usage_counters WHERE subject_type = 'user' AND subject_id = ?",
+            (str(int(user_id)),),
+        )
+        conn.execute(
+            "DELETE FROM access_entitlements WHERE scope_type = 'user' AND scope_id = ?",
+            (str(int(user_id)),),
+        )
+        conn.execute("DELETE FROM guest_sessions WHERE user_id = ?", (int(user_id),))
+        conn.execute("DELETE FROM workspace_members WHERE user_id = ?", (int(user_id),))
+        conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
+        if workspace_id:
+            conn.execute(
+                "DELETE FROM access_entitlements WHERE scope_type = 'workspace' AND scope_id = ?",
+                (str(int(workspace_id)),),
+            )
+            conn.execute("DELETE FROM workspaces WHERE id = ?", (int(workspace_id),))
+            conn.execute(
+                "DELETE FROM usage_counters WHERE subject_type = 'workspace' AND subject_id = ?",
+                (str(int(workspace_id)),),
+            )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 def consume_usage(user_id: int, feature_key: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     user = get_user(int(user_id))
     if not user:

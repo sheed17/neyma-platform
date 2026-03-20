@@ -545,3 +545,15 @@ export async function createBillingPortalSession(): Promise<{ url: string }> {
   }
   return res.json();
 }
+
+export async function deleteCurrentAccount(confirmation: string): Promise<{ deleted: boolean }> {
+  const res = await apiFetch(`${getBaseUrl()}/access/me`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirmation }),
+  });
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  return res.json();
+}

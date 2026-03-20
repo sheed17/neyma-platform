@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowRight, Sparkles, Trash2 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
 import Badge from "@/app/components/ui/Badge";
@@ -10,14 +10,20 @@ import {
   ApiError,
   createBillingCheckoutSession,
   createBillingPortalSession,
+  deleteCurrentAccount,
 } from "@/lib/api";
 import { clientFacingAppError } from "@/lib/present";
 import { Button } from "@/components/ui/button";
+import { useRouter } from "next/navigation";
 
 export default function SettingsPage() {
-  const { user, access } = useAuth();
+  const router = useRouter();
+  const { user, access, logout } = useAuth();
   const [billingBusy, setBillingBusy] = useState<"checkout" | "portal" | null>(null);
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
   const usageRows = access ? [
     { label: "Territory scans", value: usageValue(access.remaining.territory_scan, access.limits.territory_scan) },
     { label: "Build briefs", value: usageValue(access.remaining.diagnostic, access.limits.diagnostic) },
@@ -123,6 +129,57 @@ export default function SettingsPage() {
           </div>
         </CardBody>
       </Card>
+
+      <Card className="border-red-200 bg-white">
+        <CardHeader
+          title="Danger Zone"
+          subtitle="Delete your account, workspace, saved scans, lists, briefs, and billing state permanently."
+        />
+        <CardBody className="space-y-4">
+          <div className="rounded-[18px] border border-red-200 bg-[#fff7f7] p-4">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-full bg-red-50 p-2 text-red-600">
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-[var(--text-primary)]">Delete this Neyma account permanently.</p>
+                <p className="mt-1 text-sm leading-6 text-[var(--text-muted)]">
+                  Enter the confirmation word below to remove your account, saved workspace data, scans, lists, and billing state. If you need help closing a larger workspace, email <a className="font-medium text-[#8B50D4] underline-offset-4 hover:underline" href="mailto:support@tryneyma.com">support@tryneyma.com</a>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <Input
+              label="Type DELETE to confirm"
+              value={deleteConfirmation}
+              onChange={(event) => setDeleteConfirmation(event.target.value)}
+              autoComplete="off"
+              className="uppercase tracking-[0.08em]"
+            />
+            <Button
+              variant="destructive"
+              disabled={deleteBusy || deleteConfirmation.trim().toUpperCase() !== "DELETE"}
+              className="h-10 rounded-[14px] px-5 text-sm font-semibold shadow-[0_10px_24px_rgba(185,28,28,0.18)]"
+              onClick={() => void removeAccount({
+                confirmation: deleteConfirmation,
+                logout,
+                router,
+                setDeleteBusy,
+                setDeleteMessage,
+              })}
+            >
+              {deleteBusy ? "Deleting..." : "Delete Account"}
+              <Trash2 className="ml-2 h-4 w-4" />
+            </Button>
+          </div>
+
+          {deleteMessage ? (
+            <p className="text-sm text-[var(--text-muted)]">{deleteMessage}</p>
+          ) : null}
+        </CardBody>
+      </Card>
     </div>
   );
 }
@@ -169,5 +226,39 @@ async function openBillingPortal(
     }
   } finally {
     setBillingBusy(null);
+  }
+}
+
+async function removeAccount({
+  confirmation,
+  logout,
+  router,
+  setDeleteBusy,
+  setDeleteMessage,
+}: {
+  confirmation: string;
+  logout: () => Promise<void>;
+  router: ReturnType<typeof useRouter>;
+  setDeleteBusy: (value: boolean) => void;
+  setDeleteMessage: (value: string | null) => void;
+}) {
+  setDeleteBusy(true);
+  setDeleteMessage(null);
+  try {
+    const result = await deleteCurrentAccount(confirmation);
+    if (!result.deleted) {
+      setDeleteMessage("We couldn't finish deleting your account right now.");
+      return;
+    }
+    await logout();
+    router.replace("/");
+  } catch (error) {
+    if (error instanceof ApiError) {
+      setDeleteMessage(clientFacingAppError(error.message, "We couldn't finish deleting your account right now."));
+    } else {
+      setDeleteMessage("We couldn't finish deleting your account right now.");
+    }
+  } finally {
+    setDeleteBusy(false);
   }
 }

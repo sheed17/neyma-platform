@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { ArrowRight, CheckCircle2, Mail } from "lucide-react";
 import Link from "next/link";
+import { AnimatePresence, motion } from "framer-motion";
 
 import { FaqSection } from "@/components/ui/faq";
 import { Footer } from "@/components/ui/footer";
@@ -9,6 +11,7 @@ import { HeroSection } from "@/components/ui/hero-section-1";
 import { NeymaButton } from "@/components/ui/neyma-button";
 import { Pricing } from "@/components/ui/pricing";
 import ShineHoverButton from "@/components/ui/shine-hover";
+import TypingEffect from "@/components/ui/typing-effect";
 import { useAuth } from "@/lib/auth";
 
 const rankedPractices = [
@@ -331,13 +334,41 @@ export default function LandingPage() {
 }
 
 function TerritoryHeroPreview() {
+  const [revealedCount, setRevealedCount] = useState(0);
+
+  useEffect(() => {
+    const timers = [
+      setTimeout(() => setRevealedCount(1), 900),
+      setTimeout(() => setRevealedCount(2), 1700),
+      setTimeout(() => setRevealedCount(3), 2500),
+    ];
+    return () => timers.forEach((timer) => clearTimeout(timer));
+  }, []);
+
   return (
     <div className="overflow-hidden rounded-[26px] border border-[#E6E6E6] bg-white p-4 shadow-[0_25px_60px_rgba(0,0,0,0.08)] sm:p-6">
       <div className="space-y-5">
         <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.08fr_auto]">
-          <ScanField label="City" value="Austin" />
-          <ScanField label="State" value="TX" />
-          <ScanField label="Specialty focus" value="Dental implants" />
+          <ScanField label="City">
+            <TypingEffect
+              texts={["San Jose", "Austin"]}
+              typingSpeed={95}
+              rotationInterval={1800}
+              className="text-sm text-[#0A0A0A]"
+            />
+          </ScanField>
+          <ScanField label="State">
+            <TypingEffect
+              texts={["CA", "TX"]}
+              typingSpeed={110}
+              rotationInterval={1800}
+              className="text-sm text-[#0A0A0A]"
+            />
+          </ScanField>
+          <div className="rounded-[14px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-3">
+            <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">What happens next</p>
+            <p className="mt-1 text-sm font-medium text-[#0A0A0A]">Neyma ranks the market and surfaces the strongest leads first.</p>
+          </div>
           <div className="flex items-end">
             <ShineHoverButton asChild className="w-full justify-center">
               <Link href="/territory/new">Run scan</Link>
@@ -358,31 +389,46 @@ function TerritoryHeroPreview() {
         </div>
 
         <div className="space-y-3">
-          {rankedPractices.map((practice) => (
-            <div
-              key={practice.rank}
-              className="grid gap-3 rounded-[16px] border border-[#E6E6E6] bg-white px-4 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.05)] sm:grid-cols-[auto_1fr_auto]"
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">{practice.rank}</span>
-                <span className="rounded-full border border-[#E6E6E6] bg-[#F8F8FB] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#0A0A0A]">
-                  {practice.signal}
-                </span>
-              </div>
-              <div>
-                <p className="text-[18px] font-medium tracking-[-0.02em] text-[#0A0A0A]">{practice.name}</p>
-                <p className="mt-1 text-sm text-[#6B6B6B]">{practice.note}</p>
-              </div>
-              <div className="flex items-center gap-2 sm:justify-end">
-                <span className="rounded-full border border-[#E7D8FB] bg-[#F5EEFC] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#8B50D4]">
-                  ranked
-                </span>
-                <span className="rounded-full border border-[#E6E6E6] bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#6B6B6B]">
-                  build brief
-                </span>
-              </div>
+          <AnimatePresence initial={false}>
+            {rankedPractices.slice(0, revealedCount).map((practice, index) => (
+              <motion.div
+                key={practice.rank}
+                initial={{ opacity: 0, y: 18, filter: "blur(6px)", scale: 0.985 }}
+                animate={{ opacity: 1, y: 0, filter: "blur(0px)", scale: 1 }}
+                exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
+                transition={{
+                  duration: 0.45,
+                  ease: [0.22, 1, 0.36, 1],
+                  delay: index === 0 ? 0 : 0.04,
+                }}
+                className="grid gap-3 rounded-[16px] border border-[#E6E6E6] bg-white px-4 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.05)] sm:grid-cols-[auto_1fr_auto]"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">{practice.rank}</span>
+                  <span className={`rounded-full px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] ${signalPillClass(practice.signal)}`}>
+                    {practice.signal}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-[18px] font-medium tracking-[-0.02em] text-[#0A0A0A]">{practice.name}</p>
+                  <p className="mt-1 text-sm text-[#6B6B6B]">{practice.note}</p>
+                </div>
+                <div className="flex items-center gap-2 sm:justify-end">
+                  <span className="rounded-full border border-[#E7D8FB] bg-[#F5EEFC] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#8B50D4]">
+                    ranked
+                  </span>
+                  <span className="rounded-full border border-[#E6E6E6] bg-white px-3 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#6B6B6B]">
+                    build brief
+                  </span>
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+          {revealedCount === 0 ? (
+            <div className="rounded-[16px] border border-[#E6E6E6] bg-[#FAF8FD] px-4 py-5 text-sm text-[#6B6B6B]">
+              Ranking the market and assembling the first shortlist...
             </div>
-          ))}
+          ) : null}
         </div>
 
         <div className="rounded-[18px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-5 text-center">
@@ -399,6 +445,17 @@ function TerritoryHeroPreview() {
       </div>
     </div>
   );
+}
+
+function signalPillClass(signal: string) {
+  const normalized = signal.trim().toLowerCase();
+  if (normalized.includes("high")) {
+    return "border border-[#E7D8FB] bg-[#F5EEFC] text-[#8B50D4]";
+  }
+  if (normalized.includes("moderate")) {
+    return "border border-[#E6E6E6] bg-[#F8F8FB] text-[#6B6B6B]";
+  }
+  return "border border-[#E7D8FB] bg-[#F5EEFC] text-[#8B50D4]";
 }
 
 function BriefSectionPreview({ signedIn }: { signedIn: boolean }) {
@@ -646,11 +703,15 @@ function SingleBriefInputPreview({ signedIn }: { signedIn: boolean }) {
   );
 }
 
-function ScanField({ label, value }: { label: string; value: string }) {
+function ScanField({ label, value, children }: { label: string; value?: string; children?: React.ReactNode }) {
   return (
     <div className="rounded-[14px] border border-[#E6E6E6] bg-[#F8F8FB] px-4 py-3">
       <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#6B6B6B]">{label}</p>
-      <p className="mt-1 text-sm font-medium text-[#0A0A0A]">{value}</p>
+      {children ? (
+        <div className="mt-1 min-h-[1.2rem] text-sm font-medium text-[#0A0A0A]">{children}</div>
+      ) : (
+        <p className="mt-1 text-sm font-medium text-[#0A0A0A]">{value}</p>
+      )}
     </div>
   );
 }

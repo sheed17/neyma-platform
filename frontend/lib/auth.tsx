@@ -73,6 +73,11 @@ function syncAuthCookies(user: User | null) {
   document.cookie = cookieString(AUTH_NAME_COOKIE, "", 0);
 }
 
+function clearGuestSession() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem("neyma_guest_session");
+}
+
 function readStoredUser(): User | null {
   if (typeof window === "undefined") return null;
   try {
@@ -275,6 +280,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await supabase.auth.signOut();
     }
     persistAccessToken(null);
+    clearGuestSession();
     applyUserState(setUser, null);
     setAccess(null);
   }, []);
