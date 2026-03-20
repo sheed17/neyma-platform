@@ -28,6 +28,7 @@ from backend.routes.territory import router as territory_router
 from backend.routes.public_brief import router as public_brief_router
 from backend.routes.ask import router as ask_router
 from backend.routes.qa import router as qa_router
+from backend.routes.billing import router as billing_router
 from backend.services.job_worker import start_worker, stop_worker
 from pipeline.db import init_db
 
@@ -84,6 +85,7 @@ app.include_router(public_brief_router)
 app.include_router(ask_router)
 app.include_router(qa_router)
 app.include_router(access_router)
+app.include_router(billing_router)
 
 
 @app.get("/health")

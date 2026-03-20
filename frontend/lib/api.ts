@@ -525,3 +525,23 @@ export async function ensureAskProspectBrief(body: {
   }
   return res.json();
 }
+
+export async function createBillingCheckoutSession(): Promise<{ url: string }> {
+  const res = await apiFetch(`${getBaseUrl()}/billing/checkout`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  return res.json();
+}
+
+export async function createBillingPortalSession(): Promise<{ url: string }> {
+  const res = await apiFetch(`${getBaseUrl()}/billing/customer-portal`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  return res.json();
+}

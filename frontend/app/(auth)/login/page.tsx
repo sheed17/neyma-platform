@@ -7,7 +7,7 @@ import { AuthForm } from "@/components/ui/premium-auth";
 import { useAuth } from "@/lib/auth";
 
 export default function LoginPage() {
-  const { user, loading, login, loginAsTestUser } = useAuth();
+  const { user, loading, login, requestPasswordReset, loginAsTestUser } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -35,6 +35,9 @@ export default function LoginPage() {
             initialMode="login"
             onLogin={async ({ email, password }) => {
               await login(email, password);
+            }}
+            onResetPassword={async ({ email }) => {
+              await requestPasswordReset(email);
             }}
             onUseTestAccount={async () => {
               await loginAsTestUser();

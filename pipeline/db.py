@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS users (
     seat_role TEXT NOT NULL DEFAULT 'owner',
     seat_status TEXT NOT NULL DEFAULT 'active',
     is_guest INTEGER NOT NULL DEFAULT 0,
+    stripe_customer_id TEXT,
+    stripe_subscription_id TEXT,
+    stripe_price_id TEXT,
+    stripe_subscription_status TEXT,
+    stripe_current_period_end TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -530,6 +535,19 @@ def _init_access_postgres() -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(ACCESS_PG_SCHEMA_SQL)
+            for sql in [
+                "ALTER TABLE users ADD COLUMN stripe_customer_id TEXT",
+                "ALTER TABLE users ADD COLUMN stripe_subscription_id TEXT",
+                "ALTER TABLE users ADD COLUMN stripe_price_id TEXT",
+                "ALTER TABLE users ADD COLUMN stripe_subscription_status TEXT",
+                "ALTER TABLE users ADD COLUMN stripe_current_period_end TEXT",
+            ]:
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    conn.rollback()
+                    with conn.cursor() as retry_cur:
+                        retry_cur.execute(ACCESS_PG_SCHEMA_SQL)
         conn.commit()
     finally:
         conn.close()
@@ -716,6 +734,11 @@ def init_db() -> None:
                 seat_role TEXT NOT NULL DEFAULT 'owner',
                 seat_status TEXT NOT NULL DEFAULT 'active',
                 is_guest INTEGER NOT NULL DEFAULT 0,
+                stripe_customer_id TEXT,
+                stripe_subscription_id TEXT,
+                stripe_price_id TEXT,
+                stripe_subscription_status TEXT,
+                stripe_current_period_end TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
@@ -1108,6 +1131,11 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN seat_role TEXT NOT NULL DEFAULT 'owner'",
             "ALTER TABLE users ADD COLUMN seat_status TEXT NOT NULL DEFAULT 'active'",
             "ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN stripe_customer_id TEXT",
+            "ALTER TABLE users ADD COLUMN stripe_subscription_id TEXT",
+            "ALTER TABLE users ADD COLUMN stripe_price_id TEXT",
+            "ALTER TABLE users ADD COLUMN stripe_subscription_status TEXT",
+            "ALTER TABLE users ADD COLUMN stripe_current_period_end TEXT",
         ]:
             try:
                 conn.execute(sql)
@@ -1272,6 +1300,142 @@ def get_workspace(workspace_id: int) -> Optional[Dict[str, Any]]:
                WHERE w.id = ?""",
             (int(workspace_id),),
         ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _seat_limit_for_plan(plan_tier: str) -> int:
+    return 5 if str(plan_tier or "").strip().lower() == "team" else 1
+
+
+def sync_user_billing(
+    user_id: int,
+    *,
+    stripe_customer_id: Optional[str] = None,
+    stripe_subscription_id: Optional[str] = None,
+    stripe_price_id: Optional[str] = None,
+    stripe_subscription_status: Optional[str] = None,
+    stripe_current_period_end: Optional[str] = None,
+    plan_tier: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    user = get_user(int(user_id))
+    if not user:
+        return None
+    next_plan_tier = str(plan_tier or user.get("plan_tier") or "free").strip().lower()
+    seat_limit = _seat_limit_for_plan(next_plan_tier)
+    workspace_id = user.get("workspace_id")
+    now = utc_now_iso()
+
+    if use_access_postgres():
+        conn = _get_access_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE users
+                       SET plan_tier = %s,
+                           stripe_customer_id = COALESCE(%s, stripe_customer_id),
+                           stripe_subscription_id = %s,
+                           stripe_price_id = %s,
+                           stripe_subscription_status = %s,
+                           stripe_current_period_end = %s,
+                           updated_at = %s
+                       WHERE id = %s""",
+                    (
+                        next_plan_tier,
+                        stripe_customer_id,
+                        stripe_subscription_id,
+                        stripe_price_id,
+                        stripe_subscription_status,
+                        stripe_current_period_end,
+                        now,
+                        int(user_id),
+                    ),
+                )
+                if workspace_id:
+                    cur.execute(
+                        "UPDATE workspaces SET plan_tier = %s, seat_limit = %s, updated_at = %s WHERE id = %s",
+                        (next_plan_tier, seat_limit, now, int(workspace_id)),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """UPDATE users
+                   SET plan_tier = ?,
+                       stripe_customer_id = COALESCE(?, stripe_customer_id),
+                       stripe_subscription_id = ?,
+                       stripe_price_id = ?,
+                       stripe_subscription_status = ?,
+                       stripe_current_period_end = ?,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    next_plan_tier,
+                    stripe_customer_id,
+                    stripe_subscription_id,
+                    stripe_price_id,
+                    stripe_subscription_status,
+                    stripe_current_period_end,
+                    now,
+                    int(user_id),
+                ),
+            )
+            if workspace_id:
+                conn.execute(
+                    "UPDATE workspaces SET plan_tier = ?, seat_limit = ?, updated_at = ? WHERE id = ?",
+                    (next_plan_tier, seat_limit, now, int(workspace_id)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    _ensure_entitlement("user", str(user_id), next_plan_tier, None if next_plan_tier == "team" else 1)
+    if workspace_id:
+        _ensure_entitlement("workspace", str(workspace_id), next_plan_tier, seat_limit)
+    return get_user(int(user_id))
+
+
+def get_user_by_stripe_customer_id(customer_id: str) -> Optional[Dict[str, Any]]:
+    if not customer_id:
+        return None
+    if use_access_postgres():
+        conn = _get_access_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM users WHERE stripe_customer_id = %s", (customer_id,))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+    conn = _get_conn()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE stripe_customer_id = ?", (customer_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_user_by_stripe_subscription_id(subscription_id: str) -> Optional[Dict[str, Any]]:
+    if not subscription_id:
+        return None
+    if use_access_postgres():
+        conn = _get_access_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM users WHERE stripe_subscription_id = %s", (subscription_id,))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+    conn = _get_conn()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE stripe_subscription_id = ?", (subscription_id,)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
@@ -1764,6 +1928,13 @@ def get_access_state(user_id: int) -> Dict[str, Any]:
         "period_key": period_key,
         "can_use": can_use,
         "recommended_cta": recommended_cta,
+        "billing": {
+            "stripe_customer_id": user.get("stripe_customer_id"),
+            "stripe_subscription_id": user.get("stripe_subscription_id"),
+            "stripe_price_id": user.get("stripe_price_id"),
+            "subscription_status": user.get("stripe_subscription_status"),
+            "current_period_end": user.get("stripe_current_period_end"),
+        },
     }
 
 

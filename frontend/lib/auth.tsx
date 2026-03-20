@@ -17,6 +17,8 @@ type AuthContextType = {
   accessLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<void>;
+  updatePassword: (password: string) => Promise<void>;
   loginAsTestUser: () => Promise<void>;
   logout: () => Promise<void>;
   refreshAccess: () => Promise<AccessState | null>;
@@ -223,6 +225,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     applyUserState(setUser, null);
   }, []);
 
+  const requestPasswordReset = useCallback(async (email: string) => {
+    if (!hasSupabaseEnv()) {
+      throw new Error("Supabase is not configured yet. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to frontend/.env.local.");
+    }
+    const supabase = getSupabaseClient();
+    const origin =
+      typeof window !== "undefined" && window.location.origin
+        ? window.location.origin
+        : "http://localhost:3000";
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${origin}/reset-password`,
+    });
+    if (error) throw new Error(error.message);
+  }, []);
+
+  const updatePassword = useCallback(async (password: string) => {
+    if (!hasSupabaseEnv()) {
+      throw new Error("Supabase is not configured yet. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to frontend/.env.local.");
+    }
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.auth.updateUser({ password });
+    if (error) throw new Error(error.message);
+    applySessionState(setUser, data.user ? await supabase.auth.getSession().then(({ data: s }) => s.session) : null);
+    setAccessLoading(true);
+    try {
+      const nextAccess = await getAccessState();
+      setAccess(nextAccess);
+    } finally {
+      setAccessLoading(false);
+    }
+  }, []);
+
   const loginAsTestUser = useCallback(async () => {
     await new Promise((r) => setTimeout(r, 250));
     applyUserState(setUser, TEST_USER);
@@ -246,8 +280,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextType>(
-    () => ({ user, access, loading, accessLoading, login, register, loginAsTestUser, logout, refreshAccess }),
-    [user, access, loading, accessLoading, login, register, loginAsTestUser, logout, refreshAccess],
+    () => ({
+      user,
+      access,
+      loading,
+      accessLoading,
+      login,
+      register,
+      requestPasswordReset,
+      updatePassword,
+      loginAsTestUser,
+      logout,
+      refreshAccess,
+    }),
+    [user, access, loading, accessLoading, login, register, requestPasswordReset, updatePassword, loginAsTestUser, logout, refreshAccess],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
