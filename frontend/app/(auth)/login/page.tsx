@@ -7,7 +7,7 @@ import { AuthForm } from "@/components/ui/premium-auth";
 import { useAuth } from "@/lib/auth";
 
 export default function LoginPage() {
-  const { user, loading, login, requestPasswordReset, loginAsTestUser } = useAuth();
+  const { user, loading, login, requestPasswordReset } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -39,11 +39,6 @@ export default function LoginPage() {
             onResetPassword={async ({ email }) => {
               await requestPasswordReset(email);
             }}
-            onUseTestAccount={async () => {
-              await loginAsTestUser();
-            }}
-            testAccountLabel="Use test account"
-            testAccountHint="Local shortcut for reviewing the workspace without signup."
             onSuccess={() => {
               router.push("/dashboard");
             }}
