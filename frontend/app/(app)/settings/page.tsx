@@ -1,17 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { ArrowRight, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
 import Badge from "@/app/components/ui/Badge";
 import Input from "@/app/components/ui/Input";
-import Button from "@/app/components/ui/Button";
 import {
   ApiError,
   createBillingCheckoutSession,
   createBillingPortalSession,
 } from "@/lib/api";
 import { clientFacingAppError } from "@/lib/present";
+import { Button } from "@/components/ui/button";
 
 export default function SettingsPage() {
   const { user, access } = useAuth();
@@ -76,10 +77,14 @@ export default function SettingsPage() {
             </div>
           ) : null}
 
-          <div className="rounded-[var(--radius)] border border-[var(--border-default)] bg-[var(--surface)] p-4">
+          <div className="rounded-[24px] border border-[#E7D8FB] bg-[linear-gradient(135deg,#ffffff_0%,#fbf7ff_58%,#f5eefc_100%)] p-5 shadow-[0_14px_34px_rgba(139,80,212,0.08)]">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="font-semibold text-[var(--text-primary)]">
+                <div className="inline-flex items-center gap-2 rounded-full border border-[#E7D8FB] bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8B50D4]">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Billing
+                </div>
+                <p className="mt-3 text-lg font-semibold text-[var(--text-primary)]">
                   {isPro ? "Manage Neyma Pro" : "Upgrade to Neyma Pro"}
                 </p>
                 <p className="mt-1 text-sm text-[var(--text-muted)]">
@@ -91,19 +96,23 @@ export default function SettingsPage() {
 
               {isPro ? (
                 <Button
-                  variant="primary"
+                  variant="default"
                   disabled={billingBusy !== null}
+                  className="min-w-[176px] rounded-[16px] bg-[#8B50D4] px-5 text-[15px] font-semibold text-white shadow-[0_12px_28px_rgba(139,80,212,0.28)] hover:bg-[#7740C8]"
                   onClick={() => void openBillingPortal(setBillingBusy, setBillingMessage)}
                 >
                   {billingBusy === "portal" ? "Opening..." : "Manage Billing"}
+                  <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
               ) : (
                 <Button
-                  variant="primary"
+                  variant="default"
                   disabled={billingBusy !== null}
+                  className="min-w-[176px] rounded-[16px] bg-[#8B50D4] px-5 text-[15px] font-semibold text-white shadow-[0_12px_28px_rgba(139,80,212,0.28)] hover:bg-[#7740C8]"
                   onClick={() => void openBillingCheckout(setBillingBusy, setBillingMessage)}
                 >
                   {billingBusy === "checkout" ? "Opening..." : "Start 7-day trial"}
+                  <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
               )}
             </div>

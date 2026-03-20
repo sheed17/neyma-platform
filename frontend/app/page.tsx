@@ -7,6 +7,7 @@ import { FaqSection } from "@/components/ui/faq";
 import { Footer } from "@/components/ui/footer";
 import { HeroSection } from "@/components/ui/hero-section-1";
 import { NeymaButton } from "@/components/ui/neyma-button";
+import { Pricing } from "@/components/ui/pricing";
 import ShineHoverButton from "@/components/ui/shine-hover";
 import { useAuth } from "@/lib/auth";
 
@@ -82,8 +83,63 @@ const landingFaqs = [
 export default function LandingPage() {
   const { user } = useAuth();
   const workspaceHref = user ? "/dashboard" : "/login";
+  const pricingPlans = [
+    {
+      name: "FREE",
+      price: 0,
+      period: "month",
+      features: [
+        "5 territory scans / month",
+        "5 build briefs / month",
+        "3 Ask Neyma requests / month",
+        "One personal workspace",
+      ],
+      description: "A generous starting point for learning the ranked workflow, testing markets, and opening a handful of briefs each month.",
+      buttonText: user ? "Open Workspace" : "Start Free",
+      href: workspaceHref,
+      isPopular: false,
+      badge: "Best for first-time users",
+      note: "No card required. Upgrade only when Neyma becomes part of your weekly prospecting rhythm.",
+    },
+    {
+      name: "PRO",
+      price: 39,
+      period: "month",
+      features: [
+        "Unlimited territory scans",
+        "Unlimited build briefs",
+        "Unlimited Ask Neyma access",
+        "Unlimited workflow access",
+        "Saved workspace access",
+        "7-day free trial",
+      ],
+      description: "Built for operators who want Neyma available every time a new market, shortlist, or brief needs to move without hitting monthly caps.",
+      buttonText: user ? "Start 7-day trial" : "Create account first",
+      href: user ? "/settings" : "/register",
+      isPopular: true,
+      badge: "Unlimited workflow access",
+      note: "Start a 7-day free trial, then continue on Neyma Pro for $39/month. Billing is handled securely through Stripe.",
+    },
+    {
+      name: "ENTERPRISE",
+      priceLabel: "Custom",
+      features: [
+        "Custom rollout and onboarding",
+        "Enterprise procurement support",
+        "Dedicated implementation planning",
+        "Priority support and deeper workflow alignment",
+      ],
+      description: "For teams that want Neyma rolled out across a broader sales or growth motion with a tailored commercial setup.",
+      buttonText: "Contact Sales",
+      href: "mailto:support@tryneyma.com?subject=Enterprise%20plan%20for%20Neyma",
+      isPopular: false,
+      badge: "Custom engagement",
+      note: "Talk with us at support@tryneyma.com and we’ll shape the right setup together.",
+    },
+  ];
   const landingMenuItems = [
     { name: "Run Territory Scan", href: "/territory/new" },
+    { name: "Pricing", href: "#pricing" },
     { name: "Open Workspace", href: workspaceHref },
     { name: "Build Brief", href: "/diagnostic/new" },
     { name: "Ask Neyma", href: "/ask" },
@@ -189,6 +245,12 @@ export default function LandingPage() {
           </div>
         </section>
 
+        <section id="pricing" className="page-section pt-0">
+          <div className="app-container">
+            <Pricing plans={pricingPlans} />
+          </div>
+        </section>
+
         <FaqSection
           title="Questions, answered."
           description="The essentials on how Neyma works today."
@@ -198,7 +260,7 @@ export default function LandingPage() {
             description: "Reach out directly and we’ll help.",
             buttonText: "Email us",
             onContact: () => {
-              window.location.href = "mailto:rasheed@tryneyma.com";
+              window.location.href = "mailto:support@tryneyma.com";
             },
           }}
         />
@@ -241,12 +303,13 @@ export default function LandingPage() {
               socialLinks={[
                 {
                   icon: <Mail className="h-5 w-5" />,
-                  href: "mailto:rasheed@tryneyma.com",
+                  href: "mailto:support@tryneyma.com",
                   label: "Email",
                 },
               ]}
               mainLinks={[
                 { href: "/territory/new", label: "Run Territory Scan" },
+                { href: "#pricing", label: "Pricing" },
                 { href: workspaceHref, label: "Open Workspace" },
                 { href: "/diagnostic/new", label: "Build Brief" },
                 { href: "/ask", label: "Ask Neyma" },

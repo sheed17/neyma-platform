@@ -11,6 +11,7 @@ import {
   Map,
   Menu,
   MessageSquareText,
+  ReceiptText,
   X,
 } from "lucide-react";
 import type { Variants } from "framer-motion";
@@ -28,6 +29,7 @@ type NavItem = {
 
 const mobileMenuIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   "Run Territory Scan": Map,
+  Pricing: ReceiptText,
   "Open Workspace": LayoutGrid,
   "Build Brief": FileStack,
   "Ask Neyma": MessageSquareText,

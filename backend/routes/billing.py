@@ -111,6 +111,9 @@ def create_checkout_session(request: Request):
         mode="subscription",
         customer=customer_id,
         line_items=[{"price": price_id, "quantity": 1}],
+        subscription_data={
+            "trial_period_days": 7,
+        },
         client_reference_id=str(user["id"]),
         metadata={"user_id": str(user["id"])},
         allow_promotion_codes=True,
