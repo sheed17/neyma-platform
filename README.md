@@ -53,6 +53,22 @@ The system is specialized for dental practices. For each lead we produce:
 | **Hybrid RAG** | `pipeline/doc_builder.py` + `pipeline/rag/hybrid_retriever.py` |
 | **API** | FastAPI backend — `POST /diagnostic` for single-lead enrichment |
 
+### Lightweight sourcing
+
+For branch-local prospect sourcing without the full app stack, run:
+
+```bash
+python scripts/source_local_leads.py --region "San Jose, CA"
+```
+
+This uses Google Geocoding + Nearby Search + Place Details, keeps dentist practice filtering, and exports only lightweight outreach fields to `output/sourcing/`:
+- `name`
+- `address`
+- `rating`
+- `review_count`
+- `phone`
+- `website`
+
 ### Run the API server
 
 From the project root:
