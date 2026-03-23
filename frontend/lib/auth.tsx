@@ -331,7 +331,13 @@ export function AuthGuard({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user && !canEnterAsGuest) return null;
+  if (!user && !canEnterAsGuest) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50">
+        <div className="text-sm text-zinc-400">Redirecting to login…</div>
+      </div>
+    );
+  }
 
   return <>{children}</>;
 }

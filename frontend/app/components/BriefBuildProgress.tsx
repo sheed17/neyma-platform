@@ -21,6 +21,24 @@ type ProgressStep = {
   tone: StepTone;
 };
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getMetricProgress(kind: "signals" | "pages", phase: string, polls: number, liveValue?: number) {
+  if (typeof liveValue === "number" && Number.isFinite(liveValue) && liveValue > 0) {
+    const multiplier = kind === "signals" ? 9 : 14;
+    const floor = kind === "signals" ? 26 : 18;
+    return clamp(floor + liveValue * multiplier, floor, kind === "signals" ? 92 : 88);
+  }
+
+  const stepIndex = getBriefStepIndex(phase, polls);
+  const seed = kind === "signals" ? 20 : 12;
+  const perPoll = kind === "signals" ? 6 : 5;
+  const perStep = kind === "signals" ? 18 : 20;
+  return clamp(seed + polls * perPoll + stepIndex * perStep, seed, kind === "signals" ? 88 : 82);
+}
+
 function getBriefStepIndex(phase: string, polls: number) {
   const lower = phase.toLowerCase().trim();
 
@@ -153,14 +171,22 @@ export default function BriefBuildProgress({
   const statusLines = useMemo(() => getStatusLines(progress.phase), [progress.phase]);
   const steps = useMemo(() => getSteps(progress.phase, progress.polls || 0), [progress.phase, progress.polls]);
   const location = [progress.city, progress.state].filter(Boolean).join(", ");
+  const signalProgress = useMemo(
+    () => getMetricProgress("signals", progress.phase, progress.polls || 0, progress.signalsFound),
+    [progress.phase, progress.polls, progress.signalsFound],
+  );
+  const pagesProgress = useMemo(
+    () => getMetricProgress("pages", progress.phase, progress.polls || 0, progress.pagesChecked),
+    [progress.pagesChecked, progress.phase, progress.polls],
+  );
   const signalStatus =
     typeof progress.signalsFound === "number"
       ? `${progress.signalsFound} signals found so far`
-      : "Collecting evidence from the site and market";
+      : "Pulling together the strongest evidence for the brief";
   const pagesStatus =
     typeof progress.pagesChecked === "number"
       ? `${progress.pagesChecked} page${progress.pagesChecked === 1 ? "" : "s"} checked`
-      : "Page crawl telemetry will appear here";
+      : "Reviewing the website and organizing what matters most";
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -197,7 +223,10 @@ export default function BriefBuildProgress({
           <div className="brief-progress__metric-row">
             <span className="brief-progress__dot brief-progress__dot--active" aria-hidden="true" />
             <div className="brief-progress__bar-track">
-              <div className="brief-progress__bar brief-progress__bar--active" />
+              <div
+                className="brief-progress__bar brief-progress__bar--active"
+                style={{ width: `${signalProgress}%` }}
+              />
             </div>
           </div>
           <p className="brief-progress__section-status">{signalStatus}</p>
@@ -206,9 +235,12 @@ export default function BriefBuildProgress({
         <section className="brief-progress__card">
           <p className="brief-progress__section-label">Pages checked</p>
           <div className="brief-progress__metric-row">
-            <span className="brief-progress__dot brief-progress__dot--muted" aria-hidden="true" />
+            <span className="brief-progress__dot brief-progress__dot--muted-loading" aria-hidden="true" />
             <div className="brief-progress__bar-track">
-              <div className="brief-progress__bar brief-progress__bar--inactive" />
+              <div
+                className="brief-progress__bar brief-progress__bar--muted"
+                style={{ width: `${pagesProgress}%` }}
+              />
             </div>
           </div>
           <p className="brief-progress__section-status">{pagesStatus}</p>
@@ -371,6 +403,11 @@ export default function BriefBuildProgress({
           background: color-mix(in srgb, var(--bp-text-tertiary) 45%, transparent);
         }
 
+        .brief-progress__dot--muted-loading {
+          background: color-mix(in srgb, var(--bp-text-tertiary) 45%, transparent);
+          animation: brief-progress-pulse 1.9s ease-in-out infinite;
+        }
+
         .brief-progress__bar-track {
           position: relative;
           height: 8px;
@@ -398,12 +435,19 @@ export default function BriefBuildProgress({
               color-mix(in srgb, var(--bp-info) 60%, white) 52%,
               color-mix(in srgb, var(--bp-text-primary) 88%, transparent) 100%
             );
-          animation: brief-progress-shimmer 3.5s ease-out forwards;
+          animation: brief-progress-bar-glow 2.6s ease-in-out infinite;
         }
 
-        .brief-progress__bar--inactive {
-          width: 0;
-          background: transparent;
+        .brief-progress__bar--muted {
+          width: 12%;
+          background:
+            linear-gradient(
+              90deg,
+              color-mix(in srgb, var(--bp-text-tertiary) 18%, transparent) 0%,
+              color-mix(in srgb, var(--bp-text-tertiary) 34%, white) 50%,
+              color-mix(in srgb, var(--bp-text-tertiary) 18%, transparent) 100%
+            );
+          animation: brief-progress-bar-glow 3.2s ease-in-out infinite;
         }
 
         .brief-progress__section-status {
@@ -540,15 +584,14 @@ export default function BriefBuildProgress({
           }
         }
 
-        @keyframes brief-progress-shimmer {
-          from {
-            width: 15%;
+        @keyframes brief-progress-bar-glow {
+          0%,
+          100% {
             filter: brightness(0.98);
           }
 
-          to {
-            width: 72%;
-            filter: brightness(1.04);
+          50% {
+            filter: brightness(1.06);
           }
         }
       `}</style>

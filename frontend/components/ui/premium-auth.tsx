@@ -712,11 +712,11 @@ export function AuthForm({
               />
               <span className="text-sm text-muted-foreground">
                 I agree to the{" "}
-                <a href="#" className="text-primary transition-colors hover:underline">
+                <a href="/terms" className="text-primary transition-colors hover:underline">
                   Terms of Service
                 </a>{" "}
                 and{" "}
-                <a href="#" className="text-primary transition-colors hover:underline">
+                <a href="/privacy" className="text-primary transition-colors hover:underline">
                   Privacy Policy
                 </a>
               </span>
