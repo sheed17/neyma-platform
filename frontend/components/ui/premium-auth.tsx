@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useCallback, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Eye,
@@ -30,6 +31,8 @@ interface AuthFormProps {
   onClose?: () => void;
   initialMode?: AuthMode;
   className?: string;
+  loginHref?: string;
+  signupHref?: string;
   onLogin?: (payload: { email: string; password: string; rememberMe: boolean }) => Promise<void>;
   onSignup?: (payload: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
   onResetPassword?: (payload: { email: string }) => Promise<void>;
@@ -179,6 +182,8 @@ export function AuthForm({
   onClose,
   initialMode = "login",
   className,
+  loginHref,
+  signupHref,
   onLogin,
   onSignup,
   onResetPassword,
@@ -186,6 +191,7 @@ export function AuthForm({
   testAccountLabel = "Use test account",
   testAccountHint = "Local shortcut for workspace access",
 }: AuthFormProps) {
+  const router = useRouter();
   const [authMode, setAuthMode] = useState<AuthMode>(initialMode);
   const [registrationStep, setRegistrationStep] = useState<RegistrationStep>("details");
   const [showPassword, setShowPassword] = useState(false);
@@ -225,6 +231,18 @@ export function AuthForm({
     }
     resetMessages();
   }, [resetMessages]);
+
+  const navigateToMode = useCallback((mode: "login" | "signup") => {
+    const href = mode === "login" ? loginHref : signupHref;
+    if (href) {
+      router.push(href);
+      return;
+    }
+    switchMode(mode);
+    if (mode === "signup") {
+      setRegistrationStep("details");
+    }
+  }, [loginHref, router, signupHref, switchMode]);
 
   const validateField = useCallback(
     (field: keyof FormData, value: string | boolean) => {
@@ -806,7 +824,7 @@ export function AuthForm({
       {authMode !== "reset" ? (
         <div className="mb-6 flex rounded-xl bg-muted p-1">
           <button
-            onClick={() => switchMode("login")}
+            onClick={() => navigateToMode("login")}
             className={cn(
               "flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all",
               authMode === "login"
@@ -819,8 +837,7 @@ export function AuthForm({
           </button>
           <button
             onClick={() => {
-              switchMode("signup");
-              setRegistrationStep("details");
+              navigateToMode("signup");
             }}
             className={cn(
               "flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all",
@@ -843,7 +860,7 @@ export function AuthForm({
             {authMode === "login" ? "Don't have an account? " : "Already have an account? "}
             <button
               type="button"
-              onClick={() => switchMode(authMode === "login" ? "signup" : "login")}
+              onClick={() => navigateToMode(authMode === "login" ? "signup" : "login")}
               className="font-medium text-primary transition-colors hover:text-primary/80"
             >
               {authMode === "login" ? "Sign up" : "Sign in"}

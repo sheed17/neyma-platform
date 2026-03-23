@@ -33,6 +33,8 @@ export default function LoginPage() {
         <div className="rounded-[28px] bg-white">
           <AuthForm
             initialMode="login"
+            loginHref="/login"
+            signupHref="/register"
             onLogin={async ({ email, password }) => {
               await login(email, password);
             }}

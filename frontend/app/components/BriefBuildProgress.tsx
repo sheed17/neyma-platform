@@ -12,6 +12,10 @@ export type BriefBuildProgressState = {
   signalsFound?: number;
 };
 
+function formatMetricValue(value?: number) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
+}
+
 function formatPhaseLabel(phase: string) {
   const normalized = phase.replaceAll("_", " ").trim().toLowerCase();
   if (!normalized) return "Preparing brief";
@@ -130,7 +134,7 @@ export default function BriefBuildProgress({
       <div className="rounded-[26px] border border-white/70 bg-[rgba(255,255,255,0.88)] p-4 backdrop-blur-sm sm:p-5">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
           <div className="flex items-center gap-4 sm:w-[250px] sm:flex-col sm:items-start">
-            <div className="relative flex h-18 w-18 items-center justify-center rounded-full border border-black/10 bg-[radial-gradient(circle_at_30%_30%,rgba(79,121,199,0.16),transparent_45%),radial-gradient(circle_at_70%_70%,rgba(242,191,47,0.18),transparent_48%),#fcfbf8] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(23,20,17,0.08)]">
+            <div className="relative flex h-[72px] w-[72px] shrink-0 items-center justify-center rounded-full border border-black/10 bg-[radial-gradient(circle_at_30%_30%,rgba(79,121,199,0.16),transparent_45%),radial-gradient(circle_at_70%_70%,rgba(242,191,47,0.18),transparent_48%),#fcfbf8] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_16px_32px_rgba(23,20,17,0.08)]">
               <span className="absolute inline-flex h-14 w-14 animate-ping rounded-full border border-black/10" />
               <span className="absolute inline-flex h-10 w-10 animate-spin rounded-full border-2 border-black/15 border-t-[#4f79c7]" />
               <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-black shadow-[0_0_0_6px_rgba(0,0,0,0.06)]" />
@@ -160,11 +164,17 @@ export default function BriefBuildProgress({
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="rounded-[22px] border border-black/6 bg-white px-3 py-3">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Signals</p>
-                <p className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">{progress.signalsFound ?? Math.max(3, (progress.polls || 0) * 4)}</p>
+                <p className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">{formatMetricValue(progress.signalsFound)}</p>
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  {typeof progress.signalsFound === "number" ? "Live evidence count" : "Waiting for live evidence telemetry"}
+                </p>
               </div>
               <div className="rounded-[22px] border border-black/6 bg-white px-3 py-3">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">Pages checked</p>
-                <p className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">{progress.pagesChecked ?? Math.max(1, progress.polls || 1)}</p>
+                <p className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">{formatMetricValue(progress.pagesChecked)}</p>
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  {typeof progress.pagesChecked === "number" ? "Live crawl count" : "Updates when the crawl reports in"}
+                </p>
               </div>
             </div>
 
