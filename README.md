@@ -1,204 +1,205 @@
-# Lead Scoring Engine
+# Neyma Platform
 
-An intelligence platform that extracts, enriches, and analyzes business leads from Google Places—built for the dental vertical and production deployment.
+Neyma is an AI-assisted prospect intelligence platform for dental go-to-market workflows.
 
-We decide which businesses are worth pursuing and explain why. The system delivers **context over scores**: reasoning, dimensions, outreach angles, and evidence so sales teams can act with confidence.
+It helps teams start from a market, rank the best opportunities, generate full diagnostic briefs, save prospects into working lists, track outcomes, and ask for leads in plain English.
 
----
-
-## What We Built
-
-### End-to-end pipeline
-- **Extraction** — Geographic tiling, keyword expansion, and pagination to collect leads from Google Places Nearby Search
-- **Enrichment** — Place Details, website signals, Meta Ads detection, and competitor sampling
-- **Intelligence** — Objective decision layer, revenue modeling, and deterministic context for each lead
-
-### Dental vertical
-The system is specialized for dental practices. For each lead we produce:
-
-- **Objective Intelligence** — Root constraint, primary growth vector, service gaps (high-ticket detected vs missing landing pages), competitive profile (market density, review tier, nearest competitors)
-- **Revenue Intelligence Brief** — Executive diagnosis, market position, demand signals (Google Ads, Meta Ads), high-value service gaps, modeled revenue upside, strategic gap analysis, conversion infrastructure, risk flags, and intervention plan
-- **Opportunity Profile** — Deterministic label (High-Leverage | Moderate | Low-Leverage) with short parenthetical reasoning
-
-### Signals and context
-- Website: SSL, mobile-friendly, contact forms, booking widgets, schema markup
-- Reviews: Count, rating, recency, velocity
-- Paid demand: Google Ads and Meta Ads presence (no spend estimates; factual status only)
-- Service depth: High-ticket procedures detected, missing dedicated pages, schema coverage
-
-### Outcome loop
-- **Embeddings** — Structural snapshot per lead (objective state) stored in SQLite for similarity search
-- **Lead outcomes** — Contacted, proposal sent, closed, close value, service sold
-- **Similarity stats** — Conversion rates and top service sold across similar historical profiles (used for UI and future analytics)
-
-### Hybrid RAG (cohort + similarity + outcomes)
-- **Typed lead docs (`lead_docs_v1`)**: `signal_profile`, `service_coverage`, `market_context`, `conversion_path`, `llm_brief_summary`
-- **Cohort retrieval**: SQL-filtered peers by vertical/city/review-gap bucket/market-density
-- **Vector retrieval**: semantic nearest docs from other leads (when embeddings available)
-- **Outcome patterns**: observed constraint/leverage/outreach patterns weighted by booked/closed outcomes
-- **Guardrails**: dentist LLM receives only retrieved context and must emit strict JSON with evidence references
+The repo name used to describe just the lead-scoring engine. The product has grown beyond that. This codebase now contains the broader `neyma-platform` application: backend APIs, frontend workspace, ranking logic, brief generation, access control, and billing hooks.
 
 ---
 
-## Architecture
+## What Neyma Does
 
-| Component | Description |
-|-----------|-------------|
-| **Extraction** | `run_pipeline.py` — Grid-based Nearby Search with keyword expansion |
-| **Enrichment** | `run_enrichment.py` — Place Details, signals, Meta Ads, competitors, embeddings |
-| **Upload** | `run_upload.py` — Enrich uploaded leads (CSV/JSON) through the same pipeline |
-| **Export** | `export_leads.py` — Context-first or legacy export from DB |
-| **Briefs** | `render_brief.py` — Revenue Intelligence Brief HTML per lead |
-| **Outcomes** | `update_outcome.py` — Create/update outcome records for the loop |
-| **Hybrid RAG** | `pipeline/doc_builder.py` + `pipeline/rag/hybrid_retriever.py` |
-| **API** | FastAPI backend — `POST /diagnostic` for single-lead enrichment |
+### 1. Territory Scan
+- Start with a city, state, and dental vertical
+- Discover and rank local practices
+- Return a shortlist of the strongest opportunities before running full deep-dive analysis
 
-### Run the API server
+### 2. Build Brief
+- Generate a full diagnostic brief for a known business
+- Combine place data, website signals, market context, service coverage, and decision logic
+- Produce a sales-ready intelligence view rather than a bare score
 
-From the project root:
+### 3. Ask Neyma
+- Turn a plain-English query into a ranked prospect search
+- Support criteria like review gaps, website weakness, or missing service pages
+- Let users build full briefs on-demand from Ask results
+
+### 4. Lists and Workspace
+- Save prospects into reusable lists
+- Reopen scans and diagnostics from the dashboard
+- Re-scan and manage lead groups over time
+
+### 5. Outcome Tracking
+- Record statuses like contacted, won, or lost
+- Store embeddings and historical outcomes for retrieval and calibration loops
+- Feed future intelligence with structural similarity and prior result patterns
+
+### 6. Access and Billing
+- Guest, free, and paid workflow limits
+- Supabase-backed auth and account management
+- Stripe checkout, customer portal, and webhook support for Neyma Pro
+
+---
+
+## Product Surface In This Repo
+
+### Frontend
+- Marketing landing page
+- Auth flows: login, register, reset password
+- Dashboard workspace
+- Territory Scan flow
+- Build Brief flow
+- Ask Neyma flow
+- Saved lists
+- Settings, billing, and account deletion
+- Shared/public brief pages
+
+### Backend API
+- Async diagnostic jobs
+- Territory scan creation and polling
+- Prospect shortlist retrieval
+- Ask query resolution and results
+- Saved lists and list membership
+- Outcome tracking
+- Access state and workspace membership
+- Billing endpoints
+
+### Intelligence Layer
+- Google Places extraction and enrichment
+- Website and conversion-path signal capture
+- Objective decision logic
+- Revenue and service-gap analysis
+- Competitor and market context
+- Hybrid retrieval over lead documents, embeddings, and outcomes
+
+---
+
+## How The Workflow Fits Together
+
+1. Run a territory scan to rank a market quickly.
+2. Open a shortlisted prospect and ensure a full brief only when it is worth deeper work.
+3. Save strong prospects into lists.
+4. Use Ask Neyma when you want to describe the target in natural language instead of starting from a market scan.
+5. Track outreach outcomes so Neyma can learn from similar lead patterns over time.
+
+---
+
+## Tech Stack
+
+- Backend: FastAPI, Python
+- Frontend: Next.js 16, React 19, TypeScript
+- ML/runtime logic: scikit-learn, NumPy, deterministic + LLM-assisted decision layers
+- Data/auth: SQLite and Postgres-compatible access patterns, Supabase auth
+- Payments: Stripe
+- Browser/site inspection: Playwright
+
+---
+
+## Local Setup
+
+### Backend
+
+Install Python dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install
+```
+
+The backend loads env vars from the project-root `.env`.
+
+Core env vars used by the platform:
+- `GOOGLE_PLACES_API_KEY`
+- `OPENAI_API_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY` or `SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY` for account deletion/admin flows
+- `ACCESS_DATABASE_URL` or `SUPABASE_DB_URL` if using Postgres-backed access data
+- `STRIPE_SECRET_KEY`, `STRIPE_PRO_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` for billing
+- `CORS_ORIGINS` and `RUN_EMBEDDED_WORKER` as optional backend settings
+
+Run the API:
 
 ```bash
 uvicorn backend.main:app --reload
 ```
 
-- Health check: `GET /health`
-- Diagnostic: `POST /diagnostic` with body `{"business_name": "Example Dental", "city": "San Jose"}` (website optional)
+Health check:
 
-### Territory + lists workflow
+```bash
+curl http://127.0.0.1:8000/health
+```
 
-New workflow path (single-diagnostic remains unchanged):
+### Frontend
 
-- `POST /territory` — start async Tier 1 territory scan `{ city, state?, vertical, limit?, filters? }`
-- `GET /territory/{scan_id}` — poll scan status/progress
-- `GET /territory/{scan_id}/results` — Tier 1 ranked prospect rows (Places + Place Details + single-homepage checks)
-- `POST /territory/prospects/{prospect_id}/ensure-brief` — run/attach Tier 2 full diagnostic on demand
-- `POST /lists`, `GET /lists` — create/list saved prospect lists
-- `POST /lists/{id}/members`, `GET /lists/{id}/members`, `DELETE /lists/{id}/members/{diagnostic_id}` — list membership
-- `POST /lists/{id}/rescan` — async re-scan current list members
-- `POST /diagnostics/{id}/outcome` — mark `contacted | closed_won | closed_lost`
-
-Tier 1 ranking is deterministic and lightweight: review count/rating plus basic website infrastructure checks (SSL, contact form, phone, viewport/schema).
-Tier 2 remains the existing full diagnostic pipeline and runs only when a user requests a brief or adds a prospect to a list.
-
-### Run the frontend (Next.js)
-
-From the project root, start the API first, then:
+Install frontend dependencies:
 
 ```bash
 cd frontend
-cp .env.local.example .env.local   # optional: edit NEXT_PUBLIC_API_URL if backend runs elsewhere
+npm install
+```
+
+Create `frontend/.env.local` and set at least:
+
+```bash
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+```
+
+Run the app:
+
+```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The UI shows API status and a diagnostic form (business name, city, optional website) and displays the structured result.
-
-### Measure Capture Accuracy (gold-set benchmark)
-
-Use this to measure real precision/recall/F1 for brief-critical capture signals:
-- online booking
-- contact form
-- phone prominence
-- phone clickable
-- CTA presence
-- form structure accuracy
-
-1. Prepare input CSV with at least:
-`business_name,city,state,website`
-
-2. Generate model predictions:
-
-```bash
-python3 scripts/generate_capture_benchmark.py \
-  --csv data/capture_benchmark_input.csv \
-  --output output/capture_benchmark_predictions.csv
-```
-
-3. Human-label the same CSV by filling:
-`label_online_booking,label_contact_form,label_phone_prominent,label_phone_clickable,label_has_cta,label_form_structure`
-using:
-- bool labels: `true` or `false`
-- form structure: `single_step`, `multi_step`, `none`, or `unknown`
-
-4. Evaluate:
-
-```bash
-python3 scripts/evaluate_capture_benchmark.py \
-  --csv output/capture_benchmark_predictions.csv \
-  --json-out output/capture_benchmark_metrics.json
-```
-
-The evaluator prints per-signal precision/recall/F1/accuracy and summary macro/micro F1.
-
-### Database
-- SQLite: runs, leads, signals, decisions, embeddings (versioned), outcomes
-- Tables: `runs`, `leads`, `lead_signals`, `decisions`, `lead_embeddings_v2`, `lead_outcomes`, `lead_intel_v1`, `lead_docs_v1`
-
-### Key modules
-- **Objective intelligence** — Root bottleneck, growth vector, service intel, competitive profile
-- **Revenue brief renderer** — Deterministic HTML and view model (no LLM in brief)
-- **Embedding snapshot** — Structural text for embeddings (objective state)
-- **Outcome stats** — Similarity-based conversion metrics
+Open `http://localhost:3000`.
 
 ---
 
-## Revenue Intelligence Brief
+## Key API Paths
 
-Each dental lead gets a Revenue Intelligence Brief that includes:
-
-- **Executive Diagnosis** — Constraint, primary leverage, opportunity profile, modeled revenue upside
-- **Market Position** — Revenue band, reviews, local avg, market density
-- **Competitive Context** — Dentists sampled, lead vs market, nearest competitors
-- **Demand Signals** — Google Ads status (Search campaigns detected / Not detected), Meta Ads (Active / Not detected), estimated traffic, last review, review velocity
-- **Local SEO & High-Value Service Pages** — Detected services, missing pages, schema
-- **Modeled Revenue Upside** — Primary service capture gap (conservative bands, 30% cap vs revenue band)
-- **Strategic Gap** — Nearest competitor, capture gap narrative
-- **Conversion Infrastructure** — Online booking, contact form, phone, mobile
-- **Risk Flags** — Cost leakage and agency-fit risks
-- **Intervention Plan** — 3-step plan; Step 3 dynamically calibrated by paid demand status
-
----
-
-## Production Readiness
-
-The core logic is complete and stable. The system:
-
-- Uses deterministic classification (no invented numbers, no probabilities in briefs)
-- Stores embeddings for similarity and outcome analytics
-- Supports outcome tracking and similar-lead conversion stats
-- Handles missing data gracefully (omits sections when data is absent)
-- Works for dental leads; non-dental paths remain intact
-
-Next phase: backend API, UI, and production database deployment.
+- `GET /health`
+- `POST /diagnostic`
+- `GET /jobs/{job_id}`
+- `GET /diagnostics`
+- `GET /diagnostics/{id}`
+- `POST /territory`
+- `GET /territory/scans`
+- `GET /territory/{scan_id}`
+- `GET /territory/{scan_id}/results`
+- `POST /territory/prospects/{prospect_id}/ensure-brief`
+- `POST /ask`
+- `GET /ask/jobs/{job_id}/results`
+- `POST /ask/prospects/ensure-brief`
+- `GET /access/me`
+- `POST /billing/checkout`
+- `POST /billing/customer-portal`
+- `POST /billing/webhook`
 
 ---
 
-## Project Structure
+## Repo Structure
 
+```text
+neyma-platform/
+├── backend/      # FastAPI app, routes, auth/access, workers, services
+├── frontend/     # Next.js app, landing page, workspace, auth, billing UI
+├── pipeline/     # Enrichment, scoring, retrieval, reasoning, exports
+├── scripts/      # Operational scripts for scans, enrichment, training, exports, migrations
+├── tests/        # Backend and pipeline tests
+├── docs/         # Internal product and architecture notes
+└── README.md
 ```
-lead-scoring-engine/
-├── pipeline/
-│   ├── db.py                    # Persistence (runs, leads, signals, embeddings, outcomes)
-│   ├── revenue_brief_renderer.py
-│   ├── objective_intelligence.py
-│   ├── objective_decision_layer.py
-│   ├── revenue_intelligence.py
-│   ├── embedding_snapshot.py
-│   ├── competitor_sampling.py
-│   ├── dentist_profile.py
-│   ├── fetch.py, enrich.py, signals.py
-│   └── ...
-├── scripts/
-│   ├── run_pipeline.py
-│   ├── run_enrichment.py
-│   ├── run_upload.py
-│   ├── export_leads.py
-│   ├── render_brief.py
-│   ├── update_outcome.py
-│   ├── list_runs.py
-│   └── test_small.py
-├── data/                        # SQLite DB
-└── output/                      # Leads, enriched JSON, briefs
-```
+
+---
+
+## Current Product Focus
+
+Neyma is currently optimized for dental. The platform structure is broader than the original scoring engine, but the strongest workflow, ranking assumptions, and product language are all centered on dental practices today.
 
 ---
 
