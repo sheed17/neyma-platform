@@ -6,6 +6,10 @@ It helps teams start from a market, rank the best opportunities, generate full d
 
 The repo name used to describe just the lead-scoring engine. The product has grown beyond that. This codebase now contains the broader `neyma-platform` application: backend APIs, frontend workspace, ranking logic, brief generation, access control, and billing hooks.
 
+## Live Product
+
+Website: [www.neyma.io](https://www.neyma.io/)
+
 ---
 
 ## What Neyma Does
@@ -96,67 +100,43 @@ The repo name used to describe just the lead-scoring engine. The product has gro
 
 ---
 
-## Local Setup
+## What We’ve Built
 
-### Backend
+- A market-first prospecting workflow that starts with territory discovery instead of requiring a known lead up front
+- A ranked shortlist experience that helps teams focus deeper work only on the strongest opportunities
+- A full brief system that turns market, website, service, and competitive signals into a sales-ready intelligence view
+- A natural-language prospect finder that converts plain-English targeting into structured ranked output
+- A working workspace product with dashboard, saved lists, scan history, shared briefs, account access, and billing
+- A feedback loop that tracks outcomes and connects future recommendations to prior patterns and similar lead profiles
 
-Install Python dependencies:
+---
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install
-```
+## Why It Matters
 
-The backend loads env vars from the project-root `.env`.
+Neyma is built to move prospecting from manual guesswork to a repeatable operating system.
 
-Core env vars used by the platform:
-- `GOOGLE_PLACES_API_KEY`
-- `OPENAI_API_KEY`
-- `SUPABASE_URL`
-- `SUPABASE_ANON_KEY` or `SUPABASE_PUBLISHABLE_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY` for account deletion/admin flows
-- `ACCESS_DATABASE_URL` or `SUPABASE_DB_URL` if using Postgres-backed access data
-- `STRIPE_SECRET_KEY`, `STRIPE_PRO_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` for billing
-- `CORS_ORIGINS` and `RUN_EMBEDDED_WORKER` as optional backend settings
+Instead of handing teams a raw list of businesses or a single opaque score, Neyma helps them:
 
-Run the API:
+- identify where demand and weakness intersect
+- understand why a practice is worth pursuing
+- decide when a full brief is justified
+- keep the best opportunities organized inside one workspace
+- learn over time from actual sales outcomes
 
-```bash
-uvicorn backend.main:app --reload
-```
+---
 
-Health check:
+## What This Repo Represents
 
-```bash
-curl http://127.0.0.1:8000/health
-```
+This repository is the product foundation behind Neyma. It captures the platform we have built across:
 
-### Frontend
-
-Install frontend dependencies:
-
-```bash
-cd frontend
-npm install
-```
-
-Create `frontend/.env.local` and set at least:
-
-```bash
-NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
-```
-
-Run the app:
-
-```bash
-npm run dev
-```
-
-Open `http://localhost:3000`.
+- acquisition workflows
+- AI-assisted intelligence generation
+- ranked territory discovery
+- natural-language prospect search
+- decision support for sales
+- workspace and account infrastructure
+- monetization and product gating
+- retrieval and feedback systems for continuous improvement
 
 ---
 
